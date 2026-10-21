@@ -58,6 +58,7 @@ export const PERMISSION_GROUPS: {
       { key: 'ops.put_away',   label: 'Put Away (Shelving)',    description: 'Assign physical shelf locations to dock items', app: 'WAREHOUSE', path: '/put-away' },
       { key: 'ops.dock_queue', label: 'Inbound Dock Queue',     description: 'View unassigned rolls waiting at receiving dock', app: 'WAREHOUSE', path: '/batches' },
       { key: 'ops.exit_gate',  label: 'Stock Out (Exit Gate)',  description: 'Scan and dispatch goods out of warehouse', app: 'WAREHOUSE', path: '/exit-gate' },
+      { key: 'ops.release_earmark', label: 'Release Reserved Stock', description: 'Dispatch stock reserved for one client to another, with a reason', app: 'WAREHOUSE', path: '/exit-gate' },
       { key: 'ops.printer',    label: 'Printer Settings',       description: 'Configure thermal label barcode printers', app: 'WAREHOUSE', path: '/settings/printer' },
     ],
   },
@@ -75,6 +76,8 @@ export const PERMISSION_GROUPS: {
       { key: 'inv.adjustments',        label: 'Stock Adjustments',           description: 'Perform manual quantity adjustments & count corrections', app: 'INVENTORY', path: '/inventory/adjustments' },
       { key: 'inv.relocations',        label: 'Stock Relocations',           description: 'Transfer items between warehouse bays and shelves', app: 'INVENTORY', path: '/inventory/relocations' },
       { key: 'inv.aging',              label: 'Stock Aging Analysis',        description: 'Track slow-moving stock and shelf dwell time', app: 'INVENTORY', path: '/inventory/aging' },
+      { key: 'inv.stock_count',        label: 'Stock Count',                 description: 'Open counts and scan shelves (approving needs Stock Adjustments)', app: 'INVENTORY', path: '/inventory/stock-counts' },
+      { key: 'inv.returns',            label: 'Returns',                     description: 'Customer returns against challans and returns to suppliers', app: 'INVENTORY', path: '/inventory/returns' },
     ],
   },
   {
@@ -115,7 +118,7 @@ export const ROLE_PRESETS: RolePreset[] = [
     permissions: [
       'ops.entry_gate', 'ops.put_away', 'ops.dock_queue', 'ops.exit_gate', 'ops.printer',
       'inv.dashboard', 'inv.audit_log', 'inv.grn', 'inv.delivery_challans', 'inv.suppliers',
-      'inv.adjustments', 'inv.relocations', 'inv.aging'
+      'inv.adjustments', 'inv.relocations', 'inv.aging', 'inv.stock_count', 'inv.returns', 'ops.release_earmark'
     ],
   },
   {
@@ -144,7 +147,7 @@ export const ROLE_PRESETS: RolePreset[] = [
     name: 'Inventory Auditor / Quality Lead',
     description: 'Monitor stock balance, item passports, stock adjustments, and aging dwell time',
     modules: ['INVENTORY'],
-    permissions: ['inv.dashboard', 'inv.audit_log', 'inv.adjustments', 'inv.aging', 'inv.relocations'],
+    permissions: ['inv.dashboard', 'inv.audit_log', 'inv.adjustments', 'inv.aging', 'inv.relocations', 'inv.stock_count'],
   },
   {
     id: 'PURCHASE_OFFICER',
@@ -209,7 +212,9 @@ export const canAccessApp = {
     hasPermission(user, 'inv.suppliers') ||
     hasPermission(user, 'inv.adjustments') ||
     hasPermission(user, 'inv.relocations') ||
-    hasPermission(user, 'inv.aging')
+    hasPermission(user, 'inv.aging') ||
+    hasPermission(user, 'inv.stock_count') ||
+    hasPermission(user, 'inv.returns')
   ),
   ADMINISTRATION: (user: WmsUser | null) => hasModuleAccess(user, 'ADMINISTRATION') && (
     hasPermission(user, 'admin.dashboard') || 

@@ -31,6 +31,9 @@ import StockRelocationPage from './apps/Inventory/Relocations/StockRelocationPag
 import StockAgingPage from './apps/Inventory/Aging/StockAgingPage';
 import ClientsTrackingPage from './apps/Inventory/Clients/ClientsTrackingPage';
 import SuppliersTrackingPage from './apps/Inventory/Suppliers/SuppliersTrackingPage';
+import StockCountsPage from './apps/Inventory/StockCount/StockCountsPage';
+import StockCountPage from './apps/Inventory/StockCount/StockCountPage';
+import ReturnsPage from './apps/Inventory/Returns/ReturnsPage';
 
 // Administration
 import DashboardPage from './apps/Administration/Dashboard/DashboardPage';
@@ -102,6 +105,9 @@ function AppRoutes() {
       <Route path="/inventory/adjustments" element={<ProtectedRoute permission="inv.adjustments"><StockAdjustmentsPage /></ProtectedRoute>} />
       <Route path="/inventory/relocations" element={<ProtectedRoute permission="inv.relocations"><StockRelocationPage /></ProtectedRoute>} />
       <Route path="/inventory/aging" element={<ProtectedRoute permission="inv.aging"><StockAgingPage /></ProtectedRoute>} />
+      <Route path="/inventory/stock-counts" element={<ProtectedRoute permission="inv.stock_count"><StockCountsPage /></ProtectedRoute>} />
+      <Route path="/inventory/stock-counts/:id" element={<ProtectedRoute permission="inv.stock_count"><StockCountPage /></ProtectedRoute>} />
+      <Route path="/inventory/returns" element={<ProtectedRoute permission="inv.returns"><ReturnsPage /></ProtectedRoute>} />
       
       {/* ── 4. Administration / Management ── */}
       <Route path="/dashboard" element={<ProtectedRoute permission="admin.dashboard"><DashboardPage /></ProtectedRoute>} />

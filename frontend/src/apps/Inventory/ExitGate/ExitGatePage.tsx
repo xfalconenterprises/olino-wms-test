@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../../../utils/api';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import { 
   LogOut, 
   Plus, 
@@ -41,6 +43,8 @@ interface DeliveryChallanLine {
   quantity: number;
   isPartialCut: boolean;
   cutReference?: string | null;
+  earmarkedFor?: string | null;
+  earmarkOverride?: string | null;
   batch: {
     batchCode: string;
     quantity: number;
@@ -79,6 +83,19 @@ export default function ExitGatePage() {
   const [scannedBatch, setScannedBatch] = useState<any | null>(null);
   const [cutMode, setCutMode] = useState<'FULL' | 'PARTIAL'>('FULL');
   const [cutQty, setCutQty] = useState('');
+
+  // Stock reserved for another client: only supervisors may release it, with a reason
+  const { user } = useAuth();
+  const canRelease = hasPermission(user, 'ops.release_earmark');
+  const [releaseReason, setReleaseReason] = useState('');
+  const [earmarkBlock, setEarmarkBlock] = useState<string | null>(null);
+  useEffect(() => { setReleaseReason(''); setEarmarkBlock(null); }, [scannedBatch]);
+  const reservedFor: string | null = (() => {
+    if (earmarkBlock) return earmarkBlock;
+    const client = scannedBatch?.clientName?.trim();
+    if (!client || !activeDC?.customerName) return null;
+    return client.toLowerCase() === activeDC.customerName.trim().toLowerCase() ? null : client;
+  })();
 
   const [loading, setLoading] = useState(true);
   const [dispatching, setDispatching] = useState(false);
@@ -302,15 +319,19 @@ export default function ExitGatePage() {
       return;
     }
 
+    setScanError('');
     try {
       await api.post(`/api/delivery-challans/${activeDC.id}/lines`, {
         batchCode: scannedBatch.batchCode,
-        quantity: numQty
+        quantity: numQty,
+        earmarkOverride: reservedFor ? releaseReason.trim() || undefined : undefined,
       });
       setScannedBatch(null);
       await loadDC(activeDC.id);
     } catch (err: any) {
-      setScanError(err.response?.data?.error || 'Failed to add SKU to shipment');
+      const data = err.response?.data;
+      if (data?.code === 'EARMARKED') setEarmarkBlock(data.reservedFor);
+      setScanError(data?.error || 'Failed to add SKU to shipment');
     }
   };
 
@@ -627,6 +648,11 @@ export default function ExitGatePage() {
                       </td>
                       <td>
                         <strong>{line.batch.name || line.batch.brand || 'Item'}</strong> {line.batch.quality ? `— ${line.batch.quality}` : ''}
+                        {line.earmarkOverride && (
+                          <div style={{ marginTop: 3, fontSize: 11, color: '#92400e' }} title={line.earmarkOverride}>
+                            Released from {line.earmarkedFor}: {line.earmarkOverride}
+                          </div>
+                        )}
                         {line.batch.clientName && (
                           <div style={{ marginTop: 3 }}>
                             <span style={{ fontSize: 11, fontWeight: 700, color: '#1e40af', background: '#eff6ff', padding: '1px 6px', borderRadius: 4, border: '1px solid #bfdbfe', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -795,11 +821,13 @@ export default function ExitGatePage() {
                   </div>
                 </div>
 
+                {scanError && <div className="alert alert-danger" style={{ marginBottom: 14, fontSize: 13 }}>{scanError}</div>}
+
                 {/* Client Earmark Validation Alert */}
                 {(() => {
-                  const earmarkedClient = scannedBatch.clientName || scannedBatch.poLine?.po?.targetClient;
-                  const isMatch = earmarkedClient && activeDC?.customerName && earmarkedClient.trim().toLowerCase() === activeDC.customerName.trim().toLowerCase();
-                  const isMismatch = earmarkedClient && activeDC?.customerName && !isMatch;
+                  const earmarkedClient = scannedBatch.clientName;
+                  const isMatch = !reservedFor && earmarkedClient;
+                  const isMismatch = !!reservedFor;
 
                   if (isMismatch) {
                     return (
@@ -818,12 +846,20 @@ export default function ExitGatePage() {
                         <AlertTriangle size={18} color="#b45309" style={{ marginTop: 2, flexShrink: 0 }} />
                         <div>
                           <strong style={{ display: 'block', color: '#b45309', marginBottom: 2 }}>
-                            Client Allocation Mismatch Warning
+                            Reserved for another client
                           </strong>
-                          This roll is internally earmarked for <strong>{earmarkedClient}</strong>, but this Delivery Challan is for <strong>{activeDC.customerName}</strong>.
-                          <span style={{ display: 'block', fontSize: 11.5, marginTop: 4, color: '#78350f' }}>
-                            Confirming below will dispatch this roll to {activeDC.customerName}.
-                          </span>
+                          This roll is reserved for <strong>{reservedFor}</strong>; this challan is for <strong>{activeDC.customerName}</strong>.
+                          {canRelease ? (
+                            <div style={{ marginTop: 8 }}>
+                              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Reason for releasing it to {activeDC.customerName}</label>
+                              <input className="form-input" value={releaseReason} onChange={e => setReleaseReason(e.target.value)}
+                                placeholder="e.g. School A stock replaced by new order" style={{ height: 36, fontSize: 13 }} />
+                            </div>
+                          ) : (
+                            <span style={{ display: 'block', fontSize: 12, marginTop: 6, color: '#78350f', fontWeight: 600 }}>
+                              Ask a supervisor to release it, or use stock that is not reserved.
+                            </span>
+                          )}
                         </div>
                       </div>
                     );
@@ -926,7 +962,8 @@ export default function ExitGatePage() {
                   type="button" 
                   className="btn btn-primary" 
                   onClick={handleAddLine} 
-                  disabled={!cutQty || parseFloat(cutQty) <= 0 || parseFloat(cutQty) > scannedBatch.quantity + 0.001}
+                  disabled={!cutQty || parseFloat(cutQty) <= 0 || parseFloat(cutQty) > scannedBatch.quantity + 0.001
+                    || (!!reservedFor && (!canRelease || releaseReason.trim().length < 5))}
                   style={{ fontWeight: 700, padding: '0 20px' }}
                 >
                   Add to Shipment

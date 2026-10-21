@@ -1,11 +1,26 @@
 import { Router, Request, Response } from 'express';
 import bwipjs from 'bwip-js';
-import { requireAuth, requirePermission } from '../../middleware/auth';
+import { requireAuth, requirePermission, userHasPermission } from '../../middleware/auth';
 import prisma from '../../lib/prisma';
 import { formatDate } from '../../utils/format';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
 
 const router = Router();
+
+/**
+ * The client a batch is reserved for, when that is not the challan's customer (else null).
+ * Matches by client id when both sides have one, otherwise by name.
+ */
+export function reservedForOther(
+  batch: { clientId: string | null; clientName: string | null },
+  dc: { customerId: string | null; customerName: string }
+): string | null {
+  if (!batch.clientId && !batch.clientName?.trim()) return null;
+  const same = batch.clientId && dc.customerId
+    ? batch.clientId === dc.customerId
+    : (batch.clientName ?? '').trim().toLowerCase() === dc.customerName.trim().toLowerCase();
+  return same ? null : (batch.clientName?.trim() || 'another client');
+}
 
 // GET /api/delivery-challans — List all DCs
 router.get('/', requireAuth, requirePermission('ops.exit_gate'), async (_req: Request, res: Response) => {
@@ -256,6 +271,27 @@ router.post('/:id/lines', requireAuth, requirePermission('ops.exit_gate'), async
     return;
   }
 
+  // Stock reserved for another client needs a supervisor's release with a reason
+  const reservedFor = reservedForOther(batch, dc);
+  let earmarkOverride: string | null = null;
+  if (reservedFor) {
+    const canRelease = userHasPermission(req.user!, 'ops.release_earmark');
+    const reason = String(req.body.earmarkOverride ?? '').trim();
+    if (!reason) {
+      res.status(409).json({ error: `${batch.batchCode} is reserved for ${reservedFor}.`, code: 'EARMARKED', reservedFor, canRelease });
+      return;
+    }
+    if (!canRelease) {
+      res.status(403).json({ error: `Only a supervisor can release stock reserved for ${reservedFor}.`, code: 'EARMARKED', reservedFor, canRelease: false });
+      return;
+    }
+    if (reason.length < 5) {
+      res.status(400).json({ error: 'Give a reason for releasing reserved stock (at least 5 characters).' });
+      return;
+    }
+    earmarkOverride = reason;
+  }
+
   const isPartialCut = Math.abs(numQty - batch.quantity) > 0.01;
 
   // Generate traceable cut reference for partial cuts (e.g. BAT-2026-0042-C1)
@@ -273,7 +309,9 @@ router.post('/:id/lines', requireAuth, requirePermission('ops.exit_gate'), async
       batchId: batch.id,
       quantity: numQty,
       isPartialCut,
-      cutReference
+      cutReference,
+      earmarkedFor: earmarkOverride ? reservedFor : null,
+      earmarkOverride,
     },
     include: {
       batch: { include: { batchLocations: { include: { location: true } } } }
@@ -348,6 +386,11 @@ router.post('/:id/dispatch', requireAuth, requirePermission('ops.exit_gate'), as
         if (!batch || batch.status === 'OUT') throw new Error(`Batch ${line.batch.batchCode} is no longer available.`);
         if (batch.status === 'QC_HOLD') throw new Error(`Batch ${batch.batchCode} is on QC Hold and cannot be dispatched.`);
         if (line.quantity > batch.quantity + 0.001) throw new Error(`Batch ${line.batch.batchCode} does not have enough quantity (${batch.quantity} available, ${line.quantity} requested).`);
+        // The reservation may have changed since the line was added
+        const reservedFor = reservedForOther(batch, dc);
+        if (reservedFor && !line.earmarkOverride) {
+          throw new Error(`${batch.batchCode} is now reserved for ${reservedFor}. Remove it from this challan, or remove and add it again to release it.`);
+        }
       }
 
       // 2. Perform Stock Movements with atomic decrement
@@ -390,9 +433,10 @@ router.post('/:id/dispatch', requireAuth, requirePermission('ops.exit_gate'), as
             operatorId: req.user!.userId,
             referenceType: 'DELIVERY_CHALLAN',
             referenceId: dc.challanNumber,
-            notes: isFullDispatch
+            notes: (isFullDispatch
               ? `Shipped to ${dc.customerName}${dc.destination ? ` (${dc.destination})` : ''}`
-              : `Cut ${line.quantity} (Cut Tag: ${line.cutReference || 'Cut Piece'}) shipped to ${dc.customerName}. Remainder ${newQty} sent to Put-Away queue (Previous location: ${prevLocations})`
+              : `Cut ${line.quantity} (Cut Tag: ${line.cutReference || 'Cut Piece'}) shipped to ${dc.customerName}. Remainder ${newQty} sent to Put-Away queue (Previous location: ${prevLocations})`)
+            + (line.earmarkOverride ? `. Released from ${line.earmarkedFor}: ${line.earmarkOverride}` : '')
           }
         });
       }

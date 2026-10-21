@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Download, FileSpreadsheet, Upload, Printer, CheckCircle2, Trash2, AlertTriangle, ArrowDownToLine } from 'lucide-react';
 import {
   IMPORT_COLUMNS, ITEM_TYPE_LABEL, buildImportTemplate, fieldValue, itemFieldColumns, readImportFile, remainingQty,
-  unitLabel, validateImportRows, type ImportLine, type InwardItemType,
+  unitLabel, validateImportRows, withoutDuplicates, type ImportLine, type InwardItemType,
 } from '../../../utils/directInwardImport';
 
 interface Props {
@@ -28,6 +28,7 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
   const [importing, setImporting] = useState(false);
   const [importErrors, setImportErrors] = useState<string[]>([]);
   const [rejectedFile, setRejectedFile] = useState('');
+  const [importNotice, setImportNotice] = useState('');
   const firstToReceive = () => lines.find(l => l.itemType === itemType && remainingQty(l) > 0) ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(() => firstToReceive()?.id ?? null);
   const [lumpQty, setLumpQty] = useState('');
@@ -71,14 +72,20 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
     setImporting(true);
     setImportErrors([]);
     setRejectedFile('');
+    setImportNotice('');
     try {
       const result = validateImportRows(itemType, await readImportFile(file));
       if (result.errors.length > 0) {
         setImportErrors(result.errors);
         setRejectedFile(file.name);
       } else {
-        onLinesChange(prev => [...prev, ...result.lines]);
-        if (!selected) setSelectedId(result.lines[0]?.id ?? null);
+        // Items already in the list (e.g. the same sheet imported again) are not added twice
+        const { added, skipped } = withoutDuplicates(lines, result.lines);
+        onLinesChange(prev => [...prev, ...added]);
+        if (!selected && added.length > 0) setSelectedId(added[0].id);
+        setImportNotice(added.length === 0
+          ? `Nothing added: all ${skipped} row(s) in "${file.name}" are already in your list.`
+          : `Added ${added.length} item(s) from "${file.name}".${skipped > 0 ? ` ${skipped} row(s) already in your list were skipped.` : ''}`);
       }
     } catch (err: any) {
       setImportErrors([err?.message || 'Could not read the file.']);
@@ -125,8 +132,8 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
   const clearList = () => {
     const pending = ownLines.filter(l => remainingQty(l) > 0).length;
     if (!window.confirm(pending > 0
-      ? `Remove the imported ${label} list? ${pending} item(s) are not fully received. Lumps already inwarded stay in the session.`
-      : `Remove the imported ${label} list? Lumps already inwarded stay in the session.`)) return;
+      ? `Delete the imported ${label} list? ${pending} item(s) are not fully received. Lumps already inwarded stay in the session for the GRN.`
+      : `Delete the imported ${label} list? Lumps already inwarded stay in the session for the GRN.`)) return;
     onLinesChange(prev => prev.filter(l => l.itemType !== itemType));
     setSelectedId(null);
   };
@@ -163,6 +170,13 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
         </div>
       </div>
 
+      {importNotice && importErrors.length === 0 && (
+        <div className="alert alert-success" style={{ marginBottom: 16, fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <span>{importNotice}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setImportNotice('')} style={{ padding: '2px 8px' }}>OK</button>
+        </div>
+      )}
+
       {importErrors.length > 0 && (
         <div className="alert alert-danger" style={{ marginBottom: 16 }}>
           <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
@@ -186,7 +200,7 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
               {sameUnit && <> · {fmt(totals.received)} of {fmt(totals.total)} {sameUnit}</>}
             </span>
             <button type="button" className="btn btn-ghost btn-sm" onClick={clearList} style={{ color: '#dc2626', display: 'flex', alignItems: 'center', gap: 4 }}>
-              <Trash2 size={13} /> Clear list
+              <Trash2 size={13} /> Delete list
             </button>
           </div>
 

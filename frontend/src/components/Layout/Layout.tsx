@@ -21,7 +21,9 @@ import {
   FileText,
   Building2,
   Printer,
-  FileCheck
+  FileCheck,
+  ClipboardCheck,
+  Undo2
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useSession } from '../../hooks/useSession';
@@ -58,6 +60,8 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Adjustments',        path: '/inventory/adjustments',        icon: SlidersHorizontal, permission: 'inv.adjustments',       app: 'INVENTORY', section: 'Stock Supervision' },
   { label: 'Relocations',        path: '/inventory/relocations',        icon: MapPin,            permission: 'inv.relocations',       app: 'INVENTORY' },
   { label: 'Stock Aging',        path: '/inventory/aging',              icon: Clock,             permission: 'inv.aging',             app: 'INVENTORY' },
+  { label: 'Stock Count',        path: '/inventory/stock-counts',       icon: ClipboardCheck,    permission: 'inv.stock_count',       app: 'INVENTORY' },
+  { label: 'Returns',            path: '/inventory/returns',            icon: Undo2,             permission: 'inv.returns',           app: 'INVENTORY' },
 
   // ─── 4. Administration Module (System Masters) ───────────────────────────
   { label: 'Dashboard',          path: '/dashboard',           icon: LayoutDashboard, permission: 'admin.dashboard', app: 'ADMINISTRATION' },

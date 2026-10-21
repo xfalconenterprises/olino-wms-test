@@ -68,3 +68,35 @@ export function generateSmartBatchCodePrefix(
 
   return `${cleanBrand}-${cleanQual}-${cleanShade}-`;
 }
+
+interface BatchCodeClient {
+  itemBatch: {
+    findFirst(args: { where: { batchCode: { startsWith: string } }; orderBy: { batchCode: 'desc' }; select: { batchCode: true } }): Promise<{ batchCode: string } | null>;
+    findUnique(args: { where: { batchCode: string } }): Promise<unknown>;
+  };
+}
+
+/** Next free batch code for an item, e.g. "SIYA-PV-NB04-0007" (same numbering as receiving). */
+export async function nextBatchCode(
+  db: BatchCodeClient,
+  item: { brand?: string | null; quality?: string | null; shade?: string | null; itemType?: string; name?: string | null; size?: string | null; category?: string | null }
+): Promise<string> {
+  const prefix = generateSmartBatchCodePrefix(item.brand, item.quality, item.shade, {
+    itemType: item.itemType,
+    name: item.name ?? undefined,
+    size: item.size ?? undefined,
+    category: item.category ?? undefined,
+  });
+  const latest = await db.itemBatch.findFirst({
+    where: { batchCode: { startsWith: prefix } },
+    orderBy: { batchCode: 'desc' },
+    select: { batchCode: true },
+  });
+  let seq = latest ? (parseInt(latest.batchCode.split('-').pop() ?? '', 10) || 0) + 1 : 1;
+  let code = `${prefix}${String(seq).padStart(4, '0')}`;
+  while (await db.itemBatch.findUnique({ where: { batchCode: code } })) {
+    seq++;
+    code = `${prefix}${String(seq).padStart(4, '0')}`;
+  }
+  return code;
+}

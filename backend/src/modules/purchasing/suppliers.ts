@@ -34,7 +34,7 @@ async function generateNextSupplierCode(): Promise<string> {
 
 // ─── GET /api/suppliers ──────────────────────────────────────────────────────
 // Returns all suppliers with optional search and active filtering
-router.get('/', requirePermission('admin.suppliers', 'inv.suppliers', 'po.create', 'ops.entry_gate', 'admin.dashboard'), async (req: Request, res: Response) => {
+router.get('/', requirePermission('admin.suppliers', 'inv.suppliers', 'po.create', 'ops.entry_gate', 'admin.dashboard', 'inv.returns'), async (req: Request, res: Response) => {
   try {
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
     const status = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';

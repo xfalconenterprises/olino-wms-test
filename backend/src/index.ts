@@ -18,11 +18,16 @@ import masterAttributesRoutes from './modules/master-data/attributes';
 import printerRoutes from './modules/inventory/printer';
 import clientsRoutes from './modules/inventory/clients';
 import grnRoutes from './modules/inventory/grn';
+import directInwardRoutes from './modules/inventory/direct-inward';
+import returnsRoutes from './modules/inventory/returns';
+import stockCountsRoutes from './modules/inventory/stock-counts';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
+// Direct Inward drafts carry whole imported sheets; every other request keeps the 100 KB default
+app.use('/api/direct-inward/draft', express.json({ limit: '2mb' }));
 app.use(express.json());
 
 // ─── Request Logging Middleware ─────────────────────────────────────────────
@@ -62,6 +67,9 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/printer', printerRoutes);
 app.use('/api/clients', clientsRoutes);
+app.use('/api/direct-inward', directInwardRoutes);
+app.use('/api/returns', returnsRoutes);
+app.use('/api/stock-counts', stockCountsRoutes);
 
 // Unknown API paths are a 404, never the frontend page
 app.use('/api', (_req, res) => {

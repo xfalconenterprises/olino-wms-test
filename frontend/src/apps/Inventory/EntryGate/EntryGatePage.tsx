@@ -25,16 +25,18 @@ import {
   Filter,
   Repeat2,
   ChevronDown,
-  ChevronUp,
   Check,
   FileCheck,
   Users,
   Search,
-  Trash2
+  Trash2,
+  ChevronRight,
+  FileSpreadsheet
+
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
-import { formatDate } from '../../../utils/format';
-import { lumpPayload, remainingQty, type ImportLine } from '../../../utils/directInwardImport';
+import { formatDate, formatDateTime } from '../../../utils/format';
+import { ITEM_TYPE_LABEL, lumpPayload, remainingQty, type ImportLine, type InwardItemType } from '../../../utils/directInwardImport';
 import DirectInwardImport from './DirectInwardImport';
 import '../../../styles/components.css';
 
@@ -158,6 +160,53 @@ const ISSUE_TYPE_LABELS: Record<string, string> = {
 };
 
 type InboundMode = 'SELECT_MODE' | 'SUPPLIER_INBOUND' | 'PO_SCAN' | 'DIRECT';
+
+// What the Direct Inward Desk keeps on the server between visits (see /api/direct-inward/draft)
+interface DirectInwardDraftData {
+  supplierId: string | null;
+  supplierName: string;
+  invoiceRef: string;
+  invoiceDate: string;
+  clientId: string | null;
+  clientName: string;
+  infoConfirmed: boolean;
+  itemType: InwardItemType | null;
+  entryMode: 'MANUAL' | 'IMPORT' | null;
+  importLines: ImportLine[];
+  sessionBatches: any[]; // saved as ids; the server returns the current batch rows
+}
+
+// Large option button for the Direct Inward steps
+function ChoiceCard({ icon, title, subtitle, badge, onClick }: {
+  icon: React.ReactNode; title: string; subtitle: string; badge?: string; onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        flex: '1 1 220px', textAlign: 'left', cursor: 'pointer', padding: '18px 20px', borderRadius: 'var(--radius-lg)',
+        border: '1.5px solid var(--color-border)', background: '#fff', display: 'flex', alignItems: 'flex-start', gap: 14,
+        position: 'relative', transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--color-brand)'; e.currentTarget.style.boxShadow = '0 4px 14px rgba(0,0,0,0.06)'; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--color-border)'; e.currentTarget.style.boxShadow = 'none'; }}
+    >
+      <span style={{ width: 42, height: 42, borderRadius: 10, background: 'var(--color-brand-faded)', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        {icon}
+      </span>
+      <span>
+        <span style={{ display: 'block', fontSize: 15, fontWeight: 700, color: '#0f172a' }}>{title}</span>
+        <span style={{ display: 'block', fontSize: 12.5, color: 'var(--color-text-muted)', marginTop: 3 }}>{subtitle}</span>
+      </span>
+      {badge && (
+        <span style={{ position: 'absolute', top: 10, right: 12, fontSize: 11, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: 10 }}>
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
 type InwardStep = 'ITEMS_LIST' | 'RECEIVE_PANEL';
 
 export default function EntryGatePage() {
@@ -249,7 +298,6 @@ export default function EntryGatePage() {
   const [scanning, setScanning] = useState(false);
 
   // Direct Inward General Information State
-  const [isGeneralInfoMinimized, setIsGeneralInfoMinimized] = useState(false);
   const [clientsList, setClientsList] = useState<any[]>([]);
   const [directSupplierInput, setDirectSupplierInput] = useState('');
   const [directSupplierId, setDirectSupplierId] = useState('');
@@ -312,7 +360,10 @@ export default function EntryGatePage() {
   });
 
   // Direct Inward Item Entry State
-  const [directClassification, setDirectClassification] = useState<'FABRIC' | 'READY_MADE' | 'ACCESSORY'>('FABRIC');
+  // Steps: General Information → item type → entry method → entry. Unset means "not chosen yet".
+  const [directInfoConfirmed, setDirectInfoConfirmed] = useState(false);
+  const [directInfoError, setDirectInfoError] = useState('');
+  const [directClassification, setDirectClassification] = useState<InwardItemType | null>(null);
   const [directItemForm, setDirectItemForm] = useState({
     // Fabric
     category: 'SUITING',
@@ -347,9 +398,16 @@ export default function EntryGatePage() {
   const [directSessionBatches, setDirectSessionBatches] = useState<any[]>([]);
 
   // Excel import: items with totals, received lump by lump
-  const [directEntryMode, setDirectEntryMode] = useState<'MANUAL' | 'IMPORT'>('MANUAL');
+  const [directEntryMode, setDirectEntryMode] = useState<'MANUAL' | 'IMPORT' | null>(null);
   const [importLines, setImportLines] = useState<ImportLine[]>([]);
   const pendingImportLines = importLines.filter(l => remainingQty(l) > 0);
+
+  // Server-side draft (per user): imported items and lumps not yet on a GRN survive leaving the page
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  const [draftSyncBroken, setDraftSyncBroken] = useState(false);
+  const [draftRestored, setDraftRestored] = useState<{ savedAt: string; items: number; lumps: number } | null>(null);
+  const draftOnServer = useRef(false);
+  const pendingDraftSave = useRef<(() => void) | null>(null);
 
   // Session table shows item fields in their own columns; headers name the field for the item
   // type in the session, or both names when fabric and ready-made/accessories are mixed
@@ -1118,6 +1176,86 @@ export default function EntryGatePage() {
     }
   };
 
+  // ── Direct Inward draft ──
+  // Restore the user's unfinished work the first time the desk opens
+  useEffect(() => {
+    if (activeTab !== 'DIRECT' || draftLoaded) return;
+    let cancelled = false;
+    api.get('/api/direct-inward/draft')
+      .then(({ data }) => {
+        if (cancelled || !data.draft) return;
+        const d = data.draft.data as DirectInwardDraftData;
+        draftOnServer.current = true;
+        setDirectSupplierInput(d.supplierName ?? '');
+        setDirectSupplierId(d.supplierId ?? '');
+        setDirectInvoiceRef(d.invoiceRef ?? '');
+        if (d.invoiceDate) setDirectInvoiceDate(d.invoiceDate);
+        setDirectClientInput(d.clientName ?? '');
+        setDirectSelectedClient(d.clientId ? { id: d.clientId, name: d.clientName } : null);
+        setDirectInfoConfirmed(!!d.infoConfirmed);
+        setDirectClassification(d.itemType ?? null);
+        setDirectEntryMode(d.entryMode ?? null);
+        setImportLines(Array.isArray(d.importLines) ? d.importLines : []);
+        setDirectSessionBatches(Array.isArray(d.sessionBatches) ? d.sessionBatches : []);
+        setDraftRestored({
+          savedAt: data.draft.updatedAt,
+          items: (d.importLines ?? []).filter(l => remainingQty(l) > 0).length,
+          lumps: (d.sessionBatches ?? []).length,
+        });
+      })
+      .catch(err => {
+        console.error('Could not load the Direct Inward draft:', err);
+        if (!cancelled) setDraftSyncBroken(true);
+      })
+      .finally(() => { if (!cancelled) setDraftLoaded(true); });
+    return () => { cancelled = true; };
+  }, [activeTab, draftLoaded]);
+
+  // Keep the draft saved while there is work to keep (imported items or lumps not yet on a GRN)
+  useEffect(() => {
+    if (!draftLoaded || draftSyncBroken) return;
+    const hasWork = importLines.length > 0 || directSessionBatches.length > 0;
+    if (!hasWork && !draftOnServer.current) return;
+    const data: DirectInwardDraftData = {
+      supplierId: directSupplierId || null,
+      supplierName: directSupplierInput,
+      invoiceRef: directInvoiceRef,
+      invoiceDate: directInvoiceDate,
+      clientId: directSelectedClient?.id ?? null,
+      clientName: directClientInput,
+      infoConfirmed: directInfoConfirmed,
+      itemType: directClassification,
+      entryMode: directEntryMode,
+      importLines,
+      sessionBatches: directSessionBatches.map(b => ({ id: b.id })),
+    };
+    const save = () => {
+      pendingDraftSave.current = null;
+      const request = hasWork
+        ? api.put('/api/direct-inward/draft', { data }).then(() => { draftOnServer.current = true; })
+        : api.delete('/api/direct-inward/draft').then(() => { draftOnServer.current = false; });
+      request.catch(err => console.error('Could not save the Direct Inward draft:', err));
+    };
+    pendingDraftSave.current = save;
+    const timer = setTimeout(save, 600);
+    return () => clearTimeout(timer);
+  }, [draftLoaded, draftSyncBroken, importLines, directSessionBatches, directSupplierId, directSupplierInput, directInvoiceRef,
+      directInvoiceDate, directSelectedClient, directClientInput, directInfoConfirmed, directClassification, directEntryMode]);
+
+  // Leaving the page must not drop a save that is still waiting
+  useEffect(() => () => { pendingDraftSave.current?.(); }, []);
+
+  const confirmDirectInfo = () => {
+    if (!directSupplierInput.trim()) {
+      setDirectInfoError('Select or enter the delivering supplier to continue.');
+      return;
+    }
+    setDirectInfoError('');
+    setShowDirectSupplierMenu(false);
+    setShowDirectClientMenu(false);
+    setDirectInfoConfirmed(true);
+  };
+
   // Direct Inward Item Inwarding Handler
   const handleInwardDirectItem = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1127,6 +1265,7 @@ export default function EntryGatePage() {
       setDirectItemError('Please enter or select a delivering Supplier.');
       return;
     }
+    if (!directClassification) return;
 
     let payload: any = {
       itemType: directClassification,
@@ -3107,6 +3246,29 @@ export default function EntryGatePage() {
             )}
           </div>
 
+          {draftRestored && (draftRestored.items > 0 || draftRestored.lumps > 0) && (
+            <div className="alert alert-success" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+              <span>
+                <strong>Your unfinished inward was restored</strong> (saved {formatDateTime(draftRestored.savedAt)}):{' '}
+                {[
+                  draftRestored.items > 0 && `${draftRestored.items} imported item(s) still to receive`,
+                  draftRestored.lumps > 0 && `${draftRestored.lumps} lump(s) waiting for the GRN`,
+                ].filter(Boolean).join(', ')}.
+                {' '}It stays saved until you finish it or clear it.
+              </span>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDraftRestored(null)} title="Hide" style={{ padding: 4 }}>
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
+          {draftSyncBroken && (
+            <div className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
+              Your saved draft could not be loaded, so work on this page is <strong>not</strong> being saved as a draft right now.
+              Reload the page to try again.
+            </div>
+          )}
+
           {directGrnSuccess && (
             <div style={{
               background: '#ecfdf5',
@@ -3147,65 +3309,50 @@ export default function EntryGatePage() {
             background: '#fff',
             borderRadius: 'var(--radius-lg)',
             border: '1px solid var(--color-border)',
-            padding: isGeneralInfoMinimized ? '14px 20px' : '20px 24px',
+            padding: directInfoConfirmed ? '14px 20px' : '20px 24px',
             marginBottom: 20,
             boxShadow: 'var(--shadow-xs)',
             transition: 'all 0.2s ease'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: isGeneralInfoMinimized ? 0 : 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: directInfoConfirmed ? 0 : 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                 <h2 style={{ fontSize: 15.5, fontWeight: 700, margin: 0, color: '#0f172a', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Building2 size={18} color="var(--color-brand)" /> General Information
+                  {directInfoConfirmed
+                    ? <CheckCircle2 size={18} color="#059669" />
+                    : <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--color-brand)', color: '#fff', fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>1</span>}
+                  General Information
                 </h2>
-                {isGeneralInfoMinimized && (
+                {directInfoConfirmed && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5, color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
                     <span><strong>Supplier:</strong> <span style={{ color: '#0f172a', fontWeight: 600 }}>{directSupplierInput || 'Not specified'}</span></span>
                     {directInvoiceRef && <span>• <strong>Invoice:</strong> <span style={{ color: '#0f172a' }}>{directInvoiceRef}</span></span>}
                     {directInvoiceDate && <span>• <strong>Date:</strong> <span style={{ color: '#0f172a' }}>{directInvoiceDate}</span></span>}
-                    {directSelectedClient && <span>• <strong>Client:</strong> <span style={{ color: '#1d4ed8', fontWeight: 600 }}>{directSelectedClient.name}</span></span>}
+                    {directClientInput && <span>• <strong>Client:</strong> <span style={{ color: '#1d4ed8', fontWeight: 600 }}>{directClientInput}</span></span>}
                   </div>
                 )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                {!isGeneralInfoMinimized && (
+                {directInfoConfirmed ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setDirectInfoConfirmed(false)}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, padding: '4px 12px', border: '1px solid var(--color-border)', background: '#f8fafc' }}
+                    title="Change supplier, invoice or client"
+                  >
+                    <ChevronDown size={14} /> Edit
+                  </button>
+                ) : (
                   <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
                     Applies to all items received in this delivery session
                   </span>
                 )}
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setIsGeneralInfoMinimized(!isGeneralInfoMinimized)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: 'var(--color-text-muted)',
-                    padding: '4px 10px',
-                    borderRadius: 'var(--radius-sm)',
-                    border: '1px solid var(--color-border)',
-                    background: '#f8fafc',
-                    cursor: 'pointer'
-                  }}
-                  title={isGeneralInfoMinimized ? "Expand General Information" : "Minimize General Information"}
-                >
-                  {isGeneralInfoMinimized ? (
-                    <>
-                      <ChevronDown size={14} /> Expand
-                    </>
-                  ) : (
-                    <>
-                      <ChevronUp size={14} /> Minimize
-                    </>
-                  )}
-                </button>
               </div>
             </div>
 
-            {!isGeneralInfoMinimized && (
+            {!directInfoConfirmed && (
+              <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '16px 20px' }}>
                 {/* Supplier Input with Autocomplete & Quick Add */}
                 <div className="form-group" style={{ margin: 0, position: 'relative' }} ref={directSupplierWrapperRef}>
@@ -3482,10 +3629,23 @@ export default function EntryGatePage() {
                 )}
               </div>
             </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
+              {directInfoError && <span style={{ color: '#dc2626', fontSize: 13, fontWeight: 600 }}>{directInfoError}</span>}
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={confirmDirectInfo}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 700, padding: '9px 22px' }}
+              >
+                Continue <ChevronRight size={16} />
+              </button>
+            </div>
+            </>
             )}
           </div>
 
-          {/* 2. Inward Item Card */}
+          {/* 2. Inward Item Card: item type, then entry method, then entry */}
+          {directInfoConfirmed && (
           <div style={{
             background: '#fff',
             borderRadius: 'var(--radius-lg)',
@@ -3494,102 +3654,74 @@ export default function EntryGatePage() {
             marginBottom: 20,
             boxShadow: 'var(--shadow-xs)'
           }}>
-            {/* Category Tabs */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 18, borderBottom: '1px solid var(--color-border-subtle)', paddingBottom: 14 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Package size={18} color="var(--color-brand)" />
-                  <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: '#0f172a' }}>
-                    Inward Item
-                  </h2>
-                </div>
-                {/* Entry mode: one lump at a time, or items with totals from an Excel sheet */}
-                <div style={{ display: 'inline-flex', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
-                  {([['MANUAL', 'Enter manually'], ['IMPORT', 'Import Excel']] as const).map(([mode, text]) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => setDirectEntryMode(mode)}
-                      style={{
-                        padding: '5px 12px', fontSize: 12.5, fontWeight: 600, border: 'none', cursor: 'pointer',
-                        background: directEntryMode === mode ? 'var(--color-brand)' : '#fff',
-                        color: directEntryMode === mode ? '#fff' : 'var(--color-text-main)',
-                      }}
-                    >
-                      {text}
-                      {mode === 'IMPORT' && pendingImportLines.length > 0 && ` (${pendingImportLines.length})`}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  type="button"
-                  onClick={() => setDirectClassification('FABRIC')}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '6px 14px',
-                    borderRadius: 'var(--radius-md)',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    border: '1px solid',
-                    borderColor: directClassification === 'FABRIC' ? 'var(--color-brand)' : 'var(--color-border)',
-                    background: directClassification === 'FABRIC' ? 'var(--color-brand-faded)' : '#fff',
-                    color: directClassification === 'FABRIC' ? 'var(--color-brand)' : 'var(--color-text-main)',
-                  }}
-                >
-                  <Layers size={15} /> Fabric
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setDirectClassification('READY_MADE')}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '6px 14px',
-                    borderRadius: 'var(--radius-md)',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    border: '1px solid',
-                    borderColor: directClassification === 'READY_MADE' ? 'var(--color-brand)' : 'var(--color-border)',
-                    background: directClassification === 'READY_MADE' ? 'var(--color-brand-faded)' : '#fff',
-                    color: directClassification === 'READY_MADE' ? 'var(--color-brand)' : 'var(--color-text-main)',
-                  }}
-                >
-                  <Shirt size={15} /> Ready-Made
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setDirectClassification('ACCESSORY')}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '6px 14px',
-                    borderRadius: 'var(--radius-md)',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    border: '1px solid',
-                    borderColor: directClassification === 'ACCESSORY' ? 'var(--color-brand)' : 'var(--color-border)',
-                    background: directClassification === 'ACCESSORY' ? 'var(--color-brand-faded)' : '#fff',
-                    color: directClassification === 'ACCESSORY' ? 'var(--color-brand)' : 'var(--color-text-main)',
-                  }}
-                >
-                  <Boxes size={15} /> Accessories
-                </button>
-              </div>
+            {/* Header with the choices made so far */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 18, borderBottom: '1px solid var(--color-border-subtle)', paddingBottom: 14 }}>
+              <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--color-brand)', color: '#fff', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>2</span>
+              <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: '#0f172a' }}>Inward Item</h2>
+              {directClassification && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'var(--color-brand-faded)', color: 'var(--color-brand)', fontWeight: 700, fontSize: 12.5, padding: '4px 6px 4px 12px', borderRadius: 20 }}>
+                  {ITEM_TYPE_LABEL[directClassification]}
+                  <button type="button" onClick={() => setDirectClassification(null)} style={{ border: 'none', background: '#fff', color: 'var(--color-brand)', fontSize: 11.5, fontWeight: 700, padding: '2px 8px', borderRadius: 12, cursor: 'pointer' }}>
+                    Change
+                  </button>
+                </span>
+              )}
+              {directClassification && directEntryMode && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#f1f5f9', color: '#0f172a', fontWeight: 700, fontSize: 12.5, padding: '4px 6px 4px 12px', borderRadius: 20 }}>
+                  {directEntryMode === 'IMPORT' ? 'Import Excel' : 'Enter manually'}
+                  <button type="button" onClick={() => setDirectEntryMode(null)} style={{ border: 'none', background: '#fff', color: 'var(--color-brand)', fontSize: 11.5, fontWeight: 700, padding: '2px 8px', borderRadius: 12, cursor: 'pointer' }}>
+                    Change
+                  </button>
+                </span>
+              )}
             </div>
 
-            {directEntryMode === 'IMPORT' ? (
+            {!directClassification ? (
+              <>
+                <p style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600, color: '#334155' }}>What are you receiving?</p>
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                  {([
+                    ['FABRIC', <Layers size={22} />, 'Rolls, entered in meters'],
+                    ['READY_MADE', <Shirt size={22} />, 'Garments, entered in pieces'],
+                    ['ACCESSORY', <Boxes size={22} />, 'Buttons, zips, labels and more'],
+                  ] as const).map(([type, icon, subtitle]) => {
+                    const pending = pendingImportLines.filter(l => l.itemType === type).length;
+                    return (
+                      <ChoiceCard
+                        key={type}
+                        icon={icon}
+                        title={ITEM_TYPE_LABEL[type]}
+                        subtitle={subtitle}
+                        badge={pending > 0 ? `${pending} imported pending` : undefined}
+                        onClick={() => setDirectClassification(type)}
+                      />
+                    );
+                  })}
+                </div>
+              </>
+            ) : !directEntryMode ? (
+              <>
+                <p style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600, color: '#334155' }}>How do you want to enter these items?</p>
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                  <ChoiceCard
+                    icon={<Plus size={22} />}
+                    title="Enter manually"
+                    subtitle="Type each lump and print its label"
+                    onClick={() => setDirectEntryMode('MANUAL')}
+                  />
+                  <ChoiceCard
+                    icon={<FileSpreadsheet size={22} />}
+                    title="Import Excel"
+                    subtitle="Load items with their totals from a sheet, then enter lumps"
+                    badge={(() => {
+                      const pending = pendingImportLines.filter(l => l.itemType === directClassification).length;
+                      return pending > 0 ? `${pending} pending` : undefined;
+                    })()}
+                    onClick={() => setDirectEntryMode('IMPORT')}
+                  />
+                </div>
+              </>
+            ) : directEntryMode === 'IMPORT' ? (
               <DirectInwardImport
                 itemType={directClassification}
                 lines={importLines}
@@ -3961,8 +4093,10 @@ export default function EntryGatePage() {
             </>
             )}
           </div>
+          )}
 
-          {/* 3. Session Items Table */}
+          {/* 3. Session Items Table: once entry has started, or while lumps await their GRN */}
+          {(directSessionBatches.length > 0 || (directInfoConfirmed && directClassification && directEntryMode)) && (
           <div style={{
             background: '#fff',
             borderRadius: 'var(--radius-lg)',
@@ -4131,6 +4265,7 @@ export default function EntryGatePage() {
               </>
             )}
           </div>
+          )}
         </div>
       )}
 

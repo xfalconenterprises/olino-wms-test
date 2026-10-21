@@ -73,8 +73,28 @@ model User {
   deliveryChallans DeliveryChallan[]
   inboundDiscrepancies InboundDiscrepancy[]
   grnsReceived    GoodsReceiptNote[]
+  directInwardDraft DirectInwardDraft?
+  stockCountsCreated   StockCount[]         @relation("StockCountCreatedBy")
+  stockCountsClosed    StockCount[]         @relation("StockCountClosedBy")
+  stockCountLocations  StockCountLocation[]
+  customerReturns      CustomerReturn[]
+  supplierReturns      SupplierReturn[]
 
   @@map("users")
+}
+
+// Unfinished Direct Inward work (general info, imported Excel items, lumps not yet on a GRN),
+// one per user, kept until the user finishes or clears it
+model DirectInwardDraft {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  data      Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("direct_inward_drafts")
 }
 
 // ─── Suppliers (Master Vendor Directory) ────────────────────────────────────
@@ -98,6 +118,7 @@ model Supplier {
   purchaseOrders PurchaseOrder[]
   inboundDiscrepancies InboundDiscrepancy[]
   grns           GoodsReceiptNote[]
+  returns        SupplierReturn[]
 
   @@map("suppliers")
 }
@@ -151,6 +172,7 @@ model Location {
 
   bay            Bay?            @relation(fields: [bayId], references: [id])
   batchLocations BatchLocation[]
+  stockCounts    StockCountLocation[]
 
   @@unique([bayId, level, position])
   @@map("locations")
@@ -188,6 +210,9 @@ model ItemBatch {
   clientId       String?            @map("client_id")
   clientName     String?            @map("client_name")
   client         Client?            @relation(fields: [clientId], references: [id])
+  stockCountEntries   StockCountEntry[]
+  customerReturnLines CustomerReturnLine[]
+  supplierReturnLines SupplierReturnLine[]
 
   @@index([status, quantity])
   @@index([itemType, status])
@@ -335,6 +360,7 @@ model Client {
   deliveryChallans  DeliveryChallan[]
   itemBatches       ItemBatch[]
   poLineAllocations PoLineAllocation[]
+  customerReturns   CustomerReturn[]
 
   @@map("clients")
 }
@@ -359,6 +385,7 @@ model DeliveryChallan {
   customer      Client?               @relation(fields: [customerId], references: [id])
   createdBy     User                  @relation(fields: [createdById], references: [id])
   lines         DeliveryChallanLine[]
+  returns       CustomerReturn[]
 
   @@map("delivery_challans")
 }
@@ -370,10 +397,14 @@ model DeliveryChallanLine {
   quantity       Float
   isPartialCut   Boolean  @default(false)
   cutReference   String?  // Traceable cut identifier e.g. "BAT-2026-0042-C1"
+  // Stock reserved for another client, released by a supervisor with this reason
+  earmarkedFor    String?  @map("earmarked_for")
+  earmarkOverride String?  @map("earmark_override")
   createdAt      DateTime @default(now())
 
   dc             DeliveryChallan @relation(fields: [dcId], references: [id], onDelete: Cascade)
   batch          ItemBatch       @relation(fields: [batchId], references: [id])
+  returnLines    CustomerReturnLine[]
 
   @@map("delivery_challan_lines")
 }
@@ -483,4 +514,139 @@ model GoodsReceiptNoteLine {
   @@map("goods_receipt_note_lines")
 }
 
+// ─── Stock Counts (cycle counts / stock takes) ───────────────────────────────
+// Staff count shelf by shelf without seeing the expected stock; a supervisor reviews the
+// differences and approves the corrections.
 
+enum StockCountStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+model StockCount {
+  id          String           @id @default(uuid())
+  countNumber String           @unique                 // e.g. SC-26-0001
+  scopeLabel  String           @map("scope_label")     // e.g. "Racks A, B" or "Whole warehouse"
+  wholeWarehouse Boolean       @default(false) @map("whole_warehouse")
+  status      StockCountStatus @default(OPEN)
+  notes       String?
+  createdById String           @map("created_by_id")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  closedById  String?          @map("closed_by_id")
+  closedAt    DateTime?        @map("closed_at")
+  resultSummary Json?          @map("result_summary")  // what approval changed
+
+  createdBy User                 @relation("StockCountCreatedBy", fields: [createdById], references: [id])
+  closedBy  User?                @relation("StockCountClosedBy", fields: [closedById], references: [id])
+  locations StockCountLocation[]
+
+  @@index([status])
+  @@map("stock_counts")
+}
+
+model StockCountLocation {
+  id          String    @id @default(uuid())
+  countId     String    @map("count_id")
+  locationId  String    @map("location_id")
+  countedAt   DateTime? @map("counted_at")     // set when the counter finishes this location
+  countedById String?   @map("counted_by_id")
+  expected    Json?                             // system stock at that moment: [{ batchId, quantity }]
+
+  count     StockCount        @relation(fields: [countId], references: [id], onDelete: Cascade)
+  location  Location          @relation(fields: [locationId], references: [id])
+  countedBy User?             @relation(fields: [countedById], references: [id])
+  entries   StockCountEntry[]
+
+  @@unique([countId, locationId])
+  @@index([locationId])
+  @@map("stock_count_locations")
+}
+
+model StockCountEntry {
+  id              String   @id @default(uuid())
+  countLocationId String   @map("count_location_id")
+  batchId         String   @map("batch_id")
+  quantity        Float                          // counted quantity
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  countLocation StockCountLocation @relation(fields: [countLocationId], references: [id], onDelete: Cascade)
+  batch         ItemBatch          @relation(fields: [batchId], references: [id])
+
+  @@unique([countLocationId, batchId])
+  @@index([batchId])
+  @@map("stock_count_entries")
+}
+
+// ─── Returns ──────────────────────────────────────────────────────────────────
+
+// Goods coming back from a customer against a dispatched delivery challan. Each returned
+// piece gets a new batch (label); good stock goes back to stock, damaged goes to QC hold.
+model CustomerReturn {
+  id           String   @id @default(uuid())
+  returnNumber String   @unique               // e.g. CR-26-0001
+  dcId         String   @map("dc_id")
+  customerId   String?  @map("customer_id")
+  customerName String   @map("customer_name")
+  reason       String                         // SIZE_EXCHANGE, DEFECTIVE, WRONG_ITEM, EXCESS, OTHER
+  remarks      String?
+  createdById  String   @map("created_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  dc        DeliveryChallan      @relation(fields: [dcId], references: [id])
+  customer  Client?              @relation(fields: [customerId], references: [id])
+  createdBy User                 @relation(fields: [createdById], references: [id])
+  lines     CustomerReturnLine[]
+
+  @@index([dcId])
+  @@map("customer_returns")
+}
+
+model CustomerReturnLine {
+  id        String  @id @default(uuid())
+  returnId  String  @map("return_id")
+  dcLineId  String  @map("dc_line_id")
+  batchId   String  @map("batch_id")          // the new batch created for the returned goods
+  quantity  Float
+  condition String                            // GOOD or DAMAGED
+  notes     String?
+
+  customerReturn CustomerReturn      @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  dcLine         DeliveryChallanLine @relation(fields: [dcLineId], references: [id])
+  batch          ItemBatch           @relation(fields: [batchId], references: [id])
+
+  @@index([dcLineId])
+  @@map("customer_return_lines")
+}
+
+// Goods sent back to a supplier (defective, wrong or excess), whole rolls or cut pieces
+model SupplierReturn {
+  id           String   @id @default(uuid())
+  returnNumber String   @unique               // e.g. SR-26-0001
+  supplierId   String?  @map("supplier_id")
+  supplierName String   @map("supplier_name")
+  reason       String                         // DEFECTIVE, WRONG_ITEM, EXCESS, SHORT_LENGTH, OTHER
+  remarks      String?
+  createdById  String   @map("created_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  supplier  Supplier?            @relation(fields: [supplierId], references: [id])
+  createdBy User                 @relation(fields: [createdById], references: [id])
+  lines     SupplierReturnLine[]
+
+  @@map("supplier_returns")
+}
+
+model SupplierReturnLine {
+  id           String  @id @default(uuid())
+  returnId     String  @map("return_id")
+  batchId      String  @map("batch_id")
+  quantity     Float
+  remainingQty Float   @map("remaining_qty")  // left on the batch after a partial return
+
+  supplierReturn SupplierReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  batch          ItemBatch      @relation(fields: [batchId], references: [id])
+
+  @@index([batchId])
+  @@map("supplier_return_lines")
+}

@@ -280,6 +280,26 @@ export function buildImportTemplate(itemType: InwardItemType): Blob {
   ]);
 }
 
+/**
+ * Drops incoming rows that are already in the list (same item, same total), so importing the same
+ * sheet again adds nothing. Matches are counted: two identical rows in the list skip two incoming.
+ */
+export function withoutDuplicates(existing: ImportLine[], incoming: ImportLine[]): { added: ImportLine[]; skipped: number } {
+  const key = (l: ImportLine) =>
+    [l.itemType, l.quantity, ...Object.keys(l.fields).sort().map(k => `${k}=${l.fields[k]}`)].join('|');
+  const inList = new Map<string, number>();
+  for (const l of existing) inList.set(key(l), (inList.get(key(l)) ?? 0) + 1);
+  const added: ImportLine[] = [];
+  let skipped = 0;
+  for (const l of incoming) {
+    const k = key(l);
+    const left = inList.get(k) ?? 0;
+    if (left > 0) { inList.set(k, left - 1); skipped++; }
+    else added.push(l);
+  }
+  return { added, skipped };
+}
+
 export function remainingQty(line: ImportLine): number {
   return Math.max(0, Math.round((line.quantity - line.received) * 1000) / 1000);
 }
