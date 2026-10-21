@@ -1,0 +1,14 @@
+{
+  "name": "olino-wms",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Olino Warehouse Management System",
+  "scripts": {
+    "install:all": "npm --prefix backend install && npm --prefix frontend install",
+    "dev": "node scripts/dev.mjs",
+    "build": "npm --prefix frontend run build && npm --prefix backend run build",
+    "start": "npm --prefix backend start",
+    "db:migrate": "npm --prefix backend run migrate:deploy",
+    "db:seed": "npm --prefix backend run seed"
+  }
+}

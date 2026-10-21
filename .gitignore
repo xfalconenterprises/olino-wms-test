@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Production builds
+dist/
+dist-ssr/
+build/
+
+# Environment and local overrides (only .env.example is committed)
+.env
+*.local
+!.env.example
+
+# Site-specific runtime config, written by the Printer Settings page
+backend/printer-config.json
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Documentation & internal notes (Obsidian vault)
+docs/
+.obsidian/
+
+# Temporary / scratch files
+scratch/
+
+*.agents/

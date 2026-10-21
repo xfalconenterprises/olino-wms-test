@@ -1,0 +1,18 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: olino_wms_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: olino
+      POSTGRES_PASSWORD: olinowms2024
+      POSTGRES_DB: olino_wms
+    ports:
+      - '5432:5432'
+    volumes:
+      - olino_wms_data:/var/lib/postgresql/data
+
+volumes:
+  olino_wms_data:

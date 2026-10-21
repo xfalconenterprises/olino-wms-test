@@ -1,0 +1,118 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Olino WMS — Global Styles
+   Clean, classic, light theme. Professional warehouse tool.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ─── Design Tokens ─────────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --color-brand:        #6B21A8;
+  --color-brand-dark:   #4C1D95;
+  --color-brand-light:  #EDE9FE;
+  --color-brand-faded:  #EDE9FE;  /* alias for brand-light, used in icon backgrounds */
+  --color-brand-mid:    #8B5CF6;
+
+  /* Neutrals */
+  --color-white:        #FFFFFF;
+  --color-bg:           #F8F9FA;
+  --color-sidebar:      #FAFAFA;
+  --color-border:       #E5E7EB;
+  --color-border-dark:  #D1D5DB;
+  --color-border-subtle: #F3F4F6;
+
+  /* Text */
+  --color-text:         #111827;
+  --color-text-muted:   #6B7280;
+  --color-text-light:   #9CA3AF;
+
+  /* Status */
+  --color-success:      #16A34A;
+  --color-success-bg:   #DCFCE7;
+  --color-warning:      #D97706;
+  --color-warning-bg:   #FEF3C7;
+  --color-danger:       #DC2626;
+  --color-danger-bg:    #FEE2E2;
+  --color-info:         #2563EB;
+  --color-info-bg:      #DBEAFE;
+
+  /* Layout */
+  --sidebar-width:      240px;
+  --topbar-height:      56px;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius:    6px;
+  --radius-lg: 10px;
+
+  /* Shadow */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow:    0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.04);
+
+  /* Typography */
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-size-xs:   11px;
+  --font-size-sm:   13px;
+  --font-size-base: 14px;
+  --font-size-md:   15px;
+  --font-size-lg:   18px;
+  --font-size-xl:   22px;
+  --font-size-2xl:  28px;
+}
+
+/* ─── Reset ──────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 14px; }
+
+body {
+  font-family: var(--font);
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+  background: var(--color-bg);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--color-brand); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button { font-family: var(--font); cursor: pointer; }
+input, select, textarea { font-family: var(--font); }
+
+h1 { font-size: var(--font-size-xl); font-weight: 700; }
+h2 { font-size: var(--font-size-lg); font-weight: 600; }
+h3 { font-size: var(--font-size-md); font-weight: 600; }
+
+/* ─── Utility ────────────────────────────────────────────────────────────────── */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text-muted { color: var(--color-text-muted); }
+.text-sm { font-size: var(--font-size-sm); }
+.text-xs { font-size: var(--font-size-xs); }
+.font-semibold { font-weight: 600; }
+.font-medium { font-weight: 500; }
+.mt-1 { margin-top: var(--space-1); }
+.mt-2 { margin-top: var(--space-2); }
+.mt-4 { margin-top: var(--space-4); }
+.mt-6 { margin-top: var(--space-6); }
+.mb-4 { margin-bottom: var(--space-4); }
+.mb-6 { margin-bottom: var(--space-6); }
+.gap-2 { gap: var(--space-2); }
+.gap-4 { gap: var(--space-4); }
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.w-full { width: 100%; }

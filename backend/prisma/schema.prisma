@@ -1,0 +1,486 @@
+// This is your Prisma schema file
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Module {
+  PURCHASE
+  WAREHOUSE
+  INVENTORY
+  ADMINISTRATION
+}
+
+enum BatchStatus {
+  IN_STOCK
+  PARTIALLY_USED
+  OUT
+  QC_HOLD
+}
+
+enum LocationType {
+  BAY
+  FLOOR
+}
+
+enum TransactionType {
+  STOCK_IN
+  STOCK_OUT
+  PARTIAL_CUT
+  INTERNAL_TRANSFER
+}
+
+enum PurchaseOrderStatus {
+  PENDING
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+enum DeliveryChallanStatus {
+  DRAFT
+  DISPATCHED
+  CANCELLED
+}
+
+// ─── Users ───────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  username     String   @unique
+  passwordHash String
+  badgeCode    String?  @unique @map("badge_code")
+  pinHash      String?  @map("pin_hash")
+  modules      Module[]
+  permissions  String[] @default([])
+  mustResetPassword Boolean  @default(true) @map("must_reset_password")
+  mustResetPin      Boolean  @default(true) @map("must_reset_pin")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  transactions    Transaction[]
+  purchaseOrders  PurchaseOrder[]
+  batchLocations  BatchLocation[]
+  deliveryChallans DeliveryChallan[]
+  inboundDiscrepancies InboundDiscrepancy[]
+  grnsReceived    GoodsReceiptNote[]
+
+  @@map("users")
+}
+
+// ─── Suppliers (Master Vendor Directory) ────────────────────────────────────
+
+model Supplier {
+  id            String   @id @default(uuid())
+  code          String   @unique  // Auto-generated e.g. "SUP-0001"
+  name          String   // Official Legal / Mill Name (e.g. "Siyaram Silk Mills Ltd.")
+  contactPerson String?  // Mill sales representative or coordinator
+  phone         String?  // Primary contact phone
+  email         String?  // Email address
+  address       String?  // Full factory/mill address
+  city          String?  // e.g. Surat, Mumbai, Bhilwara
+  state         String?  // e.g. Gujarat, Maharashtra
+  gstin         String?  // Tax/Statutory ID
+  notes         String?  // Internal instructions
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+  inboundDiscrepancies InboundDiscrepancy[]
+  grns           GoodsReceiptNote[]
+
+  @@map("suppliers")
+}
+
+
+
+// ─── Location Hierarchy (Aisle -> Row -> Bay -> Location) ──────────────────────
+
+// Storage layout: Rack (A, B, C…) → Bay (B1, B2…) → Level (L1 = bottom shelf) → Position (P1, P2…),
+// coded "A-B1-L1-P1". Removing a rack, bay, level or position only deactivates it, so stock history keeps its codes.
+model Rack {
+  id        String   @id @default(uuid())
+  name      String   @unique // e.g. "A"
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  bays      Bay[]
+
+  @@map("racks")
+}
+
+model Bay {
+  id        String   @id @default(uuid())
+  rackId    String
+  number    Int      // 1 → "B1"
+  levels    Int      @default(1)
+  positions Int      @default(3) // per level
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  rack      Rack       @relation(fields: [rackId], references: [id])
+  locations Location[]
+
+  @@unique([rackId, number])
+  @@map("bays")
+}
+
+model Location {
+  id        String       @id @default(uuid())
+  code      String       @unique   // e.g. "A-B1-L1-P1", or "FR-01" for a floor spot
+  type      LocationType
+
+  // BAY fields
+  bayId     String?
+  level     Int?         // e.g. 1
+  position  Int?         // e.g. 1
+
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  bay            Bay?            @relation(fields: [bayId], references: [id])
+  batchLocations BatchLocation[]
+
+  @@unique([bayId, level, position])
+  @@map("locations")
+}
+
+// ─── Item Batches (Individual Physical Batches) ─────────────────────────────────
+
+model ItemBatch {
+  id             String      @id @default(uuid())
+  batchCode      String      @unique
+  itemType       String      @default("FABRIC") // FABRIC, READY_MADE, ACCESSORY
+  category       String?     // Fabric: SUITING/SHIRTING/PLAIN_SHIRTING | Ready-Made: Fabric Type | Accessory: Category
+  brand          String?     // Fabric: Brand | Shoes: Brand | Generic: Manufacturer
+  quality        String?     // Fabric: Quality | Accessory: Spec
+  shade          String?     // Color or Shade name/code
+  size           String?     // Ready-Made garment size | Shoes size
+  name           String?     // Garment Item Name / Accessory Item Name
+  artNo          String?     // Article / Style Number
+  uom            String      @default("METERS") // METERS, PCS, PAIRS, SETS
+  quantity       Float
+  status         BatchStatus @default(IN_STOCK)
+  poLineId       String?     // Links batch to the PO line it was received against
+  supplierBundle String?     // Supplier's bundle/lump number
+  invoiceRef     String?     // Invoice number associated with this specific delivery
+  notes          String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  poLine         PurchaseOrderLine? @relation(fields: [poLineId], references: [id])
+  transactions   Transaction[]
+  batchLocations BatchLocation[]
+  dcLines        DeliveryChallanLine[]
+  grnId          String?
+  grn            GoodsReceiptNote? @relation(fields: [grnId], references: [id])
+  clientId       String?            @map("client_id")
+  clientName     String?            @map("client_name")
+  client         Client?            @relation(fields: [clientId], references: [id])
+
+  @@index([status, quantity])
+  @@index([itemType, status])
+  @@index([brand, quality, shade])
+  @@index([createdAt])
+  @@index([clientId])
+  @@index([poLineId])
+  @@index([grnId])
+  @@map("item_batches")
+}
+
+// ─── Transactions ─────────────────────────────────────────────────────────────
+
+model Transaction {
+  id               String          @id @default(uuid())
+  batchId          String
+  type             TransactionType
+  quantityMoved    Float
+  previousQuantity Float?
+  newQuantity      Float?
+  referenceType    String?         // e.g. "DELIVERY_CHALLAN"
+  referenceId      String?         // e.g. "DC-2026-0001"
+  operatorId       String
+  fromLocationId   String?
+  toLocationId     String?
+  notes            String?
+  createdAt        DateTime        @default(now())
+
+  batch    ItemBatch @relation(fields: [batchId], references: [id])
+  operator User      @relation(fields: [operatorId], references: [id])
+
+  @@index([batchId, createdAt])
+  @@index([type])
+  @@map("transactions")
+}
+
+// ─── Purchase Orders ──────────────────────────────────────────────────────────
+
+model PurchaseOrder {
+  id              String              @id @default(uuid())
+  poNumber        String              @unique  // e.g. PO-2026-0001
+  supplierId      String?             @map("supplier_id")
+  supplierName    String
+  createdById     String
+  expectedDate    DateTime
+  status          PurchaseOrderStatus @default(PENDING)
+  targetClient    String?     // e.g. School or Organization Name
+  notes        String?
+  isDeleted    Boolean             @default(false) @map("is_deleted")
+  deletedAt    DateTime?           @map("deleted_at")
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  supplier     Supplier?           @relation(fields: [supplierId], references: [id])
+  createdBy    User                @relation(fields: [createdById], references: [id])
+  lines        PurchaseOrderLine[]
+  grns         GoodsReceiptNote[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id          String   @id @default(uuid())
+  poId        String
+  itemType    String   @default("FABRIC") // FABRIC, READY_MADE, ACCESSORY
+  category    String?  // Fabric: SUITING/SHIRTING/PLAIN_SHIRTING | Ready-Made: Fabric Type | Accessory: Category
+  brand       String?  // Fabric: Brand | Shoes: Brand
+  quality     String?  // Fabric: Quality | Accessory: Spec
+  shade       String?  // Color or Shade name/code
+  size        String?  // Ready-Made garment size | Shoes size
+  name        String?  // Garment Item Name / Accessory Item Name
+  artNo       String?  // Article / Style Number
+  uom         String   @default("METERS") // METERS, PCS, PAIRS, SETS
+  orderedQty  Float
+  receivedQty Float    @default(0)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  po          PurchaseOrder          @relation(fields: [poId], references: [id], onDelete: Cascade)
+  batches     ItemBatch[]
+  grnLines    GoodsReceiptNoteLine[]
+  allocations PoLineAllocation[]
+
+  @@map("purchase_order_lines")
+}
+
+// ─── Purchase Order Line Allocations (Internal Client Split Breakdown) ───────
+
+model PoLineAllocation {
+  id           String   @id @default(uuid())
+  poLineId     String   @map("po_line_id")
+  clientId     String?  @map("client_id")
+  clientName   String   @map("client_name")
+  allocatedQty Float    @map("allocated_qty")
+  receivedQty  Float    @default(0) @map("received_qty")
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  poLine       PurchaseOrderLine @relation(fields: [poLineId], references: [id], onDelete: Cascade)
+  client       Client?           @relation(fields: [clientId], references: [id])
+
+  @@map("po_line_allocations")
+}
+
+// ─── Batch Locations (Where each batch is stored, with quantity) ──────────────
+
+model BatchLocation {
+  id         String   @id @default(uuid())
+  batchId    String
+  locationId String
+  quantity   Float
+  assignedAt DateTime @default(now())
+  assignedBy String
+
+  batch    ItemBatch @relation(fields: [batchId], references: [id])
+  location Location  @relation(fields: [locationId], references: [id])
+  operator User      @relation(fields: [assignedBy], references: [id])
+
+  @@unique([batchId, locationId])
+  @@index([batchId])
+  @@index([locationId])
+  @@map("batch_locations")
+}
+
+// ─── Clients / Customers (Master Directory) ───────────────────────────────────
+
+model Client {
+  id            String   @id @default(uuid())
+  code          String   @unique  // Auto-generated e.g. "CLI-0001"
+  name          String
+  clientType    String?  @map("client_type")
+  contactPerson String?  @map("contact_person")
+  phone         String?
+  email         String?
+  address       String?
+  city          String?
+  state         String?
+  gstin         String?
+  notes         String?
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  deliveryChallans  DeliveryChallan[]
+  itemBatches       ItemBatch[]
+  poLineAllocations PoLineAllocation[]
+
+  @@map("clients")
+}
+
+// ─── Delivery Challans (Stock Out) ────────────────────────────────────────────
+
+model DeliveryChallan {
+  id            String                @id @default(uuid())
+  challanNumber String                @unique
+  customerId    String?               @map("customer_id")
+  customerName  String
+  destination   String?
+  status        DeliveryChallanStatus @default(DRAFT)
+  remarks       String?
+  isDeleted     Boolean               @default(false) @map("is_deleted")
+  deletedAt     DateTime?             @map("deleted_at")
+  createdById   String
+  createdAt     DateTime              @default(now())
+  dispatchedAt  DateTime?
+  updatedAt     DateTime              @updatedAt
+
+  customer      Client?               @relation(fields: [customerId], references: [id])
+  createdBy     User                  @relation(fields: [createdById], references: [id])
+  lines         DeliveryChallanLine[]
+
+  @@map("delivery_challans")
+}
+
+model DeliveryChallanLine {
+  id             String   @id @default(uuid())
+  dcId           String
+  batchId        String
+  quantity       Float
+  isPartialCut   Boolean  @default(false)
+  cutReference   String?  // Traceable cut identifier e.g. "BAT-2026-0042-C1"
+  createdAt      DateTime @default(now())
+
+  dc             DeliveryChallan @relation(fields: [dcId], references: [id], onDelete: Cascade)
+  batch          ItemBatch       @relation(fields: [batchId], references: [id])
+
+  @@map("delivery_challan_lines")
+}
+
+// ─── Inbound Discrepancies (Shortages, Missing Items, Defective Bundles) ──────
+
+model InboundDiscrepancy {
+  id           String   @id @default(uuid())
+  supplierId   String
+  invoiceRef   String   // Supplier Invoice No.
+  bundleNumber String   // The bundle/bale number on the invoice where discrepancy was found
+  itemType     String?  // FABRIC, READY_MADE, ACCESSORY
+  category     String?
+  brand        String?
+  quality      String?
+  shade        String?
+  size         String?
+  name         String?
+  artNo        String?
+  issueType    String   // "MISSING_FROM_BUNDLE", "SHORT_LENGTH", "WRONG_ITEM", "DAMAGED"
+  expectedQty  Float?   // What the supplier invoice stated
+  receivedQty  Float?   @default(0) // What was actually found in this bundle (0 if not found)
+  notes        String?  // Worker explanation
+  reportedById String
+  createdAt    DateTime @default(now())
+
+  supplier     Supplier @relation(fields: [supplierId], references: [id])
+  reportedBy   User     @relation(fields: [reportedById], references: [id])
+  grnId        String?
+  grn          GoodsReceiptNote? @relation(fields: [grnId], references: [id])
+
+  @@map("inbound_discrepancies")
+}
+
+// ─── Master Column Attributes (Auto-learned Master Data for Columns) ─────────
+
+model MasterAttribute {
+  id         String   @id @default(uuid())
+  type       String   // "BRAND", "QUALITY", "SHADE", "ITEM_NAME", "ART_NO", "ACCESSORY_CATEGORY"
+  value      String
+  category   String?  // Optional context, e.g. "SUITING", "SHIRTING", "FABRIC", "READY_MADE"
+  usageCount Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([type, value])
+  @@map("master_attributes")
+}
+
+// ─── Goods Receipt Notes (GRN - Stock In Official Document) ───────────────────
+
+enum GrnStatus {
+  COMPLETED
+  CANCELLED
+}
+
+model GoodsReceiptNote {
+  id            String                 @id @default(uuid())
+  grnNumber     String                 @unique // e.g. GRN-26-0001
+  supplierId    String?
+  supplierName  String
+  poId          String?
+  poNumber      String?
+  invoiceRef    String?                // Supplier Invoice / Challan Number
+  invoiceDate   DateTime?
+  totalRolls    Int                    @default(0)
+  totalQuantity Float                  @default(0)
+  status        GrnStatus              @default(COMPLETED)
+  remarks       String?
+  receivedById  String
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  supplier      Supplier?              @relation(fields: [supplierId], references: [id])
+  po            PurchaseOrder?         @relation(fields: [poId], references: [id])
+  receivedBy    User                   @relation(fields: [receivedById], references: [id])
+  lines         GoodsReceiptNoteLine[]
+  batches       ItemBatch[]
+  discrepancies InboundDiscrepancy[]
+
+  @@map("goods_receipt_notes")
+}
+
+model GoodsReceiptNoteLine {
+  id          String             @id @default(uuid())
+  grnId       String
+  poLineId    String?
+  itemType    String             @default("FABRIC")
+  brand       String?
+  quality     String?
+  shade       String?
+  category    String?
+  size        String?
+  name        String?
+  artNo       String?
+  uom         String             @default("METERS")
+  invoicedQty Float?             // What supplier billed on invoice
+  receivedQty Float              // What warehouse actually received
+  shortageQty Float              @default(0) // invoicedQty - receivedQty
+  rollsCount  Int                @default(0)
+  notes       String?
+  createdAt   DateTime           @default(now())
+
+  grn         GoodsReceiptNote   @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  poLine      PurchaseOrderLine? @relation(fields: [poLineId], references: [id])
+
+  @@map("goods_receipt_note_lines")
+}
+
+
