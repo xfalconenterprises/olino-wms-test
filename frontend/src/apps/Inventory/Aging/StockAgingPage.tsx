@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
 import { Clock, MapPin, PackageCheck } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
+import { unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface StockItem {
@@ -58,12 +59,7 @@ export default function StockAgingPage() {
     return daysOld >= agingThreshold;
   });
 
-  const getUnit = (item: StockItem) => {
-    if (item.uom) return item.uom.toLowerCase();
-    if (item.itemType === 'FABRIC') return 'm';
-    if (item.itemType === 'READY_MADE') return 'pcs';
-    return 'units';
-  };
+  const getUnit = (item: StockItem) => unitLabel(uomOf(item));
 
   return (
     <div style={{ maxWidth: 1040, margin: '0 auto', paddingBottom: 40 }}>

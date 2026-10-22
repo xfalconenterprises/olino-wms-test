@@ -3,6 +3,9 @@
 // with the list of problems. Each imported row is one item with its total quantity, which is then
 // received lump by lump.
 import { readXlsxFirstSheet, writeXlsx, type Cell } from './xlsx';
+import { fabricCategoryLabel, unitLabel, type FabricCategory } from './units';
+
+export { unitLabel };
 
 export type InwardItemType = 'FABRIC' | 'READY_MADE' | 'ACCESSORY';
 
@@ -20,17 +23,23 @@ interface ColumnDef {
   required: boolean;
   kind: 'text' | 'quantity' | 'choice';
   choices?: Choice[];
+  aliases?: string[];       // other header spellings accepted on import (e.g. older templates)
   wholeNumber?: boolean;
   note: string;
   width: number;
 }
 
-const FABRIC_CATEGORIES: Choice[] = [
-  { value: 'SUITING', label: 'Suiting' },
-  { value: 'SHIRTING', label: 'Shirting' },
-  { value: 'PLAIN_SHIRTING', label: 'Plain Shirting' },
-  { value: 'OTHER', label: 'Other', aliases: ['Other Fabric'] },
+// Used only until the master catalogue's fabric types are loaded
+const DEFAULT_FABRIC_TYPES: FabricCategory[] = [
+  { value: 'SUITING', label: 'Suiting', unit: 'METERS' },
+  { value: 'SHIRTING', label: 'Shirting', unit: 'METERS' },
+  { value: 'PLAIN_SHIRTING', label: 'Plain Shirting', unit: 'METERS' },
+  { value: 'KNITS', label: 'Knits', unit: 'KG' },
+  { value: 'OTHER', label: 'Other', unit: 'METERS' },
 ];
+
+const fabricChoices = (types: FabricCategory[]): Choice[] =>
+  types.map(t => ({ value: t.value, label: t.label, aliases: t.value === 'OTHER' ? ['Other Fabric'] : [] }));
 
 const ACCESSORY_UOMS: Choice[] = [
   { value: 'PCS', label: 'Pcs', aliases: ['Pieces', 'Piece', 'Nos'] },
@@ -45,11 +54,12 @@ const text = (key: string, header: string, required: boolean, note: string, widt
 
 export const IMPORT_COLUMNS: Record<InwardItemType, ColumnDef[]> = {
   FABRIC: [
-    { key: 'category', header: 'Category', required: true, kind: 'choice', choices: FABRIC_CATEGORIES, note: 'Suiting, Shirting, Plain Shirting or Other', width: 16 },
+    { key: 'category', header: 'Category', required: true, kind: 'choice', choices: fabricChoices(DEFAULT_FABRIC_TYPES), aliases: ['Fabric Type'], note: 'A fabric type from the master catalogue, e.g. Suiting, Shirting, Knits', width: 16 },
     text('brand', 'Brand', true, 'e.g. Raymond, Siyaram'),
-    text('quality', 'Quality', true, 'e.g. Poly Viscose'),
+    text('quality', 'Quality', true, 'e.g. PV-2041'),
+    text('qualityName', 'Quality Name', false, 'Optional, e.g. Poly Viscose Twill', 22),
     text('shade', 'Shade', true, 'e.g. Navy Blue 04'),
-    { key: 'quantity', header: 'Total Meters', required: true, kind: 'quantity', note: 'Total meters of this item in the delivery, e.g. 520.5', width: 14 },
+    { key: 'quantity', header: 'Total Quantity', required: true, kind: 'quantity', aliases: ['Total Meters', 'Total Kg'], note: 'Total of this item in the delivery, in its fabric type\'s unit: meters (e.g. 520.5), or kg for fabric weighed by weight such as Knits', width: 14 },
     text('bundle', 'Bundle Number', false, 'Optional, e.g. B-101', 16),
     text('notes', 'Remarks', false, 'Optional', 24),
   ],
@@ -114,11 +124,19 @@ function parseQuantity(value: Cell | undefined): number | null {
   return Number(s);
 }
 
+const headerNames = (c: ColumnDef) => [c.header, ...(c.aliases ?? [])].map(normaliseHeader);
+
+/** The columns for an item type, with fabric types taken from the master catalogue when given. */
+function columnsFor(itemType: InwardItemType, fabricTypes?: FabricCategory[]): ColumnDef[] {
+  if (itemType !== 'FABRIC' || !fabricTypes?.length) return IMPORT_COLUMNS[itemType];
+  return IMPORT_COLUMNS.FABRIC.map(c => (c.key === 'category' ? { ...c, choices: fabricChoices(fabricTypes) } : c));
+}
+
 // Which item type's columns does this header row belong to (for a helpful rejection)?
 function guessItemType(headers: string[]): InwardItemType | null {
   const keys = headers.map(normaliseHeader).filter(Boolean);
   return (Object.keys(IMPORT_COLUMNS) as InwardItemType[]).find(type => {
-    const known = new Set(IMPORT_COLUMNS[type].map(c => normaliseHeader(c.header)));
+    const known = new Set(IMPORT_COLUMNS[type].flatMap(headerNames));
     return keys.length > 0 && keys.every(k => known.has(k));
   }) ?? null;
 }
@@ -126,8 +144,9 @@ function guessItemType(headers: string[]): InwardItemType | null {
 let lineCounter = 0;
 
 /** Checks a sheet against the item type's columns. Any problem rejects the whole file. */
-export function validateImportRows(itemType: InwardItemType, rows: Cell[][]): ImportResult {
-  const columns = IMPORT_COLUMNS[itemType];
+export function validateImportRows(itemType: InwardItemType, rows: Cell[][], fabricTypes?: FabricCategory[]): ImportResult {
+  const columns = columnsFor(itemType, fabricTypes);
+  const types = fabricTypes?.length ? fabricTypes : DEFAULT_FABRIC_TYPES;
   const label = ITEM_TYPE_LABEL[itemType];
   const errors: string[] = [];
   const reject = (): ImportResult => ({
@@ -143,7 +162,7 @@ export function validateImportRows(itemType: InwardItemType, rows: Cell[][]): Im
   const headers = rows[headerIndex].map(cellText);
 
   // Header row: only this type's columns, each once, and every required one present
-  const byHeader = new Map(columns.map(c => [normaliseHeader(c.header), c]));
+  const byHeader = new Map(columns.flatMap(c => headerNames(c).map(h => [h, c] as const)));
   const positions = new Map<string, number>();
   const unknown: string[] = [];
   headers.forEach((h, i) => {
@@ -213,7 +232,8 @@ export function validateImportRows(itemType: InwardItemType, rows: Cell[][]): Im
         rowNumber,
         fields,
         quantity,
-        uom: itemType === 'FABRIC' ? 'METERS' : itemType === 'READY_MADE' ? 'PCS' : fields.uom,
+        // Fabric is received in its fabric type's unit (meters, or kg for e.g. Knits)
+        uom: itemType === 'FABRIC' ? (types.find(t => t.value === fields.category)?.unit ?? 'METERS') : itemType === 'READY_MADE' ? 'PCS' : fields.uom,
         received: 0,
         lumps: 0,
       });
@@ -256,8 +276,9 @@ export async function readImportFile(file: File): Promise<Cell[][]> {
 }
 
 /** Template workbook: the item sheet with headers, plus a sheet explaining each column. */
-export function buildImportTemplate(itemType: InwardItemType): Blob {
-  const columns = IMPORT_COLUMNS[itemType];
+export function buildImportTemplate(itemType: InwardItemType, fabricTypes?: FabricCategory[]): Blob {
+  const columns = columnsFor(itemType, fabricTypes);
+  const types = fabricTypes?.length ? fabricTypes : DEFAULT_FABRIC_TYPES;
   return writeXlsx([
     {
       name: `${ITEM_TYPE_LABEL[itemType]} Items`,
@@ -270,6 +291,10 @@ export function buildImportTemplate(itemType: InwardItemType): Blob {
       rows: [
         ['Column', 'Required', 'What to enter'],
         ...columns.map(c => [c.header, c.required ? 'Yes' : 'No', c.note]),
+        [],
+        ...(itemType === 'FABRIC'
+          ? [[], ['Fabric types and their units'], ...types.map(t => [t.label, '', t.unit === 'KG' ? 'Total Quantity in kilograms' : 'Total Quantity in meters'])]
+          : []),
         [],
         ['One row per item with its total quantity. Lumps are entered in the WMS after importing.'],
         ['Keep the column titles exactly as they are. Do not add other columns.'],
@@ -304,10 +329,6 @@ export function remainingQty(line: ImportLine): number {
   return Math.max(0, Math.round((line.quantity - line.received) * 1000) / 1000);
 }
 
-export function unitLabel(uom: string): string {
-  return ({ METERS: 'm', PCS: 'pcs', GROSS: 'gross', BOXES: 'boxes', PACKETS: 'packets' } as Record<string, string>)[uom] ?? uom.toLowerCase();
-}
-
 /** The item's own columns, in template order (quantity, unit, bundle and remarks are shown separately). */
 export function itemFieldColumns(itemType: InwardItemType): { key: string; header: string }[] {
   return IMPORT_COLUMNS[itemType]
@@ -318,6 +339,7 @@ export function itemFieldColumns(itemType: InwardItemType): { key: string; heade
 /** A field as people read it: choice codes become their labels (PLAIN_SHIRTING → Plain Shirting). */
 export function fieldValue(line: ImportLine, key: string): string {
   const value = line.fields[key] ?? '';
+  if (line.itemType === 'FABRIC' && key === 'category') return fabricCategoryLabel(value);
   const col = IMPORT_COLUMNS[line.itemType].find(c => c.key === key);
   return col?.choices?.find(c => c.value === value)?.label ?? value;
 }
@@ -333,7 +355,7 @@ export function lumpPayload(line: ImportLine, quantity: number, bundle: string) 
     notes: f.notes || undefined,
   };
   if (line.itemType === 'FABRIC') {
-    return { ...common, category: f.category, brand: f.brand, quality: f.quality, shade: f.shade };
+    return { ...common, category: f.category, brand: f.brand, quality: f.quality, qualityName: f.qualityName || undefined, shade: f.shade };
   }
   if (line.itemType === 'READY_MADE') {
     return { ...common, name: f.name, category: f.fabricType || undefined, shade: f.shade || undefined, artNo: f.artNo.toUpperCase(), size: f.size };

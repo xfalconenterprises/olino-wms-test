@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
 import { formatDate } from '../../../utils/format';
+import { formatTotals } from '../../../utils/units';
 import { 
   Building2, 
   Search, 
@@ -44,7 +45,7 @@ interface SupplierPO {
   expectedDate: string;
   status: string;
   targetClient: string | null;
-  lines: { id: string; orderedQty: number; receivedQty: number }[];
+  lines: { id: string; orderedQty: number; receivedQty: number; uom?: string | null; itemType?: string | null }[];
 }
 
 export default function SuppliersPage() {
@@ -351,7 +352,7 @@ export default function SuppliersPage() {
                     {/* Contact */}
                     <td style={{ padding: '12px 16px', verticalAlign: 'middle' }}>
                       <div style={{ fontWeight: 500, color: 'var(--color-text-main)' }}>
-                        {s.contactPerson || '—'}
+                        {s.contactPerson}
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--color-text-muted)', display: 'flex', gap: 10, marginTop: 2 }}>
                         {s.phone && (
@@ -369,16 +370,18 @@ export default function SuppliersPage() {
 
                     {/* Location */}
                     <td style={{ padding: '12px 16px', verticalAlign: 'middle' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-main)', fontWeight: 500 }}>
-                        <MapPin size={13} color="var(--color-text-muted)" />
-                        {[s.city, s.state].filter(Boolean).join(', ') || '—'}
-                      </div>
+                      {(s.city || s.state) && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-main)', fontWeight: 500 }}>
+                          <MapPin size={13} color="var(--color-text-muted)" />
+                          {[s.city, s.state].filter(Boolean).join(', ')}
+                        </div>
+                      )}
                     </td>
 
                     {/* GSTIN */}
                     <td style={{ padding: '12px 16px', verticalAlign: 'middle' }}>
                       <span style={{ fontFamily: 'monospace', fontSize: 11, color: s.gstin ? 'var(--color-text-main)' : 'var(--color-text-muted)' }}>
-                        {s.gstin || '—'}
+                        {s.gstin}
                       </span>
                     </td>
 
@@ -692,9 +695,11 @@ export default function SuppliersPage() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {activeSupplierPOs.pos.map(po => {
-                    const totalOrd = po.lines.reduce((s, l) => s + l.orderedQty, 0);
-                    const totalRec = po.lines.reduce((s, l) => s + l.receivedQty, 0);
-                    const pending = Math.max(0, totalOrd - totalRec);
+                    // Per unit: a fabric PO can have meter and kg lines
+                    const lineUom = (l: { uom?: string | null; itemType?: string | null }) => l.uom || (l.itemType && l.itemType !== 'FABRIC' ? 'PCS' : 'METERS');
+                    const totalOrd = formatTotals(po.lines.map(l => ({ uom: lineUom(l), quantity: l.orderedQty })));
+                    const totalRec = formatTotals(po.lines.map(l => ({ uom: lineUom(l), quantity: l.receivedQty })));
+                    const pending = formatTotals(po.lines.map(l => ({ uom: lineUom(l), quantity: Math.max(0, l.orderedQty - l.receivedQty) })));
 
                     return (
                       <div 
@@ -723,7 +728,7 @@ export default function SuppliersPage() {
                             </span>
                           </div>
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                            Expected: {formatDate(po.expectedDate)} | Ordered: {totalOrd}m | Recv: {totalRec}m | <strong>Due: {pending}m</strong>
+                            Expected: {formatDate(po.expectedDate)} | Ordered: {totalOrd} | Recv: {totalRec} | <strong>Due: {pending}</strong>
                           </div>
                           {po.targetClient && (
                             <div style={{ fontSize: 11, color: 'var(--color-brand)', marginTop: 2 }}>

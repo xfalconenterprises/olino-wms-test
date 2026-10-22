@@ -16,6 +16,20 @@ import {
 } from 'lucide-react';
 import { formatDateTime } from '../../../utils/format';
 import { exportToExcel } from '../../../utils/exportExcel';
+import { fabricCategoryLabel, useFabricCategories } from '../../../utils/units';
+
+// Fabric in meters and in kg (e.g. Knits) side by side; the two are never added together
+function FabricQty({ meters, kg = 0 }: { meters: number; kg?: number }) {
+  const m = Math.round((meters || 0) * 10) / 10;
+  const k = Math.round((kg || 0) * 100) / 100;
+  return (
+    <>
+      {(m !== 0 || k === 0) && <>{m.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>m</span></>}
+      {m !== 0 && k !== 0 && ' + '}
+      {k !== 0 && <>{k.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>kg</span></>}
+    </>
+  );
+}
 import '../../../styles/components.css';
 
 type ReportTab = 'PERIODIC' | 'SHIPMENTS' | 'STOCK_MASTER' | 'SUPPLIERS' | 'CAPACITY';
@@ -25,6 +39,7 @@ type ProductFilterType = 'ALL' | 'FABRIC' | 'SHOES' | 'SOCKS';
 export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<ReportTab>('PERIODIC');
   const [loading, setLoading] = useState(false);
+  const fabricTypes = useFabricCategories();
 
   // ─── 1. Periodic Throughput State ─────────────────────────────────────────
   const [periodType, setPeriodType] = useState<PeriodType>('monthly');
@@ -156,7 +171,7 @@ export default function ReportsPage() {
   };
 
   const exportShipmentsExcel = () => {
-    const headers = ['Challan Number', 'Customer Name', 'Destination', 'Dispatched Date', 'Operator', 'Fabric Shipped (Meters)', 'Footwear Shipped (Pairs)', 'Remarks'];
+    const headers = ['Challan Number', 'Customer Name', 'Destination', 'Dispatched Date', 'Operator', 'Fabric Shipped (Meters)', 'Fabric Shipped (Kg)', 'Footwear Shipped (Pairs)', 'Remarks'];
     const rows = shipmentsData.map((s: any) => [
       s.challanNumber,
       s.customerName,
@@ -164,6 +179,7 @@ export default function ReportsPage() {
       formatDateTime(s.dispatchedAt),
       s.operator,
       s.totalFabricMeters,
+      s.totalFabricKg || 0,
       s.totalPairs,
       s.remarks || ''
     ]);
@@ -171,12 +187,13 @@ export default function ReportsPage() {
   };
 
   const exportStockMasterExcel = () => {
-    const headers = ['Item Type', 'Category', 'Brand', 'Quality / Model', 'Shade / Color', 'Size', 'Stock Units', 'Total Quantity', 'Unit', 'Shelf Locations'];
+    const headers = ['Item Type', 'Category', 'Brand', 'Quality / Model', 'Quality Name', 'Shade / Color', 'Size', 'Stock Units', 'Total Quantity', 'Unit', 'Shelf Locations'];
     const rows = stockMasterData.map((s: any) => [
       s.itemType,
       s.category || '',
       s.brand,
       s.quality,
+      s.qualityName || '',
       s.shade,
       s.size || '',
       s.unitCount,
@@ -188,7 +205,7 @@ export default function ReportsPage() {
   };
 
   const exportSupplierExcel = () => {
-    const headers = ['Supplier Name', 'Total POs', 'Completed POs', 'Pending POs', 'Fabric Ordered (m)', 'Fabric Received (m)', 'Pairs Ordered', 'Pairs Received', 'Fulfillment %'];
+    const headers = ['Supplier Name', 'Total POs', 'Completed POs', 'Pending POs', 'Fabric Ordered (m)', 'Fabric Received (m)', 'Fabric Ordered (kg)', 'Fabric Received (kg)', 'Pairs Ordered', 'Pairs Received', 'Fulfillment %'];
     const rows = supplierData.map((s: any) => [
       s.supplierName,
       s.totalPOs,
@@ -196,6 +213,8 @@ export default function ReportsPage() {
       s.pendingPOs,
       s.totalFabricOrdered,
       s.totalFabricReceived,
+      s.totalFabricKgOrdered || 0,
+      s.totalFabricKgReceived || 0,
       s.totalPairsOrdered,
       s.totalPairsReceived,
       `${s.fulfillmentRate}%`
@@ -353,9 +372,7 @@ export default function ReportsPage() {
                   style={{ height: 38, width: 130, fontSize: 12.5 }}
                 >
                   <option value="">All Fabrics</option>
-                  <option value="SUITING">Suiting</option>
-                  <option value="SHIRTING">Shirting</option>
-                  <option value="PLAIN_SHIRTING">Plain Shirting</option>
+                  {fabricTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               )}
             </div>
@@ -384,13 +401,13 @@ export default function ReportsPage() {
                   </div>
                   <div className="stat-card-value" style={{ fontSize: 24, marginTop: 4 }}>
                     {throughputProduct === 'FABRIC' ? (
-                      <>{periodicData.inward.fabricMeters.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>Meters</span></>
+                      <FabricQty meters={periodicData.inward.fabricMeters} kg={periodicData.inward.fabricKg} />
                     ) : throughputProduct === 'SHOES' ? (
                       <>{periodicData.inward.shoesPairs.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>Pairs</span></>
                     ) : throughputProduct === 'SOCKS' ? (
                       <>{periodicData.inward.socksPairs.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>Pairs</span></>
                     ) : (
-                      <>{periodicData.inward.fabricMeters.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>m</span> + {periodicData.inward.totalPairs} <span style={{ fontSize: 14, fontWeight: 400 }}>pairs</span></>
+                      <><FabricQty meters={periodicData.inward.fabricMeters} kg={periodicData.inward.fabricKg} /> + {periodicData.inward.totalPairs} <span style={{ fontSize: 14, fontWeight: 400 }}>pairs</span></>
                     )}
                   </div>
                   <div className="stat-card-sub" style={{ marginTop: 4, fontWeight: 500 }}>
@@ -405,13 +422,13 @@ export default function ReportsPage() {
                   </div>
                   <div className="stat-card-value" style={{ fontSize: 24, marginTop: 4 }}>
                     {throughputProduct === 'FABRIC' ? (
-                      <>{periodicData.outward.fabricMeters.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>Meters</span></>
+                      <FabricQty meters={periodicData.outward.fabricMeters} kg={periodicData.outward.fabricKg} />
                     ) : throughputProduct === 'SHOES' ? (
                       <>{periodicData.outward.shoesPairs.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>Pairs</span></>
                     ) : throughputProduct === 'SOCKS' ? (
                       <>{periodicData.outward.socksPairs.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>Pairs</span></>
                     ) : (
-                      <>{periodicData.outward.fabricMeters.toLocaleString('en-IN')} <span style={{ fontSize: 14, fontWeight: 400 }}>m</span> + {periodicData.outward.totalPairs} <span style={{ fontSize: 14, fontWeight: 400 }}>pairs</span></>
+                      <><FabricQty meters={periodicData.outward.fabricMeters} kg={periodicData.outward.fabricKg} /> + {periodicData.outward.totalPairs} <span style={{ fontSize: 14, fontWeight: 400 }}>pairs</span></>
                     )}
                   </div>
                   <div className="stat-card-sub" style={{ marginTop: 4, fontWeight: 500 }}>
@@ -426,13 +443,13 @@ export default function ReportsPage() {
                   </div>
                   <div className="stat-card-value" style={{ fontSize: 24, marginTop: 4 }}>
                     {throughputProduct === 'FABRIC' ? (
-                      <>{(periodicData.inward.fabricMeters - periodicData.outward.fabricMeters).toFixed(1)} <span style={{ fontSize: 14, fontWeight: 400 }}>Meters</span></>
+                      <FabricQty meters={periodicData.inward.fabricMeters - periodicData.outward.fabricMeters} kg={(periodicData.inward.fabricKg || 0) - (periodicData.outward.fabricKg || 0)} />
                     ) : throughputProduct === 'SHOES' ? (
                       <>{(periodicData.inward.shoesPairs - periodicData.outward.shoesPairs)} <span style={{ fontSize: 14, fontWeight: 400 }}>Pairs</span></>
                     ) : throughputProduct === 'SOCKS' ? (
                       <>{(periodicData.inward.socksPairs - periodicData.outward.socksPairs)} <span style={{ fontSize: 14, fontWeight: 400 }}>Pairs</span></>
                     ) : (
-                      <>Δ Fabric: {(periodicData.inward.fabricMeters - periodicData.outward.fabricMeters).toFixed(1)}m</>
+                      <>Δ Fabric: <FabricQty meters={periodicData.inward.fabricMeters - periodicData.outward.fabricMeters} kg={(periodicData.inward.fabricKg || 0) - (periodicData.outward.fabricKg || 0)} /></>
                     )}
                   </div>
                   <div className="stat-card-sub" style={{ marginTop: 4, fontWeight: 500 }}>
@@ -493,9 +510,9 @@ export default function ReportsPage() {
                           </td>
                           <td className="text-sm">
                             {t.referenceId ? (
-                              <span><code>{t.referenceId}</code> · {t.notes || '—'}</span>
+                              <span><code>{t.referenceId}</code>{t.notes ? ` · ${t.notes}` : ''}</span>
                             ) : (
-                              <span className="text-muted">{t.notes || '—'}</span>
+                              <span className="text-muted">{t.notes}</span>
                             )}
                           </td>
                           <td style={{ fontWeight: 600 }}>{t.operator}</td>
@@ -576,8 +593,8 @@ export default function ReportsPage() {
                           <td><strong style={{ fontSize: 14 }}>{s.customerName}</strong></td>
                           <td className="text-muted text-sm">{s.destination}</td>
                           <td>
-                            {s.totalFabricMeters > 0 ? (
-                              <strong>{s.totalFabricMeters} m</strong>
+                            {s.totalFabricMeters > 0 || s.totalFabricKg > 0 ? (
+                              <strong><FabricQty meters={s.totalFabricMeters} kg={s.totalFabricKg} /></strong>
                             ) : (
                               <span className="text-muted">—</span>
                             )}
@@ -626,7 +643,7 @@ export default function ReportsPage() {
                                     {s.lines.map((l: any) => (
                                       <tr key={l.id}>
                                         <td><code>{l.batchCode}</code></td>
-                                        <td><strong>{l.brand}</strong> — {l.quality} · {l.shade} {l.size ? `(Size ${l.size})` : ''}</td>
+                                        <td><strong>{l.brand}</strong> — {l.quality}{l.qualityName ? ` (${l.qualityName})` : ''} · {l.shade} {l.size ? `(Size ${l.size})` : ''}</td>
                                         <td>{l.itemType}</td>
                                         <td><strong>{l.quantity} {l.unit}</strong></td>
                                         <td>
@@ -688,9 +705,7 @@ export default function ReportsPage() {
                   style={{ height: 38, width: 140, fontSize: 13 }}
                 >
                   <option value="">All Types</option>
-                  <option value="SUITING">Suiting</option>
-                  <option value="SHIRTING">Shirting</option>
-                  <option value="PLAIN_SHIRTING">Plain Shirting</option>
+                  {fabricTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               )}
 
@@ -739,11 +754,11 @@ export default function ReportsPage() {
                     <tr key={idx}>
                       <td>
                         <strong>{s.brand}</strong>
-                        {s.category && <span className="badge badge-neutral" style={{ marginLeft: 6, fontSize: 11 }}>{s.category === 'PLAIN_SHIRTING' ? 'Plain Shirting' : s.category}</span>}
+                        {s.category && <span className="badge badge-neutral" style={{ marginLeft: 6, fontSize: 11 }}>{s.itemType === 'FABRIC' ? fabricCategoryLabel(s.category) : s.category}</span>}
                       </td>
-                      <td>{s.quality}</td>
+                      <td>{s.quality}{s.qualityName && <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{s.qualityName}</div>}</td>
                       <td>{s.shade}</td>
-                      <td>{s.size ? `Size ${s.size}` : '—'}</td>
+                      <td>{s.size ? `Size ${s.size}` : ''}</td>
                       <td>{s.unitCount} items</td>
                       <td>
                         <strong style={{ fontSize: 14, color: 'var(--color-brand)' }}>
@@ -804,8 +819,12 @@ export default function ReportsPage() {
                       <td><span className="badge badge-success">{s.completedPOs}</span></td>
                       <td><span className={`badge ${s.pendingPOs > 0 ? 'badge-warning' : 'badge-neutral'}`}>{s.pendingPOs}</span></td>
                       <td>
-                        {s.totalFabricOrdered > 0 ? (
-                          <span>{s.totalFabricReceived} / {s.totalFabricOrdered} m</span>
+                        {s.totalFabricOrdered > 0 || s.totalFabricKgOrdered > 0 ? (
+                          <span>
+                            {s.totalFabricOrdered > 0 && <>{s.totalFabricReceived} / {s.totalFabricOrdered} m</>}
+                            {s.totalFabricOrdered > 0 && s.totalFabricKgOrdered > 0 && <br />}
+                            {s.totalFabricKgOrdered > 0 && <>{s.totalFabricKgReceived} / {s.totalFabricKgOrdered} kg</>}
+                          </span>
                         ) : '—'}
                       </td>
                       <td>

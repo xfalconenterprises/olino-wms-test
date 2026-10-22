@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
+import { unitLabel, uomOf } from '../../../utils/units';
 import { MapPin, Plus, Trash2, Layers, Grid, Search, Package, X, Download, Pencil, LayoutGrid } from 'lucide-react';
 import '../../../styles/components.css';
 
@@ -575,7 +576,7 @@ export default function LocationsPage() {
                       {bl.batch.name || [bl.batch.brand, bl.batch.quality, bl.batch.shade].filter(Boolean).join(' · ') || 'Item'}
                     </div>
                     <div style={{ fontSize: 14, fontWeight: 700, marginTop: 8, background: '#f0fdf4', color: '#166534', display: 'inline-flex', padding: '4px 10px', borderRadius: 20 }}>
-                      {bl.quantity} {bl.batch.uom ? bl.batch.uom.toLowerCase() : (bl.batch.itemType === 'FABRIC' ? 'm' : 'pcs')}
+                      {bl.quantity} {unitLabel(uomOf(bl.batch))}
                     </div>
                   </div>
                 ))}

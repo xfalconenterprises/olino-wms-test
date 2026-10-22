@@ -15,6 +15,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { formatDateTime } from '../../../utils/format';
+import { formatTotals } from '../../../utils/units';
 import { exportToExcel } from '../../../utils/exportExcel';
 import '../../../styles/components.css';
 
@@ -30,6 +31,7 @@ interface DeliveryChallan {
   operator: string;
   remarks: string | null;
   totalFabricMeters: number;
+  totalFabricKg?: number;
   totalReadyMadePcs?: number;
   totalAccessoryUnits?: number;
   totalPairs: number;
@@ -81,7 +83,7 @@ export default function DeliveryChallansPage() {
   // Client-side filtering
   const filteredChallans = useMemo(() => {
     return challans.filter(c => {
-      if (typeFilter === 'FABRIC' && (c.totalFabricMeters || 0) <= 0) return false;
+      if (typeFilter === 'FABRIC' && (c.totalFabricMeters || 0) <= 0 && (c.totalFabricKg || 0) <= 0) return false;
       if (typeFilter === 'READY_MADE' && (c.totalReadyMadePcs || c.totalUnits || c.totalPairs || 0) <= 0) return false;
 
       if (!search.trim()) return true;
@@ -125,7 +127,8 @@ export default function DeliveryChallansPage() {
       'Destination', 
       'Dispatched Date', 
       'Operator', 
-      'Fabric Shipped (Meters)', 
+      'Fabric Shipped (Meters)',
+      'Fabric Shipped (Kg)', 
       'Ready-Made / Units', 
       'Items Count'
     ];
@@ -136,6 +139,7 @@ export default function DeliveryChallansPage() {
       formatDateTime(s.dispatchedAt || s.createdAt),
       s.operator,
       s.totalFabricMeters || 0,
+      s.totalFabricKg || 0,
       s.totalReadyMadePcs || s.totalUnits || s.totalPairs || 0,
       s.linesCount
     ]);
@@ -352,8 +356,10 @@ export default function DeliveryChallansPage() {
                         )}
                       </td>
                       <td>
-                        {(s.totalFabricMeters || 0) > 0 ? (
-                          <strong style={{ color: '#0369a1' }}>{s.totalFabricMeters} m</strong>
+                        {(s.totalFabricMeters || 0) > 0 || (s.totalFabricKg || 0) > 0 ? (
+                          <strong style={{ color: '#0369a1' }}>
+                            {formatTotals([{ uom: 'METERS', quantity: s.totalFabricMeters || 0 }, { uom: 'KG', quantity: s.totalFabricKg || 0 }].filter(t => t.quantity > 0))}
+                          </strong>
                         ) : (
                           <span className="text-muted">—</span>
                         )}

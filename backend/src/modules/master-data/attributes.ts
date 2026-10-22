@@ -1,12 +1,27 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
+import { FABRIC_UNITS, fabricCategoryCode, fabricCategoryLabel } from '../../utils/units';
 
 const router = Router();
 router.use(requireAuth);
 
-// Fixed fabric classification used by PO validation and reports (not learned data)
-const FABRIC_CATEGORIES = ['SUITING', 'SHIRTING', 'PLAIN_SHIRTING'];
+// Fabric types (Suiting, Shirting, Knits…) are master data with a unit each: METERS or KG.
+// Their code is stored on PO lines and rolls, so a type in use keeps its code and unit.
+const FABRIC_CATEGORY = 'FABRIC_CATEGORY';
+
+// Alphabetical, with "Other" last
+const byFabricOrder = (a: { value: string }, b: { value: string }) =>
+  (a.value === 'OTHER' ? 1 : 0) - (b.value === 'OTHER' ? 1 : 0) || a.value.localeCompare(b.value);
+
+/** How many PO lines and rolls use a fabric type code. */
+async function fabricCategoryUsage(code: string): Promise<number> {
+  const [lines, batches] = await Promise.all([
+    prisma.purchaseOrderLine.count({ where: { itemType: 'FABRIC', category: code } }),
+    prisma.itemBatch.count({ where: { itemType: 'FABRIC', category: code } }),
+  ]);
+  return lines + batches;
+}
 
 // ─── GET /api/master-data ───────────────────────────────────────────────────
 // Returns all learned attributes, or a flat list for one type, for live autocomplete
@@ -26,6 +41,7 @@ router.get('/', async (req: Request, res: Response) => {
       where,
       orderBy: [{ usageCount: 'desc' }, { value: 'asc' }],
     });
+    const fabricCategories = items.filter(i => i.type === FABRIC_CATEGORY).sort(byFabricOrder);
 
     // If detailed list is requested (e.g. for Master Attributes Admin Page)
     if (req.query.detailed === 'true') {
@@ -40,18 +56,22 @@ router.get('/', async (req: Request, res: Response) => {
     }
 
     // Otherwise group into dictionary: { BRAND: [...], QUALITY: [...], ... }
-    const grouped: Record<string, string[]> = {
+    // CATEGORY lists fabric type codes; FABRIC_CATEGORIES adds each type's label and unit
+    const grouped: Record<string, any[]> = {
       BRAND: [],
       QUALITY: [],
+      QUALITY_NAME: [],
       SHADE: [],
       ITEM_NAME: [],
       ART_NO: [],
       FABRIC_TYPE: [],
       ACCESSORY_CATEGORY: [],
-      CATEGORY: FABRIC_CATEGORIES,
+      CATEGORY: fabricCategories.map(c => c.value),
+      FABRIC_CATEGORIES: fabricCategories.map(c => ({ value: c.value, label: fabricCategoryLabel(c.value), unit: c.unit === 'KG' ? 'KG' : 'METERS' })),
     };
 
     for (const item of items) {
+      if (item.type === FABRIC_CATEGORY) continue;
       if (!grouped[item.type]) {
         grouped[item.type] = [];
       }
@@ -78,7 +98,20 @@ router.post('/', requirePermission('admin.items'), async (req: Request, res: Res
     }
 
     const cleanType = String(type).trim().toUpperCase();
-    const cleanValue = String(value).trim();
+    let cleanValue = String(value).trim();
+
+    // A new fabric type needs a code and how it is measured
+    if (cleanType === FABRIC_CATEGORY) {
+      cleanValue = fabricCategoryCode(cleanValue);
+      const unit = String(req.body.unit ?? '').toUpperCase();
+      if (!cleanValue) { res.status(400).json({ error: 'Enter the fabric type name' }); return; }
+      if (!(FABRIC_UNITS as readonly string[]).includes(unit)) { res.status(400).json({ error: 'Choose how this fabric is measured: meters or kg' }); return; }
+      const clash = await prisma.masterAttribute.findUnique({ where: { type_value: { type: FABRIC_CATEGORY, value: cleanValue } } });
+      if (clash) { res.status(409).json({ error: `Fabric type "${fabricCategoryLabel(cleanValue)}" already exists` }); return; }
+      const created = await prisma.masterAttribute.create({ data: { type: FABRIC_CATEGORY, value: cleanValue, unit, usageCount: 0 } });
+      res.status(201).json({ ...created, isNew: true });
+      return;
+    }
 
     const existing = await prisma.masterAttribute.findUnique({
       where: { type_value: { type: cleanType, value: cleanValue } },
@@ -115,6 +148,7 @@ export async function autoLearnAttributes(items: Array<{ type: string; value?: s
   for (const item of items) {
     if (!item.value || !item.value.trim() || !item.type) continue;
     const cleanType = item.type.toUpperCase();
+    if (cleanType === FABRIC_CATEGORY) continue; // fabric types are only added in the master catalogue
     const cleanVal = item.value.trim();
     try {
       await prisma.masterAttribute.upsert({
@@ -156,6 +190,27 @@ router.put('/:id', requirePermission('admin.items'), async (req: Request, res: R
   try {
     const { id } = req.params;
     const { value, category, type } = req.body;
+
+    const current = await prisma.masterAttribute.findUnique({ where: { id: id as string } });
+    if (!current) { res.status(404).json({ error: 'Attribute not found' }); return; }
+    if ((type && String(type).toUpperCase() !== current.type) && (current.type === FABRIC_CATEGORY || String(type).toUpperCase() === FABRIC_CATEGORY)) {
+      res.status(400).json({ error: 'Fabric types cannot be turned into other attributes or back' });
+      return;
+    }
+    if (current.type === FABRIC_CATEGORY) {
+      const newCode = value ? fabricCategoryCode(String(value)) : current.value;
+      const newUnit = req.body.unit ? String(req.body.unit).toUpperCase() : current.unit;
+      if (!newCode) { res.status(400).json({ error: 'Enter the fabric type name' }); return; }
+      if (!(FABRIC_UNITS as readonly string[]).includes(newUnit ?? '')) { res.status(400).json({ error: 'Choose meters or kg' }); return; }
+      if ((newCode !== current.value || newUnit !== current.unit) && await fabricCategoryUsage(current.value) > 0) {
+        res.status(409).json({ error: `${fabricCategoryLabel(current.value)} is already used on purchase orders or stock, so its name and unit cannot change.` });
+        return;
+      }
+      const updatedType = await prisma.masterAttribute.update({ where: { id: current.id }, data: { value: newCode, unit: newUnit } });
+      res.json(updatedType);
+      return;
+    }
+
     const updated = await prisma.masterAttribute.update({
       where: { id: id as string },
       data: {
@@ -175,6 +230,12 @@ router.put('/:id', requirePermission('admin.items'), async (req: Request, res: R
 router.delete('/:id', requirePermission('admin.items'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const current = await prisma.masterAttribute.findUnique({ where: { id: id as string } });
+    if (!current) { res.status(404).json({ error: 'Attribute not found' }); return; }
+    if (current.type === FABRIC_CATEGORY && await fabricCategoryUsage(current.value) > 0) {
+      res.status(409).json({ error: `${fabricCategoryLabel(current.value)} is used on purchase orders or stock and cannot be deleted.` });
+      return;
+    }
     await prisma.masterAttribute.delete({ where: { id: id as string } });
     res.json({ success: true });
   } catch (error: any) {

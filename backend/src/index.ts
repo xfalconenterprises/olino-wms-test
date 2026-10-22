@@ -21,6 +21,7 @@ import grnRoutes from './modules/inventory/grn';
 import directInwardRoutes from './modules/inventory/direct-inward';
 import returnsRoutes from './modules/inventory/returns';
 import stockCountsRoutes from './modules/inventory/stock-counts';
+import costPricesRoutes from './modules/administration/cost-prices';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -70,6 +71,7 @@ app.use('/api/clients', clientsRoutes);
 app.use('/api/direct-inward', directInwardRoutes);
 app.use('/api/returns', returnsRoutes);
 app.use('/api/stock-counts', stockCountsRoutes);
+app.use('/api/cost-prices', costPricesRoutes);
 
 // Unknown API paths are a 404, never the frontend page
 app.use('/api', (_req, res) => {

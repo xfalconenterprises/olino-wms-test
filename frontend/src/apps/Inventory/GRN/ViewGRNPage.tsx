@@ -10,6 +10,7 @@ import {
   Barcode
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
+import { fabricCategoryLabel, formatQty, formatTotals, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface GRNLine {
@@ -17,6 +18,7 @@ interface GRNLine {
   itemType: string;
   brand: string | null;
   quality: string | null;
+  qualityName?: string | null;
   shade: string | null;
   category: string | null;
   size: string | null;
@@ -36,6 +38,7 @@ interface BatchItem {
   itemType: string;
   brand: string | null;
   quality: string | null;
+  qualityName?: string | null;
   shade: string | null;
   size: string | null;
   quantity: number;
@@ -129,6 +132,17 @@ export default function ViewGRNPage() {
   const hasShortages = grn.lines.some(l => (l.shortageQty || 0) > 0.01) || grn.discrepancies.length > 0;
   const isFabric = grn.lines.some(l => l.itemType === 'FABRIC' || (l.uom || '').toLowerCase().startsWith('m'));
   const isReadyMade = !isFabric && grn.lines.some(l => l.itemType === 'READY_MADE' || (l.uom || '').toLowerCase().startsWith('p'));
+  // Totals per unit: a fabric GRN can hold meter and kg lines, which are never added together
+  const receivedText = formatTotals(grn.lines.map(l => ({ uom: uomOf(l), quantity: l.receivedQty })));
+  const billedText = formatTotals(grn.lines.map(l => ({ uom: uomOf(l), quantity: l.invoicedQty || l.receivedQty })));
+  // Columns nobody filled in are left off
+  const showQualityName = grn.lines.some(l => l.qualityName);
+  const showCategory = grn.lines.some(l => l.category);
+  const showArtNo = grn.lines.some(l => l.artNo);
+  const showSpec = grn.lines.some(l => l.quality);
+  const showColor = grn.lines.some(l => l.shade);
+  const showSize = grn.lines.some(l => l.size);
+  const showBundle = grn.batches.some(b => b.supplierBundle);
 
   return (
     <div style={{ maxWidth: 1140, margin: '0 auto', paddingBottom: 40 }}>
@@ -212,9 +226,11 @@ export default function ViewGRNPage() {
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
               Supplier Invoice
             </div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
-              Invoice No: <strong>{grn.invoiceRef || '—'}</strong>
-            </div>
+            {grn.invoiceRef && (
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
+                Invoice No: <strong>{grn.invoiceRef}</strong>
+              </div>
+            )}
             {grn.invoiceDate && (
               <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
                 Invoice Date: {formatDate(grn.invoiceDate)}
@@ -256,11 +272,7 @@ export default function ViewGRNPage() {
               Accepted Volume
             </div>
             <div style={{ fontSize: 18, fontWeight: 800, color: '#065f46' }}>
-              {isFabric
-                ? `${grn.totalQuantity.toFixed(1)} meters`
-                : isReadyMade
-                  ? `${Math.round(grn.totalQuantity)} pieces`
-                  : `${grn.totalQuantity} units`}
+              {formatTotals(grn.lines.map(l => ({ uom: uomOf(l), quantity: l.receivedQty })), true)}
             </div>
             <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
               {isFabric
@@ -293,7 +305,7 @@ export default function ViewGRNPage() {
             Official Discrepancy &amp; Shortage Notice
           </div>
           <div style={{ fontSize: 13, color: '#78350f', lineHeight: 1.4, marginBottom: 12 }}>
-            Shortages or damaged pieces were detected against Supplier Invoice <strong>{grn.invoiceRef || '—'}</strong> during gate intake. 
+            Shortages or damaged pieces were detected{grn.invoiceRef ? <> against Supplier Invoice <strong>{grn.invoiceRef}</strong></> : null} during gate intake. 
             Use these numbers for vendor debit notes and shortage reconciliation:
           </div>
 
@@ -323,7 +335,7 @@ export default function ViewGRNPage() {
                     <td style={{ textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>
                       {short > 0 ? `-${short.toFixed(1)}` : 'Defective'}
                     </td>
-                    <td style={{ color: '#475569' }}>{d.notes || '—'}</td>
+                    <td style={{ color: '#475569' }}>{d.notes}</td>
                   </tr>
                 );
               })}
@@ -395,10 +407,11 @@ export default function ViewGRNPage() {
                     <th>Fabric Category</th>
                     <th>Brand</th>
                     <th>Quality</th>
+                    {showQualityName && <th>Quality Name</th>}
                     <th>Shade</th>
                     <th style={{ textAlign: 'center', width: 75 }}>Rolls</th>
-                    <th style={{ textAlign: 'right', width: 110 }}>Billed (m)</th>
-                    <th style={{ textAlign: 'right', width: 120 }}>Received (m)</th>
+                    <th style={{ textAlign: 'right', width: 110 }}>Billed</th>
+                    <th style={{ textAlign: 'right', width: 120 }}>Received</th>
                     <th style={{ textAlign: 'right', width: 100 }}>Shortage</th>
                   </tr>
                 </thead>
@@ -408,27 +421,28 @@ export default function ViewGRNPage() {
                     return (
                       <tr key={line.id} className="hover-row">
                         <td style={{ textAlign: 'center', color: 'var(--color-text-muted)' }}>{idx + 1}</td>
-                        <td><strong>{line.category || 'Fabric'}</strong></td>
-                        <td>{line.brand || '—'}</td>
-                        <td>{line.quality || '—'}</td>
+                        <td><strong>{fabricCategoryLabel(line.category) || 'Fabric'}</strong></td>
+                        <td>{line.brand}</td>
+                        <td>{line.quality}</td>
+                        {showQualityName && <td>{line.qualityName}</td>}
                         <td>
                           {line.shade ? (
                             <span style={{ fontWeight: 700, fontFamily: 'monospace', color: 'var(--color-brand)' }}>
                               {line.shade}
                             </span>
-                          ) : '—'}
+                          ) : null}
                         </td>
                         <td style={{ textAlign: 'center', fontWeight: 600 }}>{line.rollsCount || 1}</td>
                         <td style={{ textAlign: 'right' }}>
-                          {(line.invoicedQty || line.receivedQty).toFixed(1)} m
+                          {formatQty(line.invoicedQty || line.receivedQty, uomOf(line))}
                         </td>
                         <td style={{ textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
-                          {line.receivedQty.toFixed(1)} m
+                          {formatQty(line.receivedQty, uomOf(line))}
                         </td>
                         <td style={{ textAlign: 'right' }}>
                           {isShort ? (
                             <span className="badge badge-danger" style={{ fontWeight: 700, fontSize: 11 }}>
-                              -{line.shortageQty.toFixed(1)} m
+                              -{formatQty(line.shortageQty, uomOf(line))}
                             </span>
                           ) : (
                             <span style={{ color: 'var(--color-text-muted)' }}>—</span>
@@ -440,17 +454,17 @@ export default function ViewGRNPage() {
                 </tbody>
                 <tfoot>
                   <tr style={{ background: '#f8fafc', fontWeight: 700, borderTop: '2px solid var(--color-border)' }}>
-                    <td colSpan={5} style={{ padding: '12px 16px', textTransform: 'uppercase', fontSize: 12, color: '#334155' }}>
+                    <td colSpan={showQualityName ? 6 : 5} style={{ padding: '12px 16px', textTransform: 'uppercase', fontSize: 12, color: '#334155' }}>
                       Total Accepted ({grn.lines.length} items)
                     </td>
                     <td style={{ textAlign: 'center', padding: '12px 16px' }}>
                       {grn.totalRolls} rolls
                     </td>
                     <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 13.5, color: '#065f46' }}>
-                      {grn.totalQuantity.toFixed(1)} m
+                      {billedText}
                     </td>
                     <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 13.5, color: '#065f46' }}>
-                      {grn.totalQuantity.toFixed(1)} m
+                      {receivedText}
                     </td>
                     <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 12, color: hasShortages ? '#b91c1c' : '#16a34a' }}>
                       {hasShortages ? 'Shortage Recorded' : 'Verified'}
@@ -465,10 +479,10 @@ export default function ViewGRNPage() {
                   <tr style={{ background: '#f8fafc' }}>
                     <th style={{ width: 40, textAlign: 'center' }}>#</th>
                     <th>Item Name</th>
-                    <th>Category</th>
-                    <th>Art No</th>
-                    <th>Color</th>
-                    <th style={{ textAlign: 'center', width: 75 }}>Size</th>
+                    {showCategory && <th>Category</th>}
+                    {showArtNo && <th>Art No</th>}
+                    {showColor && <th>Color</th>}
+                    {showSize && <th style={{ textAlign: 'center', width: 75 }}>Size</th>}
                     <th style={{ textAlign: 'right', width: 110 }}>Billed (Pcs)</th>
                     <th style={{ textAlign: 'right', width: 120 }}>Received (Pcs)</th>
                     <th style={{ textAlign: 'right', width: 100 }}>Shortage</th>
@@ -481,10 +495,10 @@ export default function ViewGRNPage() {
                       <tr key={line.id} className="hover-row">
                         <td style={{ textAlign: 'center', color: 'var(--color-text-muted)' }}>{idx + 1}</td>
                         <td><strong>{line.name || line.brand || 'Item'}</strong></td>
-                        <td>{line.category || '—'}</td>
-                        <td>{line.artNo || '—'}</td>
-                        <td>{line.shade || '—'}</td>
-                        <td style={{ textAlign: 'center', fontWeight: 600 }}>{line.size || '—'}</td>
+                        {showCategory && <td>{line.category}</td>}
+                        {showArtNo && <td>{line.artNo}</td>}
+                        {showColor && <td>{line.shade}</td>}
+                        {showSize && <td style={{ textAlign: 'center', fontWeight: 600 }}>{line.size}</td>}
                         <td style={{ textAlign: 'right' }}>
                           {Math.round(line.invoicedQty || line.receivedQty)} pcs
                         </td>
@@ -506,11 +520,11 @@ export default function ViewGRNPage() {
                 </tbody>
                 <tfoot>
                   <tr style={{ background: '#f8fafc', fontWeight: 700, borderTop: '2px solid var(--color-border)' }}>
-                    <td colSpan={6} style={{ padding: '12px 16px', textTransform: 'uppercase', fontSize: 12, color: '#334155' }}>
+                    <td colSpan={2 + [showCategory, showArtNo, showColor, showSize].filter(Boolean).length} style={{ padding: '12px 16px', textTransform: 'uppercase', fontSize: 12, color: '#334155' }}>
                       Total Accepted ({grn.lines.length} items)
                     </td>
                     <td colSpan={2} style={{ textAlign: 'right', padding: '12px 16px', fontSize: 13.5, color: '#065f46' }}>
-                      {Math.round(grn.totalQuantity)} pieces
+                      {receivedText}
                     </td>
                     <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 12, color: hasShortages ? '#b91c1c' : '#16a34a' }}>
                       {hasShortages ? 'Shortage Recorded' : 'Verified'}
@@ -525,9 +539,9 @@ export default function ViewGRNPage() {
                   <tr style={{ background: '#f8fafc' }}>
                     <th style={{ width: 40, textAlign: 'center' }}>#</th>
                     <th>Item Name</th>
-                    <th>Specification</th>
-                    <th>Color</th>
-                    <th style={{ textAlign: 'center', width: 75 }}>Size</th>
+                    {showSpec && <th>Specification</th>}
+                    {showColor && <th>Color</th>}
+                    {showSize && <th style={{ textAlign: 'center', width: 75 }}>Size</th>}
                     <th style={{ textAlign: 'right', width: 110 }}>Billed</th>
                     <th style={{ textAlign: 'right', width: 120 }}>Received</th>
                     <th style={{ textAlign: 'right', width: 100 }}>Shortage</th>
@@ -541,9 +555,9 @@ export default function ViewGRNPage() {
                       <tr key={line.id} className="hover-row">
                         <td style={{ textAlign: 'center', color: 'var(--color-text-muted)' }}>{idx + 1}</td>
                         <td><strong>{line.name || line.brand || 'Accessory'}</strong></td>
-                        <td>{line.quality || '—'}</td>
-                        <td>{line.shade || '—'}</td>
-                        <td style={{ textAlign: 'center' }}>{line.size || '—'}</td>
+                        {showSpec && <td>{line.quality}</td>}
+                        {showColor && <td>{line.shade}</td>}
+                        {showSize && <td style={{ textAlign: 'center' }}>{line.size}</td>}
                         <td style={{ textAlign: 'right' }}>
                           {line.invoicedQty || line.receivedQty} {uom}
                         </td>
@@ -565,11 +579,11 @@ export default function ViewGRNPage() {
                 </tbody>
                 <tfoot>
                   <tr style={{ background: '#f8fafc', fontWeight: 700, borderTop: '2px solid var(--color-border)' }}>
-                    <td colSpan={5} style={{ padding: '12px 16px', textTransform: 'uppercase', fontSize: 12, color: '#334155' }}>
+                    <td colSpan={2 + [showSpec, showColor, showSize].filter(Boolean).length} style={{ padding: '12px 16px', textTransform: 'uppercase', fontSize: 12, color: '#334155' }}>
                       Total Accepted ({grn.lines.length} items)
                     </td>
                     <td colSpan={2} style={{ textAlign: 'right', padding: '12px 16px', fontSize: 13.5, color: '#065f46' }}>
-                      {grn.totalQuantity} units
+                      {receivedText}
                     </td>
                     <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 12, color: hasShortages ? '#b91c1c' : '#16a34a' }}>
                       {hasShortages ? 'Shortage Recorded' : 'Verified'}
@@ -591,7 +605,7 @@ export default function ViewGRNPage() {
                 <tr style={{ background: '#f8fafc' }}>
                   <th style={{ width: 40, textAlign: 'center' }}>#</th>
                   <th>Barcode</th>
-                  <th>{isFabric ? 'Bundle / Bale No' : 'Bundle / Box No'}</th>
+                  {showBundle && <th>{isFabric ? 'Bundle / Bale No' : 'Bundle / Box No'}</th>}
                   <th>{isFabric ? 'Brand' : 'Item Name'}</th>
                   <th>{isFabric ? 'Quality' : 'Specification'}</th>
                   <th>{isFabric ? 'Shade' : 'Color'}</th>
@@ -608,13 +622,13 @@ export default function ViewGRNPage() {
                         {b.batchCode}
                       </span>
                     </td>
-                    <td>{b.supplierBundle || '—'}</td>
-                    <td style={{ fontWeight: 600 }}>{isFabric ? (b.brand || '—') : (b.brand || 'Item')}</td>
-                    <td>{b.quality || '—'}</td>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{b.shade || '—'}</td>
-                    {!isFabric && <td>{b.size || '—'}</td>}
+                    {showBundle && <td>{b.supplierBundle}</td>}
+                    <td style={{ fontWeight: 600 }}>{isFabric ? b.brand : (b.brand || 'Item')}</td>
+                    <td>{b.quality}{b.qualityName ? <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{b.qualityName}</div> : null}</td>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{b.shade}</td>
+                    {!isFabric && <td>{b.size}</td>}
                     <td style={{ textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
-                      {isFabric ? `${b.quantity.toFixed(1)} m` : isReadyMade ? `${Math.round(b.quantity)} pcs` : `${b.quantity} ${b.uom?.toLowerCase() || ''}`}
+                      {formatQty(b.quantity, uomOf({ uom: b.uom, itemType: b.itemType }))}
                     </td>
                   </tr>
                 ))}

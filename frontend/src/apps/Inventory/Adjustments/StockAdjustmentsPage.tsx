@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import api from '../../../utils/api';
+import { allowsDecimals, unitLabel, uomOf } from '../../../utils/units';
 import { SlidersHorizontal, Search, CheckCircle2 } from 'lucide-react';
 import '../../../styles/components.css';
 
@@ -63,12 +64,7 @@ export default function StockAdjustmentsPage() {
     }
   };
 
-  const formatUnit = (i: StockItem) => {
-    if (i.uom) return i.uom.toLowerCase();
-    if (i.itemType === 'FABRIC') return 'm';
-    if (i.itemType === 'READY_MADE') return 'pcs';
-    return 'units';
-  };
+  const formatUnit = (i: StockItem) => unitLabel(uomOf(i));
 
   const handleAdjust = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,14 +169,18 @@ export default function StockAdjustmentsPage() {
                 <span style={{ color: 'var(--color-text-muted)', display: 'block', fontSize: 12 }}>Product</span>
                 <strong>{item.name || item.brand || 'Item'}</strong>
               </div>
-              <div>
-                <span style={{ color: 'var(--color-text-muted)', display: 'block', fontSize: 12 }}>{isFabric ? 'Quality' : 'Fabric / Spec'}</span>
-                <strong>{item.quality || item.category || '—'}</strong>
-              </div>
-              <div>
-                <span style={{ color: 'var(--color-text-muted)', display: 'block', fontSize: 12 }}>{isFabric ? 'Shade' : 'Color · Size'}</span>
-                <strong>{item.shade || '—'} {item.size ? `(Size ${item.size})` : ''}</strong>
-              </div>
+              {(isFabric ? item.quality : item.quality || item.category) && (
+                <div>
+                  <span style={{ color: 'var(--color-text-muted)', display: 'block', fontSize: 12 }}>{isFabric ? 'Quality' : 'Fabric / Spec'}</span>
+                  <strong>{isFabric ? item.quality : item.quality || item.category}</strong>
+                </div>
+              )}
+              {(item.shade || item.size) && (
+                <div>
+                  <span style={{ color: 'var(--color-text-muted)', display: 'block', fontSize: 12 }}>{isFabric ? 'Shade' : 'Color · Size'}</span>
+                  <strong>{[item.shade, item.size && `Size ${item.size}`].filter(Boolean).join(' · ')}</strong>
+                </div>
+              )}
               <div>
                 <span style={{ color: 'var(--color-text-muted)', display: 'block', fontSize: 12 }}>Current Shelf Location</span>
                 <strong>
@@ -209,7 +209,7 @@ export default function StockAdjustmentsPage() {
                     ref={qtyInputRef}
                     type="number"
                     inputMode="decimal"
-                    step={isFabric ? '0.1' : '1'}
+                    step={allowsDecimals(uomOf(item)) ? 'any' : 1}
                     min="0"
                     className="form-input"
                     value={newQty}

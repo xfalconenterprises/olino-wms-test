@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 import { nextDocumentNumber } from '../../utils/document-number';
-import { itemDescription, unitLabel } from './returns';
+import { itemDescription } from './returns';
+import { allowsDecimals, unitLabel } from '../../utils/units';
 
 // Stock counts (cycle counts / stock takes).
 // 1. A count covers a set of locations. 2. Staff scan what is on each location without seeing
@@ -13,7 +14,7 @@ import { itemDescription, unitLabel } from './returns';
 const router = Router();
 router.use(requireAuth);
 
-const COUNT = requirePermission('inv.stock_count');
+const COUNT = requirePermission('ops.stock_count');
 const APPROVE = requirePermission('inv.adjustments');
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -220,7 +221,7 @@ router.post('/:id/locations/:code/entries', COUNT, async (req: Request, res: Res
 
     const quantity = Number(req.body.quantity);
     if (!Number.isFinite(quantity) || quantity <= 0) throw new CountError('Enter the quantity found (above 0).');
-    if (batch.uom !== 'METERS' && !Number.isInteger(quantity)) throw new CountError(`${unitLabel(batch.uom)} must be a whole number.`);
+    if (!allowsDecimals(batch.uom) && !Number.isInteger(quantity)) throw new CountError(`${unitLabel(batch.uom)} must be a whole number.`);
 
     const entry = await prisma.stockCountEntry.upsert({
       where: { countLocationId_batchId: { countLocationId: cl.id, batchId: batch.id } },

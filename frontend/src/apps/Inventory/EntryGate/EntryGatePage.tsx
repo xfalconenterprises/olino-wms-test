@@ -36,8 +36,10 @@ import {
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate, formatDateTime } from '../../../utils/format';
+import { fabricCategoryLabel, fabricUnit, formatTotals, formatUnitTotals, unitLabel, unitName, useFabricCategories } from '../../../utils/units';
 import { ITEM_TYPE_LABEL, lumpPayload, remainingQty, type ImportLine, type InwardItemType } from '../../../utils/directInwardImport';
 import DirectInwardImport from './DirectInwardImport';
+import { QuickAddClientModal, QuickAddSupplierModal } from '../../../components/Common/QuickAddModals';
 import '../../../styles/components.css';
 
 interface Supplier {
@@ -74,6 +76,7 @@ interface PendingItem {
     itemType: string;
     brand: string | null;
     quality: string | null;
+    qualityName?: string | null;
     shade: string | null;
     size: string | null;
     name: string | null;
@@ -91,6 +94,7 @@ interface SupplierInboundData {
   supplier: Supplier;
   totalOpenPOs: number;
   totalPendingQty: number;
+  pendingTotals?: [string, number][];
   pendingItems: PendingItem[];
   allOpenPOs: Array<{
     id: string;
@@ -158,6 +162,22 @@ const ISSUE_TYPE_LABELS: Record<string, string> = {
   SHORT_QUANTITY: 'Physical Quantity Less Than Invoice',
   DAMAGED_DEFECTIVE: 'Damaged or Defective in Bundle',
 };
+
+type SkuDetails = { brand: string | null; quality: string | null; qualityName?: string | null; shade: string | null; size: string | null; name: string | null; artNo: string | null; category: string | null };
+
+// One-line item description with only the details that were entered,
+// e.g. "Raymond — 2201 (Quality Name: Royal, Shade: 12)"
+function skuTitle(sku: SkuDetails, itemType: string): string {
+  const details = (pairs: [string, string | null | undefined][]) => {
+    const shown = pairs.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(', ');
+    return shown ? ` (${shown})` : '';
+  };
+  if (itemType === 'FABRIC') {
+    return [sku.brand, sku.quality].filter(Boolean).join(' — ') + details([['Quality Name', sku.qualityName], ['Shade', sku.shade]]);
+  }
+  if (itemType === 'READY_MADE') return (sku.name || '') + details([['Art', sku.artNo], ['Size', sku.size]]);
+  return (sku.name || '') + details([['Category', sku.category], ['Size', sku.size]]);
+}
 
 type InboundMode = 'SELECT_MODE' | 'SUPPLIER_INBOUND' | 'PO_SCAN' | 'DIRECT';
 
@@ -306,15 +326,7 @@ export default function EntryGatePage() {
 
   // Quick Add Supplier Modal State
   const [showQuickAddSupplierModal, setShowQuickAddSupplierModal] = useState(false);
-  const [quickSupplierForm, setQuickSupplierForm] = useState({
-    name: '',
-    contactPerson: '',
-    phone: '',
-    city: '',
-    address: '',
-  });
-  const [quickSupplierSubmitting, setQuickSupplierSubmitting] = useState(false);
-  const [quickSupplierError, setQuickSupplierError] = useState('');
+  const [quickSupplierInitialName, setQuickSupplierInitialName] = useState('');
 
   const [directInvoiceRef, setDirectInvoiceRef] = useState('');
   const [directInvoiceDate, setDirectInvoiceDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -326,22 +338,13 @@ export default function EntryGatePage() {
 
   // Quick Add Client Modal State (identical to PO)
   const [showQuickAddClientModal, setShowQuickAddClientModal] = useState(false);
-  const [quickClientForm, setQuickClientForm] = useState({
-    name: '',
-    clientType: '',
-    contactPerson: '',
-    phone: '',
-    city: '',
-    address: '',
-    notes: ''
-  });
-  const [quickClientSubmitting, setQuickClientSubmitting] = useState(false);
-  const [quickClientError, setQuickClientError] = useState('');
+  const [quickClientInitialName, setQuickClientInitialName] = useState('');
 
   // Master Data Attributes for Autocomplete
   const [masterAttributes, setMasterAttributes] = useState<{
     BRAND: string[];
     QUALITY: string[];
+    QUALITY_NAME: string[];
     SHADE: string[];
     ITEM_NAME: string[];
     FABRIC_TYPE: string[];
@@ -351,13 +354,16 @@ export default function EntryGatePage() {
   }>({
     BRAND: [],
     QUALITY: [],
+    QUALITY_NAME: [],
     SHADE: [],
     ITEM_NAME: [],
     FABRIC_TYPE: [],
     ART_NO: [],
     ACCESSORY_CATEGORY: [],
-    CATEGORY: ['SUITING', 'SHIRTING', 'PLAIN_SHIRTING'],
+    CATEGORY: [],
   });
+  // Fabric types (each with its unit) from the master catalogue
+  const fabricCategories = useFabricCategories();
 
   // Direct Inward Item Entry State
   // Steps: General Information → item type → entry method → entry. Unset means "not chosen yet".
@@ -369,6 +375,7 @@ export default function EntryGatePage() {
     category: 'SUITING',
     brand: '',
     quality: '',
+    qualityName: '',
     shade: '',
     bundleNumber: '',
     meters: '',
@@ -415,11 +422,12 @@ export default function EntryGatePage() {
     const types = new Set(directSessionBatches.map(b => b.itemType));
     const only = types.size === 1 ? [...types][0] : null;
     const pick = (fabric: string, other: string) => (only === 'FABRIC' ? fabric : only ? other : `${fabric} / ${other}`);
-    const categoryLabel: Record<string, string> = { SUITING: 'Suiting', SHIRTING: 'Shirting', PLAIN_SHIRTING: 'Plain Shirting', OTHER: 'Other' };
+    const hasQualityName = directSessionBatches.some(b => b.qualityName);
     return [
-      { header: only === 'READY_MADE' ? 'Fabric Type' : 'Category', value: (b: any) => categoryLabel[b.category] ?? b.category ?? '' },
+      { header: only === 'READY_MADE' ? 'Fabric Type' : 'Category', value: (b: any) => (b.itemType === 'FABRIC' ? fabricCategoryLabel(b.category) : b.category) ?? '' },
       { header: pick('Brand', 'Item Name'), value: (b: any) => (b.itemType === 'FABRIC' ? b.brand : b.name) ?? '' },
       { header: pick('Quality', 'Art No'), value: (b: any) => (b.itemType === 'FABRIC' ? b.quality : b.artNo) ?? '' },
+      ...(hasQualityName ? [{ header: 'Quality Name', value: (b: any) => b.qualityName ?? '' }] : []),
       { header: 'Shade', value: (b: any) => b.shade ?? '' },
       { header: only === 'ACCESSORY' ? 'Spec / Size' : 'Size', value: (b: any) => b.size ?? '' },
     ];
@@ -655,12 +663,13 @@ export default function EntryGatePage() {
         setMasterAttributes({
           BRAND: res.data.BRAND || [],
           QUALITY: res.data.QUALITY || [],
+          QUALITY_NAME: res.data.QUALITY_NAME || [],
           SHADE: res.data.SHADE || [],
           ITEM_NAME: res.data.ITEM_NAME || [],
           FABRIC_TYPE: res.data.FABRIC_TYPE || [],
           ART_NO: res.data.ART_NO || [],
           ACCESSORY_CATEGORY: res.data.ACCESSORY_CATEGORY || [],
-          CATEGORY: res.data.CATEGORY || ['SUITING', 'SHIRTING', 'PLAIN_SHIRTING'],
+          CATEGORY: res.data.CATEGORY || [],
         });
       }
     } catch {}
@@ -708,95 +717,29 @@ export default function EntryGatePage() {
   }, [suppliers, directSupplierInput]);
 
   const openDirectQuickAddSupplier = (initialName?: string) => {
-    setQuickSupplierForm({
-      name: initialName || directSupplierInput.trim() || '',
-      contactPerson: '',
-      phone: '',
-      city: '',
-      address: '',
-    });
-    setQuickSupplierError('');
+    setQuickSupplierInitialName(initialName || directSupplierInput.trim());
     setShowQuickAddSupplierModal(true);
   };
 
-  const handleDirectQuickAddSupplierSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setQuickSupplierError('');
-    if (!quickSupplierForm.name.trim()) {
-      setQuickSupplierError('Supplier legal / mill name is required.');
-      return;
-    }
-
-    setQuickSupplierSubmitting(true);
-    try {
-      const res = await api.post('/api/suppliers', {
-        name: quickSupplierForm.name.trim(),
-        contactPerson: quickSupplierForm.contactPerson.trim() || undefined,
-        phone: quickSupplierForm.phone.trim() || undefined,
-        city: quickSupplierForm.city.trim() || undefined,
-        address: quickSupplierForm.address.trim() || undefined,
-      });
-
-      const newSup = res.data;
-      setSuppliers(prev => [newSup, ...prev]);
-      setDirectSupplierId(newSup.id);
-      setDirectSupplierInput(newSup.name);
-      setShowDirectSupplierMenu(false);
-      setShowQuickAddSupplierModal(false);
-      setQuickSupplierForm({ name: '', contactPerson: '', phone: '', city: '', address: '' });
-    } catch (err: any) {
-      setQuickSupplierError(err.response?.data?.error || 'Failed to save supplier details');
-    } finally {
-      setQuickSupplierSubmitting(false);
-    }
+  const handleQuickSupplierCreated = (newSup: any) => {
+    setSuppliers(prev => [newSup, ...prev]);
+    setDirectSupplierId(newSup.id);
+    setDirectSupplierInput(newSup.name);
+    setShowDirectSupplierMenu(false);
+    setShowQuickAddSupplierModal(false);
   };
 
   const openDirectQuickAddClient = (initialName?: string) => {
-    setQuickClientForm({
-      name: initialName || directClientInput.trim() || '',
-      clientType: '',
-      contactPerson: '',
-      phone: '',
-      city: '',
-      address: '',
-      notes: ''
-    });
-    setQuickClientError('');
+    setQuickClientInitialName(initialName || directClientInput.trim());
     setShowQuickAddClientModal(true);
   };
 
-  const handleDirectQuickAddClientSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setQuickClientError('');
-    if (!quickClientForm.name.trim()) {
-      setQuickClientError('Client / School name is required.');
-      return;
-    }
-
-    setQuickClientSubmitting(true);
-    try {
-      const res = await api.post('/api/clients', {
-        name: quickClientForm.name.trim(),
-        clientType: quickClientForm.clientType.trim() || undefined,
-        contactPerson: quickClientForm.contactPerson.trim() || undefined,
-        phone: quickClientForm.phone.trim() || undefined,
-        city: quickClientForm.city.trim() || undefined,
-        address: quickClientForm.address.trim() || undefined,
-        notes: quickClientForm.notes.trim() || undefined,
-      });
-
-      const newCli = res.data;
-      setClientsList(prev => [newCli, ...prev]);
-      setDirectSelectedClient(newCli);
-      setDirectClientInput(newCli.name);
-      setShowDirectClientMenu(false);
-      setShowQuickAddClientModal(false);
-      setQuickClientForm({ name: '', clientType: '', contactPerson: '', phone: '', city: '', address: '', notes: '' });
-    } catch (err: any) {
-      setQuickClientError(err.response?.data?.error || 'Failed to save client details');
-    } finally {
-      setQuickClientSubmitting(false);
-    }
+  const handleQuickClientCreated = (newCli: any) => {
+    setClientsList(prev => [newCli, ...prev]);
+    setDirectSelectedClient(newCli);
+    setDirectClientInput(newCli.name);
+    setShowDirectClientMenu(false);
+    setShowQuickAddClientModal(false);
   };
 
   const loadPendingItems = async (supplierId: string) => {
@@ -1033,7 +976,7 @@ export default function EntryGatePage() {
       setRecentBatch({
         batchCode,
         quantity: qty,
-        uom: selectedItem.sku.uom || (itemTypeFilter === 'FABRIC' ? 'Meters' : 'Pcs'),
+        uom: unitName(selectedItem.sku.uom || (itemTypeFilter === 'FABRIC' ? 'METERS' : 'PCS')),
         bundleNumber: activeBundleNo.trim() || undefined,
         matchedPoNumber: matchedPo ? matchedPo.poNumber : (unlinked ? 'Direct Unlinked Stock' : undefined),
       });
@@ -1156,7 +1099,7 @@ export default function EntryGatePage() {
     setRecentBatch({
       batchCode: batch.batchCode,
       quantity: batch.quantity,
-      uom: batch.uom || (payload.itemType === 'FABRIC' ? 'Meters' : 'Pcs'),
+      uom: unitName(batch.uom || (payload.itemType === 'FABRIC' ? 'METERS' : 'PCS')),
       bundleNumber: payload.supplierBundle,
       matchedPoNumber: 'Direct Inward',
     });
@@ -1275,7 +1218,7 @@ export default function EntryGatePage() {
     if (directClassification === 'FABRIC') {
       const meters = parseFloat(directItemForm.meters);
       if (!meters || meters <= 0) {
-        setDirectItemError('Please enter a valid meter quantity.');
+        setDirectItemError(`Please enter the quantity in ${unitName(fabricUnit(fabricCategories, directItemForm.category)).toLowerCase()}.`);
         return;
       }
       if (!directItemForm.brand.trim()) {
@@ -1297,8 +1240,9 @@ export default function EntryGatePage() {
         brand: directItemForm.brand.trim(),
         quality: directItemForm.quality.trim(),
         shade: directItemForm.shade.trim(),
+        qualityName: directItemForm.qualityName.trim() || undefined,
         quantity: meters,
-        uom: 'METERS',
+        uom: fabricUnit(fabricCategories, directItemForm.category),
         supplierBundle: directItemForm.bundleNumber.trim() || undefined,
         notes: directItemForm.notes.trim() || undefined,
       };
@@ -1430,7 +1374,11 @@ export default function EntryGatePage() {
     window.open(`/api/labels/preview/${batchCode}`, '_blank');
   };
 
-  const totalSessionQuantity = sessionRolls.reduce((sum, r) => sum + r.quantity, 0);
+  // Session and pending quantities per unit (meters and kg are never added)
+  const sessionQtyText = formatTotals(sessionRolls.map(r => ({ uom: r.uom || (itemTypeFilter === 'FABRIC' ? 'METERS' : 'PCS'), quantity: r.quantity })));
+  const pendingQtyText = supplierData?.pendingTotals
+    ? formatUnitTotals(supplierData.pendingTotals)
+    : String((supplierData?.totalPendingQty ?? 0).toFixed(1));
 
   return (
     <div style={{ maxWidth: 1180, margin: '0 auto', paddingBottom: 60 }}>
@@ -2124,7 +2072,7 @@ export default function EntryGatePage() {
                       Fabric
                     </h3>
                     <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0, lineHeight: 1.5 }}>
-                      Suiting, shirting, drill cotton, denim & bottom weight rolls measured in meters.
+                      Suiting, shirting, denim and other rolls in meters; knits weighed in kg.
                     </p>
                   </div>
 
@@ -2271,12 +2219,12 @@ export default function EntryGatePage() {
                     <FileCheck size={20} color={isPartialReceiving ? '#b45309' : '#16a34a'} />
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 13.5, color: '#0f172a' }}>
-                        Current Delivery Session: {sessionRolls.length} rolls ({totalSessionQuantity.toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'Meters' : 'Units'}) Inwarded
+                        Current Delivery Session: {sessionRolls.length} rolls ({sessionQtyText}) Inwarded
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
                         {isPartialReceiving ? (
                           <span style={{ color: '#b45309', fontWeight: 600 }}>
-                            Partial Delivery — {(supplierData?.totalPendingQty ?? 0).toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'm' : 'units'} pending on open PO(s). You can finalize this partial GRN now and do the rest later.
+                            Partial Delivery — {pendingQtyText} pending on open PO(s). You can finalize this partial GRN now and do the rest later.
                           </span>
                         ) : (
                           <span style={{ color: '#059669', fontWeight: 600 }}>
@@ -2571,7 +2519,7 @@ export default function EntryGatePage() {
                     </thead>
                     <tbody>
                       {filteredPendingItems.map(p => {
-                        const unit = p.sku.uom ? p.sku.uom.toLowerCase() : (itemTypeFilter === 'FABRIC' ? 'm' : 'pcs');
+                        const unit = unitLabel(p.sku.uom || (itemTypeFilter === 'FABRIC' ? 'METERS' : 'PCS'));
                         return (
                           <tr
                             key={p.sku.id}
@@ -2586,24 +2534,28 @@ export default function EntryGatePage() {
                           >
                             {itemTypeFilter === 'FABRIC' ? (
                               <>
-                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.brand || '—'}</td>
-                                <td style={{ padding: '10px 12px' }}>{p.sku.quality || p.sku.category || '—'}</td>
-                                <td style={{ padding: '10px 12px', fontWeight: 600 }}>{p.sku.shade || '—'}</td>
+                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.brand}</td>
+                                <td style={{ padding: '10px 12px' }}>
+                                  {p.sku.quality}
+                                  {p.sku.qualityName && <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{p.sku.qualityName}</div>}
+                                  {p.sku.category && <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{fabricCategoryLabel(p.sku.category)}</div>}
+                                </td>
+                                <td style={{ padding: '10px 12px', fontWeight: 600 }}>{p.sku.shade}</td>
                               </>
                             ) : itemTypeFilter === 'READY_MADE' ? (
                               <>
-                                <td style={{ padding: '10px 12px', fontWeight: 600 }}>{p.sku.name || '—'}</td>
-                                <td style={{ padding: '10px 12px' }}>{p.sku.category || p.sku.quality || '—'}</td>
-                                <td style={{ padding: '10px 12px' }}>{p.sku.shade || '—'}</td>
-                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.artNo || '—'}</td>
-                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.size || '—'}</td>
+                                <td style={{ padding: '10px 12px', fontWeight: 600 }}>{p.sku.name}</td>
+                                <td style={{ padding: '10px 12px' }}>{p.sku.category || p.sku.quality}</td>
+                                <td style={{ padding: '10px 12px' }}>{p.sku.shade}</td>
+                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.artNo}</td>
+                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.size}</td>
                               </>
                             ) : (
                               <>
-                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.category || '—'}</td>
-                                <td style={{ padding: '10px 12px', fontWeight: 600 }}>{p.sku.name || '—'}</td>
-                                <td style={{ padding: '10px 12px' }}>{p.sku.quality || '—'}</td>
-                                <td style={{ padding: '10px 12px' }}>{p.sku.size || '—'}</td>
+                                <td style={{ padding: '10px 12px', fontWeight: 700 }}>{p.sku.category}</td>
+                                <td style={{ padding: '10px 12px', fontWeight: 600 }}>{p.sku.name}</td>
+                                <td style={{ padding: '10px 12px' }}>{p.sku.quality}</td>
+                                <td style={{ padding: '10px 12px' }}>{p.sku.size}</td>
                               </>
                             )}
 
@@ -2677,13 +2629,7 @@ export default function EntryGatePage() {
                           Selected Item for Inward
                         </span>
                         <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-text-main)', marginTop: 2 }}>
-                          {itemTypeFilter === 'FABRIC' ? (
-                            <>{selectedItem.sku.brand} — {selectedItem.sku.quality || selectedItem.sku.category} [Shade: {selectedItem.sku.shade || 'Std'}]</>
-                          ) : itemTypeFilter === 'READY_MADE' ? (
-                            <>{selectedItem.sku.name} (Art: {selectedItem.sku.artNo || '—'}, Size: {selectedItem.sku.size || '—'})</>
-                          ) : (
-                            <>{selectedItem.sku.name} ({selectedItem.sku.category}, Size: {selectedItem.sku.size || 'Std'})</>
-                          )}
+                          {skuTitle(selectedItem.sku, itemTypeFilter ?? selectedItem.sku.itemType)}
                         </div>
                       </div>
 
@@ -2710,7 +2656,7 @@ export default function EntryGatePage() {
                         {selectedPoOrder.targetClient && <span style={{ color: 'var(--color-text-muted)', marginLeft: 6 }}>({selectedPoOrder.targetClient})</span>}
                       </div>
                       <div>
-                        Pending on PO: <strong style={{ color: 'var(--color-brand)' }}>{selectedPoOrder.remainingQty} {selectedItem.sku.uom.toLowerCase()}</strong>
+                        Pending on PO: <strong style={{ color: 'var(--color-brand)' }}>{selectedPoOrder.remainingQty} {unitLabel(selectedItem.sku.uom)}</strong>
                       </div>
                     </div>
                   </div>
@@ -2748,7 +2694,7 @@ export default function EntryGatePage() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 14, marginBottom: 18 }}>
                     <div>
                       <label className="form-label" style={{ fontWeight: 700 }}>
-                        Quantity ({selectedItem?.sku.uom || (itemTypeFilter === 'FABRIC' ? 'Meters' : 'Pcs')}) <span className="required">*</span>
+                        Quantity ({unitName(selectedItem?.sku.uom || (itemTypeFilter === 'FABRIC' ? 'METERS' : 'PCS'))}) <span className="required">*</span>
                       </label>
                       <div style={{ position: 'relative' }}>
                         <input
@@ -2766,7 +2712,7 @@ export default function EntryGatePage() {
                           autoFocus
                         />
                         <span style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', fontWeight: 600, color: 'var(--color-text-muted)' }}>
-                          {selectedItem?.sku.uom ? selectedItem.sku.uom.toLowerCase() : (itemTypeFilter === 'FABRIC' ? 'm' : 'pcs')}
+                          {unitLabel(selectedItem?.sku.uom || (itemTypeFilter === 'FABRIC' ? 'METERS' : 'PCS'))}
                         </span>
                       </div>
                     </div>
@@ -2871,7 +2817,7 @@ export default function EntryGatePage() {
                   <div>
                     <span style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block' }}>TOTAL INWARD</span>
                     <strong style={{ fontSize: 16, color: 'var(--color-text-main)' }}>
-                      {totalSessionQuantity.toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'Meters' : 'Units'} ({sessionRolls.length} rolls)
+                      {sessionQtyText} ({sessionRolls.length} rolls)
                     </strong>
                   </div>
 
@@ -2917,7 +2863,7 @@ export default function EntryGatePage() {
                             <Package size={14} color="var(--color-brand)" /> {grp.bundleNumber}
                           </span>
                           <span style={{ color: '#065f46' }}>
-                            {grp.rolls.length} item(s) • {grp.totalQty.toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'm' : 'pcs'}
+                            {grp.rolls.length} item(s) • {formatTotals(grp.rolls.map((r: any) => ({ uom: r.uom || 'METERS', quantity: r.quantity })))}
                           </span>
                         </div>
 
@@ -2936,7 +2882,7 @@ export default function EntryGatePage() {
                                   )}
                                 </td>
                                 <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
-                                  {r.quantity} {r.uom ? r.uom.toLowerCase() : 'm'}
+                                  {r.quantity} {unitLabel(r.uom || 'METERS')}
                                 </td>
                                 <td style={{ padding: '8px 10px', textAlign: 'right' }}>
                                   <button
@@ -2972,7 +2918,7 @@ export default function EntryGatePage() {
                         {sessionRolls.map(r => (
                           <tr key={r.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
                             <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontWeight: 600 }}>{r.batchCode}</td>
-                            <td style={{ padding: '8px 10px', fontSize: 11 }}>{r.supplierBundle || '—'}</td>
+                            <td style={{ padding: '8px 10px', fontSize: 11 }}>{r.supplierBundle}</td>
                             <td style={{ padding: '8px 10px' }}>
                               <div style={{ fontWeight: 600 }}>{r.brand || r.name}</div>
                               {r.clientName && (
@@ -2982,7 +2928,7 @@ export default function EntryGatePage() {
                               )}
                             </td>
                             <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
-                              {r.quantity} {r.uom ? r.uom.toLowerCase() : 'm'}
+                              {r.quantity} {unitLabel(r.uom || 'METERS')}
                             </td>
                             <td style={{ padding: '8px 10px', textAlign: 'right' }}>
                               <button
@@ -3026,7 +2972,7 @@ export default function EntryGatePage() {
                       }}>
                         <AlertCircle size={16} color="#b45309" style={{ flexShrink: 0, marginTop: 1 }} />
                         <div>
-                          <strong>Partial Receiving Detected:</strong> {(supplierData?.totalPendingQty ?? 0).toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'm' : 'units'} pending on PO. You can finalize this partial GRN now and inward the rest later.
+                          <strong>Partial Receiving Detected:</strong> {pendingQtyText} pending on PO. You can finalize this partial GRN now and inward the rest later.
                         </div>
                       </div>
                     ) : (
@@ -3681,7 +3627,7 @@ export default function EntryGatePage() {
                 <p style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600, color: '#334155' }}>What are you receiving?</p>
                 <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                   {([
-                    ['FABRIC', <Layers size={22} />, 'Rolls, entered in meters'],
+                    ['FABRIC', <Layers size={22} />, 'Rolls, in meters (or kg for knits)'],
                     ['READY_MADE', <Shirt size={22} />, 'Garments, entered in pieces'],
                     ['ACCESSORY', <Boxes size={22} />, 'Buttons, zips, labels and more'],
                   ] as const).map(([type, icon, subtitle]) => {
@@ -3742,17 +3688,16 @@ export default function EntryGatePage() {
                 <>
                   <div className="form-row" style={{ marginBottom: 14 }}>
                     <div className="form-group" style={{ flex: 1 }}>
-                      <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Fabric Category <span className="required">*</span></label>
+                      <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Fabric Type <span className="required">*</span></label>
                       <select
                         className="form-select"
                         value={directItemForm.category}
                         onChange={e => setDirectItemForm({ ...directItemForm, category: e.target.value })}
                         style={{ height: 40, fontSize: 13.5 }}
                       >
-                        <option value="SUITING">Suiting</option>
-                        <option value="SHIRTING">Shirting</option>
-                        <option value="PLAIN_SHIRTING">Plain Shirting</option>
-                        <option value="OTHER">Other Fabric</option>
+                        {fabricCategories.map(c => (
+                          <option key={c.value} value={c.value}>{c.label}{c.unit === 'KG' ? ' (kg)' : ''}</option>
+                        ))}
                       </select>
                     </div>
 
@@ -3791,6 +3736,22 @@ export default function EntryGatePage() {
                     </div>
 
                     <div className="form-group" style={{ flex: 1 }}>
+                      <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Quality Name</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        list="direct-quality-name-options"
+                        placeholder="Optional"
+                        value={directItemForm.qualityName}
+                        onChange={e => setDirectItemForm({ ...directItemForm, qualityName: e.target.value })}
+                        style={{ height: 40, fontSize: 13.5 }}
+                      />
+                      <datalist id="direct-quality-name-options">
+                        {masterAttributes.QUALITY_NAME.map(q => <option key={q} value={q} />)}
+                      </datalist>
+                    </div>
+
+                    <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Shade / Color <span className="required">*</span></label>
                       <input
                         type="text"
@@ -3810,13 +3771,15 @@ export default function EntryGatePage() {
 
                   <div className="form-row" style={{ marginBottom: 18 }}>
                     <div className="form-group" style={{ flex: 1 }}>
-                      <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Quantity (Meters) <span className="required">*</span></label>
+                      <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>
+                        Quantity ({unitName(fabricUnit(fabricCategories, directItemForm.category))}) <span className="required">*</span>
+                      </label>
                       <input
                         type="number"
                         className="form-input"
                         step="any"
                         min="0.001"
-                        placeholder="e.g. 52.40"
+                        placeholder={fabricUnit(fabricCategories, directItemForm.category) === 'KG' ? 'e.g. 22.45' : 'e.g. 52.40'}
                         value={directItemForm.meters}
                         onChange={e => setDirectItemForm({ ...directItemForm, meters: e.target.value })}
                         required
@@ -4191,7 +4154,7 @@ export default function EntryGatePage() {
                             )}
                           </td>
                           <td style={{ textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
-                            {b.quantity} {b.uom ? b.uom.toLowerCase() : (b.itemType === 'FABRIC' ? 'm' : 'pcs')}
+                            {b.quantity} {unitLabel(b.uom || (b.itemType === 'FABRIC' ? 'METERS' : 'PCS'))}
                           </td>
                           <td>
                             {b.clientName ? (
@@ -4248,7 +4211,7 @@ export default function EntryGatePage() {
                   gap: 12
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontSize: 13, color: 'var(--color-text-muted)' }}>
-                    <span>Delivering Supplier: <strong style={{ color: '#0f172a' }}>{directSupplierInput || '—'}</strong></span>
+                    {directSupplierInput && <span>Delivering Supplier: <strong style={{ color: '#0f172a' }}>{directSupplierInput}</strong></span>}
                     {directInvoiceRef && <span>• Invoice: <strong style={{ color: '#0f172a' }}>{directInvoiceRef}</strong></span>}
                     <span>• Client: <strong style={{ color: directClientInput ? '#1e40af' : '#0f172a' }}>{directClientInput || 'General Stock'}</strong></span>
                   </div>
@@ -4326,16 +4289,10 @@ export default function EntryGatePage() {
                   Item to Inward
                 </div>
                 <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-text-main)', marginTop: 2 }}>
-                  {itemTypeFilter === 'FABRIC' ? (
-                    <>{selectedItem.sku.brand} — {selectedItem.sku.quality || selectedItem.sku.category} [Shade: {selectedItem.sku.shade || 'Std'}]</>
-                  ) : itemTypeFilter === 'READY_MADE' ? (
-                    <>{selectedItem.sku.name} (Art: {selectedItem.sku.artNo || '—'}, Size: {selectedItem.sku.size || '—'})</>
-                  ) : (
-                    <>{selectedItem.sku.name} ({selectedItem.sku.category}, Size: {selectedItem.sku.size || 'Std'})</>
-                  )}
+                  {skuTitle(selectedItem.sku, itemTypeFilter ?? selectedItem.sku.itemType)}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  Total Pending across all orders: <strong>{selectedItem.totalRemainingQty} {selectedItem.sku.uom.toLowerCase()}</strong>
+                  Total Pending across all orders: <strong>{selectedItem.totalRemainingQty} {unitLabel(selectedItem.sku.uom)}</strong>
                 </div>
               </div>
 
@@ -4393,7 +4350,7 @@ export default function EntryGatePage() {
                           <div style={{ textAlign: 'right' }}>
                             <span style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block' }}>Needs</span>
                             <strong style={{ fontSize: 14, color: 'var(--color-brand)' }}>
-                              {order.remainingQty} {selectedItem.sku.uom.toLowerCase()}
+                              {order.remainingQty} {unitLabel(selectedItem.sku.uom)}
                             </strong>
                             <span style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block' }}>
                               of {order.orderedQty}
@@ -4546,10 +4503,12 @@ export default function EntryGatePage() {
                         })()}
                       </strong>
                     </div>
-                    <div>
-                      <span style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block' }}>Delivery Invoice</span>
-                      <strong style={{ fontSize: 13.5 }}>{invoiceRef || viewingPoData.invoiceRef || '—'}</strong>
-                    </div>
+                    {(invoiceRef || viewingPoData.invoiceRef) && (
+                      <div>
+                        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block' }}>Delivery Invoice</span>
+                        <strong style={{ fontSize: 13.5 }}>{invoiceRef || viewingPoData.invoiceRef}</strong>
+                      </div>
+                    )}
                   </div>
 
                   {viewingPoData.notes && (
@@ -4596,7 +4555,7 @@ export default function EntryGatePage() {
                           const isTarget = line.id === viewingPoTargetLineId;
                           const remaining = Math.max(0, (line.orderedQty || 0) - (line.receivedQty || 0));
                           const isComplete = (line.receivedQty || 0) >= (line.orderedQty || 0);
-                          const lineUom = line.uom ? line.uom.toLowerCase() : (line.itemType === 'FABRIC' ? 'm' : 'pcs');
+                          const lineUom = unitLabel(line.uom || (line.itemType === 'FABRIC' ? 'METERS' : 'PCS'));
 
                           return (
                             <tr
@@ -4616,9 +4575,9 @@ export default function EntryGatePage() {
                                   </span>
                                 )}
                               </td>
-                              <td style={{ padding: '9px 12px' }}>{line.quality || line.category || '—'}</td>
-                              <td style={{ padding: '9px 12px', fontWeight: 600 }}>{line.shade || '—'}</td>
-                              <td style={{ padding: '9px 12px' }}>{line.size || line.artNo || '—'}</td>
+                              <td style={{ padding: '9px 12px' }}>{line.quality || (line.itemType === 'FABRIC' ? '' : line.category)}</td>
+                              <td style={{ padding: '9px 12px', fontWeight: 600 }}>{line.shade}</td>
+                              <td style={{ padding: '9px 12px' }}>{line.size || line.artNo}</td>
                               <td style={{ padding: '9px 12px', textAlign: 'right' }}>{line.orderedQty} {lineUom}</td>
                               <td style={{ padding: '9px 12px', textAlign: 'right', color: 'var(--color-text-muted)' }}>{line.receivedQty} {lineUom}</td>
                               <td style={{ padding: '9px 12px', textAlign: 'right', fontWeight: 700, color: remaining > 0 ? 'var(--color-brand)' : '#16a34a' }}>
@@ -4764,11 +4723,7 @@ export default function EntryGatePage() {
                   <option value="">Select affected item...</option>
                   {supplierData?.pendingItems.map(p => (
                     <option key={p.sku.id} value={p.sku.id}>
-                      {p.sku.itemType === 'FABRIC'
-                        ? `[Fabric] ${p.sku.brand} — ${p.sku.quality || p.sku.category} (Shade: ${p.sku.shade || 'Std'})`
-                        : p.sku.itemType === 'READY_MADE'
-                        ? `[Ready-Made] ${p.sku.name} (Art: ${p.sku.artNo || '—'}, Size: ${p.sku.size || '—'})`
-                        : `[Accessory] ${p.sku.name} (${p.sku.category}, Size: ${p.sku.size || 'Std'})`}
+                      {`[${p.sku.itemType === 'FABRIC' ? 'Fabric' : p.sku.itemType === 'READY_MADE' ? 'Ready-Made' : 'Accessory'}] ${skuTitle(p.sku, p.sku.itemType)}`}
                     </option>
                   ))}
                 </select>
@@ -4816,7 +4771,7 @@ export default function EntryGatePage() {
 
               {discrepancyForm.expectedQty && (
                 <div style={{ marginBottom: 14, background: '#fef3c7', padding: '8px 12px', borderRadius: 6, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
-                  Calculated Shortage: {(parseFloat(discrepancyForm.expectedQty) - (parseFloat(discrepancyForm.receivedQty) || 0)).toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'Meters' : 'Units'}
+                  Calculated Shortage: {(parseFloat(discrepancyForm.expectedQty) - (parseFloat(discrepancyForm.receivedQty) || 0)).toFixed(1)} {unitName(selectedItem?.sku.uom || (itemTypeFilter === 'FABRIC' ? 'METERS' : 'PCS'))}
                 </div>
               )}
 
@@ -4886,7 +4841,7 @@ export default function EntryGatePage() {
                   )}
                 </h2>
                 <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                  Invoice: {invoiceRef || 'N/A'} • {supplierData?.supplier.name}
+                  {invoiceRef ? `Invoice: ${invoiceRef} • ` : ''}{supplierData?.supplier.name}
                 </div>
               </div>
               <button 
@@ -4930,7 +4885,7 @@ export default function EntryGatePage() {
                   }}>
                     <AlertCircle size={18} color="#b45309" style={{ flexShrink: 0 }} />
                     <div>
-                      <strong>Partial Receipt Finalized:</strong> Remaining {(supplierData?.totalPendingQty ?? 0).toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'meters' : 'units'} stay open on the purchase order so you can inward the rest later.
+                      <strong>Partial Receipt Finalized:</strong> Remaining {pendingQtyText} stay open on the purchase order so you can inward the rest later.
                     </div>
                   </div>
                 )}
@@ -4987,7 +4942,7 @@ export default function EntryGatePage() {
                           </span>
                         </div>
                         <div style={{ fontSize: 12.5, color: '#78350f', lineHeight: 1.5 }}>
-                          You have inwarded <strong>{totalSessionQuantity.toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'M' : 'units'}</strong> ({sessionRolls.length} rolls) in this delivery session. The purchase order(s) still have <strong>{(supplierData?.totalPendingQty ?? 0).toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'M' : 'units'}</strong> pending.
+                          You have inwarded <strong>{sessionQtyText}</strong> ({sessionRolls.length} rolls) in this delivery session. The purchase order(s) still have <strong>{pendingQtyText}</strong> pending.
                         </div>
                         <div style={{ fontSize: 12, color: '#92400e', marginTop: 4, fontWeight: 600 }}>
                           Finalizing this Partial GRN will book the received inventory and print your official Partial GRN voucher. Remaining items stay open on the PO so you can inward the rest later.
@@ -5033,7 +4988,7 @@ export default function EntryGatePage() {
                     <div style={{ background: '#f8fafc', padding: '10px 12px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
                       <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>SESSION QTY</div>
                       <strong style={{ fontSize: 15, color: '#065f46' }}>
-                        {totalSessionQuantity.toFixed(1)} {itemTypeFilter === 'FABRIC' ? 'M' : 'Pcs'}
+                        {sessionQtyText}
                       </strong>
                     </div>
                     <div style={{
@@ -5092,7 +5047,7 @@ export default function EntryGatePage() {
                             const claimed = d.expectedQty ?? 0;
                             const found = d.receivedQty ?? 0;
                             const shortage = Math.max(0, claimed - found);
-                            const uom = (d.itemType === 'FABRIC' || itemTypeFilter === 'FABRIC') ? 'm' : 'pcs';
+                            const uom = unitLabel((d.itemType || itemTypeFilter) === 'FABRIC' ? fabricUnit(fabricCategories, d.category) : 'PCS');
                             return (
                               <tr key={d.id} style={{ borderBottom: '1px solid #fde68a' }}>
                                 <td style={{ padding: '6px 10px', fontWeight: 700 }}>{d.bundleNumber || 'Unbundled'}</td>
@@ -5100,13 +5055,13 @@ export default function EntryGatePage() {
                                   <div style={{ fontWeight: 600 }}>{d.name || [d.brand, d.shade].filter(Boolean).join(' ') || 'General Item'}</div>
                                   {d.artNo && <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>Art: {d.artNo} {d.size ? `• Size: ${d.size}` : ''}</div>}
                                 </td>
-                                <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600 }}>{d.expectedQty ? `${d.expectedQty} ${uom}` : '—'}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600 }}>{d.expectedQty ? `${d.expectedQty} ${uom}` : ''}</td>
                                 <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600 }}>{found} {uom}</td>
                                 <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>
                                   {d.expectedQty != null ? `${shortage.toFixed(1)} ${uom}` : 'Missing'}
                                 </td>
                                 <td style={{ padding: '6px 10px', color: '#b45309', fontWeight: 600 }}>{ISSUE_TYPE_LABELS[d.issueType] || d.issueType}</td>
-                                <td style={{ padding: '6px 10px', color: '#64748b' }}>{d.notes || '—'}</td>
+                                <td style={{ padding: '6px 10px', color: '#64748b' }}>{d.notes}</td>
                               </tr>
                             );
                           })}
@@ -5121,7 +5076,7 @@ export default function EntryGatePage() {
                       <div key={grp.bundleNumber} style={{ border: '1px solid var(--color-border)', borderRadius: 6, overflow: 'hidden' }}>
                         <div style={{ background: '#f1f5f9', padding: '6px 10px', display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 700 }}>
                           <span>Bundle / Bale: {grp.bundleNumber}</span>
-                          <span style={{ color: '#065f46' }}>{grp.rolls.length} roll(s) • {grp.totalQty.toFixed(1)}m</span>
+                          <span style={{ color: '#065f46' }}>{grp.rolls.length} roll(s) • {formatTotals(grp.rolls.map((r: any) => ({ uom: r.uom || 'METERS', quantity: r.quantity })))}</span>
                         </div>
                         <table className="table" style={{ width: '100%', fontSize: 11.5, margin: 0 }}>
                           <tbody>
@@ -5130,7 +5085,7 @@ export default function EntryGatePage() {
                                 <td style={{ padding: '6px 10px', width: 30 }}>{i + 1}</td>
                                 <td style={{ padding: '6px 10px', fontFamily: 'monospace', fontWeight: 600 }}>{r.batchCode}</td>
                                 <td style={{ padding: '6px 10px' }}>{r.brand} — {r.quality || r.category} ({r.shade || ''})</td>
-                                <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700 }}>{r.quantity}m</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700 }}>{r.quantity} {unitLabel(r.uom || 'METERS')}</td>
                                 <td style={{ padding: '6px 10px', fontWeight: 600, color: '#1d4ed8' }}>{r.poLine?.po.poNumber || 'Unlinked'}</td>
                               </tr>
                             ))}
@@ -5231,14 +5186,18 @@ export default function EntryGatePage() {
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Supplier</div>
                   <div style={{ fontWeight: 700, color: '#0f172a', marginTop: 2 }}>{directSupplierInput || 'Direct Inward Supplier'}</div>
                 </div>
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Supplier Invoice</div>
-                  <div style={{ fontWeight: 600, color: '#0f172a', marginTop: 2 }}>{directInvoiceRef || '—'}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Invoice Date</div>
-                  <div style={{ fontWeight: 600, color: '#0f172a', marginTop: 2 }}>{directInvoiceDate ? formatDate(directInvoiceDate) : '—'}</div>
-                </div>
+                {directInvoiceRef && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Supplier Invoice</div>
+                    <div style={{ fontWeight: 600, color: '#0f172a', marginTop: 2 }}>{directInvoiceRef}</div>
+                  </div>
+                )}
+                {directInvoiceDate && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Invoice Date</div>
+                    <div style={{ fontWeight: 600, color: '#0f172a', marginTop: 2 }}>{formatDate(directInvoiceDate)}</div>
+                  </div>
+                )}
                 <div>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Client</div>
                   <div style={{ fontWeight: 700, color: directClientInput ? '#1e40af' : '#475569', marginTop: 2 }}>
@@ -5304,293 +5263,12 @@ export default function EntryGatePage() {
         </div>
       )}
 
-      {/* ── Quick Add Client Modal (Identical to PO implementation) ── */}
       {showQuickAddClientModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(15, 23, 42, 0.45)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1100,
-          padding: 20
-        }}>
-          <div style={{
-            background: '#fff',
-            borderRadius: 'var(--radius-lg)',
-            width: '100%',
-            maxWidth: 520,
-            boxShadow: 'var(--shadow-xl)',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              padding: '16px 20px',
-              borderBottom: '1px solid var(--color-border)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: '#fafbfc'
-            }}>
-              <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Users size={18} /> Quick Add Master Client
-              </h2>
-              <button 
-                type="button"
-                className="btn btn-ghost" 
-                onClick={() => setShowQuickAddClientModal(false)}
-                style={{ padding: 4, color: 'var(--color-text-muted)' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleDirectQuickAddClientSubmit} style={{ padding: 20 }}>
-              {quickClientError && (
-                <div className="alert alert-danger" style={{ marginBottom: 16 }}>
-                  {quickClientError}
-                </div>
-              )}
-
-              <div className="form-group" style={{ marginBottom: 14 }}>
-                <label className="form-label">Client / School / Customer Name <span className="required">*</span></label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. Al-Ameen School Uniforms, DPS International"
-                  value={quickClientForm.name}
-                  onChange={e => setQuickClientForm({ ...quickClientForm, name: e.target.value })}
-                  required
-                  autoFocus
-                />
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 14 }}>
-                <label className="form-label">Type of Client</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  list="direct-client-types"
-                  placeholder="Select or enter type (e.g. School, Wholesaler, Retailer, Corporate)"
-                  value={quickClientForm.clientType}
-                  onChange={e => setQuickClientForm({ ...quickClientForm, clientType: e.target.value })}
-                />
-                <datalist id="direct-client-types">
-                  <option value="School" />
-                  <option value="Wholesaler" />
-                  <option value="Retailer" />
-                  <option value="Corporate" />
-                  <option value="Institution" />
-                  <option value="Uniform Distributor" />
-                  <option value="Garment Manufacturer" />
-                  <option value="Other" />
-                </datalist>
-              </div>
-
-              <div className="form-row" style={{ marginBottom: 14 }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Contact Person</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Mr. Rajesh / Principal"
-                    value={quickClientForm.contactPerson}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, contactPerson: e.target.value })}
-                  />
-                </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Phone Number</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. +91 98470 12345"
-                    value={quickClientForm.phone}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, phone: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-row" style={{ marginBottom: 14 }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">City / Destination</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Manjeri, Calicut"
-                    value={quickClientForm.city}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, city: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 20 }}>
-                <label className="form-label">Full Address / Delivery Location</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. Main Campus, P.O. Box 14, Near Junction"
-                  value={quickClientForm.address}
-                  onChange={e => setQuickClientForm({ ...quickClientForm, address: e.target.value })}
-                />
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowQuickAddClientModal(false)}
-                  disabled={quickClientSubmitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={quickClientSubmitting}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  {quickClientSubmitting ? <span className="spinner" /> : 'Save & Select Client'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <QuickAddClientModal initialName={quickClientInitialName} onClose={() => setShowQuickAddClientModal(false)} onCreated={handleQuickClientCreated} />
       )}
 
-      {/* ── Quick Add Supplier Modal ── */}
       {showQuickAddSupplierModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(15, 23, 42, 0.45)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1100,
-          padding: 20
-        }}>
-          <div style={{
-            background: '#fff',
-            borderRadius: 'var(--radius-lg)',
-            width: '100%',
-            maxWidth: 520,
-            boxShadow: 'var(--shadow-xl)',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              padding: '16px 20px',
-              borderBottom: '1px solid var(--color-border)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: '#fafbfc'
-            }}>
-              <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Building2 size={18} /> Quick Add Supplier
-              </h2>
-              <button 
-                type="button"
-                className="btn btn-ghost" 
-                onClick={() => setShowQuickAddSupplierModal(false)}
-                style={{ padding: 4, color: 'var(--color-text-muted)' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleDirectQuickAddSupplierSubmit} style={{ padding: 20 }}>
-              {quickSupplierError && (
-                <div className="alert alert-danger" style={{ marginBottom: 16 }}>
-                  {quickSupplierError}
-                </div>
-              )}
-
-              <div className="form-group" style={{ marginBottom: 14 }}>
-                <label className="form-label">Official Legal / Mill Name <span className="required">*</span></label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. Siyaram Silk Mills Ltd., Raymond Limited"
-                  value={quickSupplierForm.name}
-                  onChange={e => setQuickSupplierForm({ ...quickSupplierForm, name: e.target.value })}
-                  required
-                  autoFocus
-                />
-              </div>
-
-              <div className="form-row" style={{ marginBottom: 14 }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">City</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Surat, Bhilwara"
-                    value={quickSupplierForm.city}
-                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, city: e.target.value })}
-                  />
-                </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Phone</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. +91 98200 12345"
-                    value={quickSupplierForm.phone}
-                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, phone: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-row" style={{ marginBottom: 14 }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Contact Person</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Mr. Rajesh / Sales Manager"
-                    value={quickSupplierForm.contactPerson}
-                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, contactPerson: e.target.value })}
-                  />
-                </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Factory Address</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. B-12, Textile Market, Ring Road"
-                    value={quickSupplierForm.address}
-                    onChange={e => setQuickSupplierForm({ ...quickSupplierForm, address: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowQuickAddSupplierModal(false)}
-                  disabled={quickSupplierSubmitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={quickSupplierSubmitting}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  {quickSupplierSubmitting ? <span className="spinner" /> : 'Save & Select Supplier'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <QuickAddSupplierModal initialName={quickSupplierInitialName} onClose={() => setShowQuickAddSupplierModal(false)} onCreated={handleQuickSupplierCreated} />
       )}
     </div>
   );

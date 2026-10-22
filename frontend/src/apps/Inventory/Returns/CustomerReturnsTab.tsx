@@ -4,6 +4,7 @@ import api from '../../../utils/api';
 import { apiError, openPrintPage } from '../../../utils/printPage';
 import { autoPrintReceivedLabel, printTSPL } from '../../../utils/printer';
 import { formatDate, formatDateTime } from '../../../utils/format';
+import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
 
 interface DcLine {
   dcLineId: string; batchCode: string; cutReference: string | null; itemType: string; description: string;
@@ -21,7 +22,6 @@ export const CUSTOMER_REASONS: [string, string][] = [
   ['SIZE_EXCHANGE', 'Size exchange'], ['DEFECTIVE', 'Defective / damaged'], ['WRONG_ITEM', 'Wrong item'], ['EXCESS', 'Excess quantity'], ['OTHER', 'Other'],
 ];
 const reasonLabel = (r: string) => CUSTOMER_REASONS.find(([k]) => k === r)?.[1] ?? r;
-const unit = (uom: string) => ({ METERS: 'm', PCS: 'pcs', GROSS: 'gross', BOXES: 'boxes', PACKETS: 'packets' } as Record<string, string>)[uom] ?? uom.toLowerCase();
 const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
 
 export default function CustomerReturnsTab() {
@@ -147,7 +147,7 @@ export default function CustomerReturnsTab() {
                           <td style={{ textAlign: 'right' }}>{l.returned > 0 ? `${fmt(l.returned)} ${unit(l.uom)}` : '—'}</td>
                           <td>
                             {none ? <span style={{ fontSize: 12 }}>All returned</span> : (
-                              <input type="number" className="form-input" min="0" max={l.returnable} step={l.uom === 'METERS' ? 'any' : 1}
+                              <input type="number" className="form-input" min="0" max={l.returnable} step={allowsDecimals(l.uom) ? 'any' : 1}
                                 value={row?.qty ?? ''} onChange={e => setRow(l.dcLineId, { qty: e.target.value })}
                                 placeholder={`max ${fmt(l.returnable)}`} style={{ height: 36 }} />
                             )}

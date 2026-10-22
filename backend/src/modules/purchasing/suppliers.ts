@@ -34,7 +34,7 @@ async function generateNextSupplierCode(): Promise<string> {
 
 // ─── GET /api/suppliers ──────────────────────────────────────────────────────
 // Returns all suppliers with optional search and active filtering
-router.get('/', requirePermission('admin.suppliers', 'inv.suppliers', 'po.create', 'ops.entry_gate', 'admin.dashboard', 'inv.returns'), async (req: Request, res: Response) => {
+router.get('/', requirePermission('admin.suppliers', 'inv.suppliers', 'po.create', 'ops.entry_gate', 'admin.dashboard', 'ops.returns'), async (req: Request, res: Response) => {
   try {
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
     const status = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : 'ALL';
@@ -152,6 +152,7 @@ router.get('/inventory-tracking', requirePermission('inv.suppliers'), async (req
         id: true,
         quantity: true,
         itemType: true,
+        uom: true,
         poLine: {
           select: {
             po: { select: { supplierId: true, supplierName: true } }
@@ -160,16 +161,18 @@ router.get('/inventory-tracking', requirePermission('inv.suppliers'), async (req
       }
     });
 
-    const supplierStockMap: Record<string, { inStockBatches: number; inStockMeters: number; inStockUnits: number }> = {};
+    const supplierStockMap: Record<string, { inStockBatches: number; inStockMeters: number; inStockKg: number; inStockUnits: number }> = {};
 
     for (const b of activeBatches) {
       const sId = b.poLine?.po?.supplierId;
       if (!sId) continue;
       if (!supplierStockMap[sId]) {
-        supplierStockMap[sId] = { inStockBatches: 0, inStockMeters: 0, inStockUnits: 0 };
+        supplierStockMap[sId] = { inStockBatches: 0, inStockMeters: 0, inStockKg: 0, inStockUnits: 0 };
       }
       supplierStockMap[sId].inStockBatches += 1;
-      if (b.itemType === 'FABRIC' || !b.itemType) {
+      if (b.itemType === 'FABRIC' && b.uom === 'KG') {
+        supplierStockMap[sId].inStockKg += b.quantity;
+      } else if (b.itemType === 'FABRIC' || !b.itemType) {
         supplierStockMap[sId].inStockMeters += b.quantity;
       } else {
         supplierStockMap[sId].inStockUnits += b.quantity;
@@ -177,7 +180,7 @@ router.get('/inventory-tracking', requirePermission('inv.suppliers'), async (req
     }
 
     const formatted = suppliers.map(s => {
-      const stock = supplierStockMap[s.id] || { inStockBatches: 0, inStockMeters: 0, inStockUnits: 0 };
+      const stock = supplierStockMap[s.id] || { inStockBatches: 0, inStockMeters: 0, inStockKg: 0, inStockUnits: 0 };
       return {
         id: s.id,
         code: s.code,
@@ -196,6 +199,7 @@ router.get('/inventory-tracking', requirePermission('inv.suppliers'), async (req
         discrepanciesCount: s._count.inboundDiscrepancies,
         inStockBatches: stock.inStockBatches,
         inStockMeters: Math.round(stock.inStockMeters * 10) / 10,
+        inStockKg: Math.round(stock.inStockKg * 100) / 100,
         inStockUnits: Math.round(stock.inStockUnits),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,

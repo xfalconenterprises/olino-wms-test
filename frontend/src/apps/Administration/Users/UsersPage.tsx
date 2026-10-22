@@ -25,15 +25,19 @@ import {
   ShoppingCart,
   Package,
   ClipboardCheck,
-  LayoutDashboard
+  LayoutDashboard,
+  LockKeyhole
 } from 'lucide-react';
 import type { UserModule } from '../../../utils/roles';
 import { 
   MODULE_LABELS, 
   PERMISSION_GROUPS, 
   ROLE_PRESETS,
-  ALL_PERMISSION_KEYS
+  ALL_PERMISSION_KEYS,
+  COST_PRICE_PERMISSION,
+  hasCostAccess
 } from '../../../utils/roles';
+import { useAuth } from '../../../hooks/useAuth';
 import { formatDate } from '../../../utils/format';
 import { printTSPL } from '../../../utils/printer';
 import BadgeBarcode from '../../../components/Common/BadgeBarcode';
@@ -134,6 +138,9 @@ export default function UsersPage() {
   const [permissions, setPermissions] = useState<string[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string>('CUSTOM');
   const [isActive, setIsActive] = useState(true);
+  // Confidential cost access is kept apart from the module / tab permissions (and from '*')
+  const [costAccess, setCostAccess] = useState(false);
+  const { user: me } = useAuth();
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -219,6 +226,7 @@ export default function UsersPage() {
     setIsActive(true);
     setModules([]);
     setPermissions([]);
+    setCostAccess(false);
     setSelectedPreset('CUSTOM');
     setError('');
     setShowModal(true);
@@ -236,12 +244,14 @@ export default function UsersPage() {
     setShowPinText(false);
     setIsActive(u.isActive);
 
+    const userPerms = (u.permissions || []).filter(k => k !== COST_PRICE_PERMISSION);
     setModules(u.modules || []);
-    setPermissions(u.permissions || []);
+    setPermissions(userPerms);
+    setCostAccess((u.permissions || []).includes(COST_PRICE_PERMISSION));
 
     const matchedPreset = ROLE_PRESETS.find(p => {
-      if (p.permissions.includes('*') && u.permissions.includes('*')) return true;
-      if (p.permissions.length === u.permissions.length && p.permissions.every(k => u.permissions.includes(k))) return true;
+      if (p.permissions.includes('*') && userPerms.includes('*')) return true;
+      if (p.permissions.length === userPerms.length && p.permissions.every(k => userPerms.includes(k))) return true;
       return false;
     });
     setSelectedPreset(matchedPreset ? matchedPreset.id : 'CUSTOM');
@@ -321,6 +331,11 @@ export default function UsersPage() {
     setBadgeCode(`EMP-${randomNum}`);
   };
 
+  // Only someone who has cost access can give or remove it; the very first grant can be made by a
+  // full-access administrator (the server checks the same rule)
+  const nobodyHasCostAccess = !users.some(u => u.isActive && u.permissions.includes(COST_PRICE_PERMISSION));
+  const canGrantCostAccess = hasCostAccess(me) || (nobodyHasCostAccess && Boolean(me?.permissions?.includes('*')));
+
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -383,6 +398,8 @@ export default function UsersPage() {
       return;
     }
 
+    const withCostAccess = [...permissions.filter(k => k !== COST_PRICE_PERMISSION), ...(costAccess ? [COST_PRICE_PERMISSION] : [])];
+
     setSubmitting(true);
     try {
       const finalBadgeCode = hasWarehouseSelected ? (badgeCode.trim().toUpperCase() || null) : null;
@@ -392,7 +409,7 @@ export default function UsersPage() {
         const payload: Record<string, unknown> = {
           name: name.trim(),
           modules,
-          permissions,
+          permissions: withCostAccess,
           isActive,
           badgeCode: finalBadgeCode,
         };
@@ -420,7 +437,7 @@ export default function UsersPage() {
           badgeCode: finalBadgeCode,
           pin: finalPin,
           modules,
-          permissions,
+          permissions: withCostAccess,
         });
       }
 
@@ -730,6 +747,11 @@ PRINT 1,1
                             {!u.isActive && (
                               <span className="badge badge-neutral" style={{ fontSize: 10, padding: '1px 6px' }}>
                                 Inactive
+                              </span>
+                            )}
+                            {u.permissions.includes(COST_PRICE_PERMISSION) && (
+                              <span title="Confidential Cost Prices access" style={{ display: 'inline-flex', color: '#b45309' }}>
+                                <LockKeyhole size={13} />
                               </span>
                             )}
                             {u.mustResetPassword && (
@@ -1334,6 +1356,28 @@ PRINT 1,1
                           );
                         })}
                       </div>
+                    </div>
+
+                    {/* Confidential access: separate from modules, tabs and full access */}
+                    <div style={{ border: '1px solid #fcd34d', background: '#fffbeb', borderRadius: 'var(--radius-md)', padding: 14 }}>
+                      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: canGrantCostAccess ? 'pointer' : 'not-allowed', opacity: canGrantCostAccess ? 1 : 0.7 }}>
+                        <input
+                          type="checkbox"
+                          checked={costAccess}
+                          disabled={!canGrantCostAccess}
+                          onChange={e => setCostAccess(e.target.checked)}
+                          style={{ marginTop: 3, accentColor: '#b45309' }}
+                        />
+                        <div>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: '#92400e', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <LockKeyhole size={14} /> Confidential Cost Prices
+                          </span>
+                          <span style={{ fontSize: 11.5, color: '#78350f', display: 'block', marginTop: 2, lineHeight: 1.35 }}>
+                            Can open Administration → Cost Prices (after re-entering their password) to see and change item costs and the secret label code.
+                            Not included in Super Admin. {canGrantCostAccess ? '' : 'Only a user who already has this access can give or remove it.'}
+                          </span>
+                        </div>
+                      </label>
                     </div>
 
                     {/* Notification Banner when Warehouse Operations is chosen */}

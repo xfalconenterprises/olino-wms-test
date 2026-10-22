@@ -61,7 +61,8 @@ router.get('/', requirePermission('admin.clients', 'po.create', 'ops.entry_gate'
         c.created_at as "createdAt",
         c.updated_at as "updatedAt",
         COUNT(DISTINCT dc."id")::int as "totalShipments",
-        COALESCE(SUM(CASE WHEN b."itemType" = 'FABRIC' OR b."itemType" IS NULL THEN dcl."quantity" ELSE 0 END), 0)::float as "totalFabricMeters",
+        COALESCE(SUM(CASE WHEN (b."itemType" = 'FABRIC' OR b."itemType" IS NULL) AND COALESCE(b.uom, 'METERS') <> 'KG' THEN dcl."quantity" ELSE 0 END), 0)::float as "totalFabricMeters",
+        COALESCE(SUM(CASE WHEN b."itemType" = 'FABRIC' AND b.uom = 'KG' THEN dcl."quantity" ELSE 0 END), 0)::float as "totalFabricKg",
         COALESCE(SUM(CASE WHEN b."itemType" <> 'FABRIC' AND b."itemType" IS NOT NULL THEN dcl."quantity" ELSE 0 END), 0)::float as "totalOtherUnits",
         MAX(dc."dispatchedAt") as "lastDispatchedAt"
       FROM clients c
@@ -119,6 +120,7 @@ router.get('/', requirePermission('admin.clients', 'po.create', 'ops.entry_gate'
       isActive: c.isActive,
       totalShipments: c.totalShipments || 0,
       totalFabricMeters: Math.round((c.totalFabricMeters || 0) * 10) / 10,
+      totalFabricKg: Math.round((c.totalFabricKg || 0) * 100) / 100,
       totalOtherUnits: Math.round(c.totalOtherUnits || 0),
       lastDispatchedAt: c.lastDispatchedAt,
       createdAt: c.createdAt,
@@ -203,11 +205,11 @@ router.get('/:id', requirePermission('admin.clients'), async (req: Request, res:
       for (const line of dc.lines || []) {
         const b = line.batch;
         if (!b) continue;
-        const brand = b.brand || 'Unbranded';
-        const quality = b.quality || '-';
-        const shade = b.shade || '-';
-        const size = b.size || '-';
-        const name = b.name || '-';
+        const brand = b.brand || '';
+        const quality = b.quality || '';
+        const shade = b.shade || '';
+        const size = b.size || '';
+        const name = b.name || '';
         const key = `${b.itemType}|${brand}|${quality}|${shade}|${size}|${name}`;
         
         const existing = productSummaryMap.get(key) || {

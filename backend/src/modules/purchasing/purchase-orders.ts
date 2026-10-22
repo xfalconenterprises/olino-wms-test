@@ -4,9 +4,12 @@ import { requireAuth, requirePermission } from '../../middleware/auth';
 import bwipjs from 'bwip-js';
 import { generateSmartBatchCodePrefix } from '../../utils/batch-code';
 import { autoLearnAttributes } from '../master-data/attributes';
+import { allowsDecimals, fabricCategoryLabel, fabricUnitFor, totalsByUnit, unitLabel, unitName } from '../../utils/units';
 import { formatDate } from '../../utils/format';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
+import { documentTable, filledMeta, TableColumn } from '../../utils/print-document';
 import { recordAllocationReceipt } from './allocations';
+import { logCostChange, parseCostPrice, poLineLabel } from '../administration/cost-prices';
 
 const router = Router();
 
@@ -156,7 +159,7 @@ router.get('/supplier-inbound/:supplierId/pending', requirePermission('ops.entry
         const remaining = Math.max(0, line.orderedQty - line.receivedQty);
         if (remaining > 0) {
           totalPendingQty += remaining;
-          const skuKey = `ATTR_${line.itemType || 'FABRIC'}_${line.brand || ''}_${line.quality || ''}_${line.shade || ''}_${line.name || ''}_${line.artNo || ''}_${line.size || ''}`;
+          const skuKey = `ATTR_${line.itemType || 'FABRIC'}_${line.category || ''}_${line.brand || ''}_${line.quality || ''}_${line.qualityName || ''}_${line.shade || ''}_${line.name || ''}_${line.artNo || ''}_${line.size || ''}_${line.uom || ''}`;
 
           if (!pendingItemsMap[skuKey]) {
             const itemObj = {
@@ -165,6 +168,7 @@ router.get('/supplier-inbound/:supplierId/pending', requirePermission('ops.entry
               category: line.category,
               brand: line.brand || '',
               quality: line.quality || '',
+              qualityName: line.qualityName || null,
               shade: line.shade || '',
               size: line.size || null,
               name: line.name || null,
@@ -216,6 +220,8 @@ router.get('/supplier-inbound/:supplierId/pending', requirePermission('ops.entry
       },
       totalOpenPOs: poSet.size,
       totalPendingQty: Math.round(totalPendingQty * 100) / 100,
+      // The same, split by unit: [["METERS", 120], ["KG", 40]]
+      pendingTotals: totalsByUnit(Object.values(pendingItemsMap).map(p => ({ uom: p.sku.uom, quantity: p.totalRemainingQty }))),
       pendingItems,
       allOpenPOs: pos.map(p => ({
         id: p.id,
@@ -258,6 +264,13 @@ router.post('/supplier-inbound/receive-roll', requirePermission('ops.entry_gate'
     if (!qty || qty <= 0) {
       res.status(400).json({ error: 'Valid physical roll quantity is required' });
       return;
+    }
+    // Rolls taken in without a PO line use their fabric type's unit
+    let unlinkedUom = itemType === 'FABRIC' ? 'METERS' : 'PCS';
+    if (itemType === 'FABRIC' && category) {
+      const unit = await fabricUnitFor(prisma, String(category));
+      if (!unit) { res.status(400).json({ error: `Fabric type "${category}" is not in the master catalogue.` }); return; }
+      unlinkedUom = unit;
     }
 
     const supplier = await prisma.supplier.findUnique({
@@ -363,7 +376,7 @@ router.post('/supplier-inbound/receive-roll', requirePermission('ops.entry_gate'
       if (newTotal > maxAllowed) {
         res.status(400).json({
           error: 'TOLERANCE_EXCEEDED',
-          message: `Receiving this roll of ${qty}${matchedLine.uom || 'm'} will exceed PO ${matchedLine.po.poNumber} ordered quantity (${ordered}) by more than 10% standard tolerance (New Total: ${newTotal}, Max Allowed: ${maxAllowed}). Confirm to proceed with over-receipt.`,
+          message: `Receiving this roll of ${qty} ${unitLabel(matchedLine.uom)} will exceed PO ${matchedLine.po.poNumber} ordered quantity (${ordered}) by more than 10% standard tolerance (New Total: ${newTotal}, Max Allowed: ${maxAllowed}). Confirm to proceed with over-receipt.`,
           orderedQty: ordered,
           currentReceived,
           rollQty: qty,
@@ -374,6 +387,12 @@ router.post('/supplier-inbound/receive-roll', requirePermission('ops.entry_gate'
         });
         return;
       }
+    }
+
+    const rollUom = matchedLine?.uom || unlinkedUom;
+    if (!allowsDecimals(rollUom) && !Number.isInteger(qty)) {
+      res.status(400).json({ error: `Quantity in ${unitLabel(rollUom)} must be a whole number` });
+      return;
     }
 
     // Execute atomic transaction: create ItemBatch, create Transaction, update POLine & PO
@@ -424,11 +443,12 @@ router.post('/supplier-inbound/receive-roll', requirePermission('ops.entry_gate'
           category: matchedLine?.category || category || null,
           brand: resolvedBrand,
           quality: resolvedQuality || null,
+          qualityName: matchedLine?.qualityName || null,
           shade: resolvedShade || null,
           size: matchedLine?.size || size || null,
           name: matchedLine?.name || name || null,
           artNo: matchedLine?.artNo || artNo || null,
-          uom: matchedLine?.uom || (itemType === 'FABRIC' ? 'METERS' : 'PCS'),
+          uom: rollUom,
           quantity: qty,
           poLineId: matchedLine ? matchedLine.id : null,
           supplierBundle: supplierBundle ? supplierBundle.trim() : null,
@@ -703,6 +723,14 @@ router.get('/:id', requirePermission('po.view', 'po.create', 'ops.entry_gate'), 
       return;
     }
 
+    // The edit form only learns WHICH lines already have a cost, never the price itself
+    if (req.query.for === 'edit') {
+      const costed = new Set((await prisma.poLineCost.findMany({
+        where: { poLineId: { in: po.lines.map((l: any) => l.id) } }, select: { poLineId: true },
+      })).map(c => c.poLineId));
+      po.lines = po.lines.map((l: any) => ({ ...l, hasCost: costed.has(l.id) }));
+    }
+
     res.json({
       ...po,
       clientBreakdown: computeClientBreakdown(po),
@@ -713,6 +741,112 @@ router.get('/:id', requirePermission('po.view', 'po.create', 'ops.entry_gate'), 
   }
 });
 
+type ResolvedAllocation = { clientId: string | null; clientName: string; allocatedQty: number; notes: string | null };
+
+/**
+ * Client allocations on PO lines must name clients from the Clients Master (by id, or by exact
+ * name). Lines without their own split follow the PO's target client; no client = General Stock.
+ * Returns the allocations per line (keyed by the line object), or a message for the user.
+ */
+async function resolveLineAllocations(lines: any[], targetClient: unknown):
+  Promise<{ target: string | null; perLine: Map<any, ResolvedAllocation[]> } | string> {
+  const clients = await prisma.client.findMany({ select: { id: true, name: true } });
+  const byId = new Map(clients.map(c => [c.id, c]));
+  const byName = new Map(clients.map(c => [c.name.trim().toLowerCase(), c]));
+
+  const targetName = typeof targetClient === 'string' ? targetClient.trim() : '';
+  const target = targetName ? byName.get(targetName.toLowerCase()) : undefined;
+  if (targetName && !target) return `"${targetName}" is not in the Clients Master. Add the client there first.`;
+
+  const perLine = new Map<any, ResolvedAllocation[]>();
+  for (const [i, l] of lines.entries()) {
+    const raw: any[] = Array.isArray(l.allocations) && l.allocations.length > 0
+      ? l.allocations.filter((a: any) => parseFloat(a.allocatedQty) > 0)
+      : target ? [{ clientId: target.id, allocatedQty: l.orderedQty }] : [];
+    const out: ResolvedAllocation[] = [];
+    for (const a of raw) {
+      const name = String(a.clientName ?? '').trim();
+      let client = a.clientId ? byId.get(String(a.clientId)) : undefined;
+      if (a.clientId && !client) return `Line ${i + 1}: the chosen client is no longer in the Clients Master.`;
+      if (!client && name && name.toLowerCase() !== 'general stock') {
+        client = byName.get(name.toLowerCase());
+        if (!client) return `Line ${i + 1}: "${name}" is not in the Clients Master. Add the client there first.`;
+      }
+      out.push({
+        clientId: client?.id ?? null,
+        clientName: client?.name ?? 'General Stock',
+        allocatedQty: parseFloat(a.allocatedQty),
+        notes: String(a.notes ?? '').trim() || null,
+      });
+    }
+    const ids = out.map(o => o.clientId).filter(Boolean);
+    if (new Set(ids).size !== ids.length) return `Line ${i + 1}: each client can be allocated only once per line.`;
+    perLine.set(l, out);
+  }
+  return { target: target?.name ?? null, perLine };
+}
+
+/** Cost prices typed on the lines (undefined = left blank), or a message for the user. */
+function prepareCosts(lines: any[]): Map<any, number | undefined> | string {
+  const out = new Map<any, number | undefined>();
+  for (const [i, l] of lines.entries()) {
+    const cost = parseCostPrice(l.costPrice, `Line ${i + 1}`);
+    if (typeof cost === 'string') return cost;
+    out.set(l, cost);
+  }
+  return out;
+}
+
+interface PreparedLine {
+  itemType: string; category: string | null; brand: string | null; quality: string | null; qualityName: string | null;
+  shade: string | null; size: string | null; name: string | null; artNo: string | null; uom: string;
+  orderedQty: number; notes: string | null;
+}
+
+/**
+ * Checks and normalises PO lines before saving. Fabric must use a fabric type from the master
+ * catalogue and is ordered in that type's unit (meters, or kg for e.g. Knits).
+ * Returns the lines (keyed by the line object), or a message for the user.
+ */
+async function prepareLines(lines: any[]): Promise<Map<any, PreparedLine> | string> {
+  const out = new Map<any, PreparedLine>();
+  for (const [i, l] of lines.entries()) {
+    const itemType = l.itemType || 'FABRIC';
+    const text = (v: unknown) => (v === undefined || v === null ? '' : String(v).trim()) || null;
+    let category = text(l.category);
+    const orderedQty = parseFloat(l.orderedQty);
+    if (!Number.isFinite(orderedQty) || orderedQty <= 0) return `Line ${i + 1}: enter the quantity ordered.`;
+
+    let uom: string;
+    if (itemType === 'FABRIC') {
+      if (!text(l.brand) || !text(l.quality) || !text(l.shade) || !category) {
+        return `Line ${i + 1}: Fabric Type, Brand, Quality and Shade are required for fabric.`;
+      }
+      const unit = await fabricUnitFor(prisma, category);
+      if (!unit) return `Line ${i + 1}: fabric type "${category}" is not in the master catalogue.`;
+      uom = unit;
+      category = category.toUpperCase();
+    } else if (itemType === 'READY_MADE') {
+      uom = 'PCS';
+    } else {
+      const cat = (category || '').toUpperCase();
+      uom = l.uom ? String(l.uom).toUpperCase() : (cat === 'SHOES' || cat === 'SOCKS') ? 'PAIRS' : 'PCS';
+    }
+    if (!allowsDecimals(uom) && !Number.isInteger(orderedQty)) {
+      return `Line ${i + 1}: ${unitName(uom).toLowerCase()} must be a whole number.`;
+    }
+
+    out.set(l, {
+      itemType, category, uom, orderedQty,
+      brand: text(l.brand), quality: text(l.quality),
+      qualityName: itemType === 'FABRIC' ? text(l.qualityName) : null,
+      shade: text(l.shade), size: text(l.size), name: text(l.name),
+      artNo: text(l.artNo)?.toUpperCase() ?? null, notes: text(l.notes),
+    });
+  }
+  return out;
+}
+
 // POST /api/purchase-orders
 router.post('/', requirePermission('po.create'), async (req: Request, res: Response) => {
   const { supplierId, supplierName, expectedDate, targetClient, notes, lines } = req.body;
@@ -720,6 +854,12 @@ router.post('/', requirePermission('po.create'), async (req: Request, res: Respo
     res.status(400).json({ error: 'supplier, expectedDate, and lines are required' });
     return;
   }
+  const prepared = await prepareLines(lines);
+  if (typeof prepared === 'string') { res.status(400).json({ error: prepared }); return; }
+  const allocations = await resolveLineAllocations(lines, targetClient);
+  if (typeof allocations === 'string') { res.status(400).json({ error: allocations }); return; }
+  const costs = prepareCosts(lines);
+  if (typeof costs === 'string') { res.status(400).json({ error: costs }); return; }
 
   // Create PO within a transaction to ensure SKUs and suppliers are linked safely
   const po = await prisma.$transaction(async (tx) => {
@@ -772,7 +912,7 @@ router.post('/', requirePermission('po.create'), async (req: Request, res: Respo
         supplierId: finalSupplierId,
         supplierName: finalSupplierName,
         expectedDate: new Date(expectedDate),
-        targetClient,
+        targetClient: allocations.target,
         notes,
         createdById: req.user!.userId,
       }
@@ -780,64 +920,25 @@ router.post('/', requirePermission('po.create'), async (req: Request, res: Respo
 
     // Process lines one by one
     for (const l of lines) {
-      const itemType = l.itemType || 'FABRIC';
-      const category = l.category || null;
-      const brand = (l.brand || '').trim() || null;
-      const quality = (l.quality || '').trim() || null;
-      const shade = (l.shade || '').trim() || null;
-      const size = l.size ? String(l.size).trim() : null;
-      const name = (l.name || '').trim() || null;
-      const artNo = (l.artNo || '').trim().toUpperCase() || null;
-
-      if (itemType === 'FABRIC' && (!brand || !quality || !shade || !category)) {
-        throw new Error('Brand, Quality, Shade, and Category are required for Fabric lines');
-      }
-
-      let uom = l.uom;
-      if (!uom) {
-        if (itemType === 'FABRIC') uom = 'METERS';
-        else if (itemType === 'READY_MADE') uom = 'PCS';
-        else {
-          const cat = (category || '').toUpperCase();
-          uom = (cat === 'SHOES' || cat === 'SOCKS') ? 'PAIRS' : 'PCS';
-        }
-      }
+      const p = prepared.get(l)!;
 
       const createdLine = await tx.purchaseOrderLine.create({
         data: {
           poId: createdPo.id,
-          itemType: itemType as any,
-          category,
-          brand,
-          quality,
-          shade,
-          size,
-          name,
-          artNo,
-          uom,
-          orderedQty: parseFloat(l.orderedQty),
-          notes: l.notes,
+          ...p,
         }
       });
 
-      const allocList = (Array.isArray(l.allocations) && l.allocations.length > 0)
-        ? l.allocations.filter((a: any) => parseFloat(a.allocatedQty) > 0)
-        : (targetClient && String(targetClient).trim()
-            ? [{ clientName: String(targetClient).trim(), allocatedQty: parseFloat(l.orderedQty) }]
-            : []);
+      // Confidential cost: saved apart from the line and never sent back
+      const cost = costs.get(l);
+      if (cost !== undefined) {
+        await tx.poLineCost.create({ data: { poLineId: createdLine.id, costPrice: cost, updatedById: req.user!.userId } });
+        await logCostChange(tx, { poId: createdPo.id, poNumber, lineLabel: poLineLabel(createdLine), newPrice: cost, source: 'PO_CREATE' }, req.user!);
+      }
 
-      for (const alloc of allocList) {
-        const allocQty = parseFloat(alloc.allocatedQty);
-        if (!allocQty || allocQty <= 0) continue;
-        const cName = (alloc.clientName || '').trim() || (targetClient && String(targetClient).trim()) || 'General Stock';
+      for (const alloc of allocations.perLine.get(l) ?? []) {
         await tx.poLineAllocation.create({
-          data: {
-            poLineId: createdLine.id,
-            clientId: alloc.clientId || null,
-            clientName: cName,
-            allocatedQty: allocQty,
-            notes: alloc.notes?.trim() || null
-          }
+          data: { poLineId: createdLine.id, ...alloc }
         });
       }
     }
@@ -856,12 +957,13 @@ router.post('/', requirePermission('po.create'), async (req: Request, res: Respo
 
   // Auto-learn typed attributes into column master data
   const attributesToLearn: Array<{ type: string; value?: string | null; category?: string | null }> = [];
-  for (const l of lines) {
-    if (l.brand) attributesToLearn.push({ type: 'BRAND', value: l.brand });
-    if (l.quality) attributesToLearn.push({ type: 'QUALITY', value: l.quality, category: l.category });
-    if (l.shade) attributesToLearn.push({ type: 'SHADE', value: l.shade });
-    if (l.name) attributesToLearn.push({ type: 'ITEM_NAME', value: l.name, category: l.category });
-    if (l.artNo) attributesToLearn.push({ type: 'ART_NO', value: l.artNo });
+  for (const p of prepared.values()) {
+    if (p.brand && p.itemType !== 'ACCESSORY') attributesToLearn.push({ type: 'BRAND', value: p.brand });
+    if (p.quality) attributesToLearn.push({ type: 'QUALITY', value: p.quality, category: p.category });
+    if (p.qualityName) attributesToLearn.push({ type: 'QUALITY_NAME', value: p.qualityName, category: p.category });
+    if (p.shade) attributesToLearn.push({ type: 'SHADE', value: p.shade });
+    if (p.name) attributesToLearn.push({ type: 'ITEM_NAME', value: p.name, category: p.itemType });
+    if (p.artNo) attributesToLearn.push({ type: 'ART_NO', value: p.artNo });
   }
   if (attributesToLearn.length > 0) {
     autoLearnAttributes(attributesToLearn).catch(() => {});
@@ -900,6 +1002,13 @@ router.put('/:id', requirePermission('po.create'), async (req: Request, res: Res
   if (po.status !== 'PENDING') {
     return void res.status(400).json({ error: 'Cannot fully edit a PO that has been partially or fully received' });
   }
+  if (!Array.isArray(lines) || lines.length === 0) return void res.status(400).json({ error: 'At least one line is required' });
+  const prepared = await prepareLines(lines);
+  if (typeof prepared === 'string') return void res.status(400).json({ error: prepared });
+  const allocations = await resolveLineAllocations(lines, targetClient);
+  if (typeof allocations === 'string') return void res.status(400).json({ error: allocations });
+  const costs = prepareCosts(lines);
+  if (typeof costs === 'string') return void res.status(400).json({ error: costs });
 
   const updatedPo = await prisma.$transaction(async (tx) => {
     let finalSupplierId = supplierId !== undefined ? (supplierId || null) : po.supplierId;
@@ -926,75 +1035,51 @@ router.put('/:id', requirePermission('po.create'), async (req: Request, res: Res
         supplierId: finalSupplierId,
         supplierName: finalSupplierName,
         expectedDate: new Date(expectedDate),
-        targetClient: targetClient ? String(targetClient).trim() : null,
+        targetClient: allocations.target,
         notes: notes ? String(notes).trim() : null,
       }
     });
 
-    // 2. Delete all existing lines
+    // 2. Delete all existing lines. Their confidential costs are kept aside first: the edit form
+    // shows cost fields blank, so a line left blank keeps the cost it had (matched by line id).
+    const oldLines = await tx.purchaseOrderLine.findMany({ where: { poId: id as string }, include: { cost: true } });
+    const oldCosts = new Map(oldLines.filter(l => l.cost).map(l => [l.id, Number(l.cost!.costPrice)]));
+    const keptLineIds = new Set<string>();
     await tx.purchaseOrderLine.deleteMany({ where: { poId: id as string } });
 
     // 3. Re-create all lines
     for (const l of lines) {
-      const itemType = l.itemType || 'FABRIC';
-      const category = l.category || null;
-      const brand = (l.brand || '').trim() || null;
-      const quality = (l.quality || '').trim() || null;
-      const shade = (l.shade || '').trim() || null;
-      const size = l.size ? String(l.size).trim() : null;
-      const name = (l.name || '').trim() || null;
-      const artNo = (l.artNo || '').trim().toUpperCase() || null;
-
-      if (itemType === 'FABRIC' && (!brand || !quality || !shade || !category)) {
-        throw new Error('Brand, Quality, Shade, and Category are required for Fabric lines');
-      }
-
-      let uom = l.uom;
-      if (!uom) {
-        if (itemType === 'FABRIC') uom = 'METERS';
-        else if (itemType === 'READY_MADE') uom = 'PCS';
-        else {
-          const cat = (category || '').toUpperCase();
-          uom = (cat === 'SHOES' || cat === 'SOCKS') ? 'PAIRS' : 'PCS';
-        }
-      }
+      const p = prepared.get(l)!;
 
       const createdLine = await tx.purchaseOrderLine.create({
         data: {
           poId: id as string,
-          itemType: itemType as any,
-          category,
-          brand,
-          quality,
-          shade,
-          size,
-          name,
-          artNo,
-          uom,
-          orderedQty: parseFloat(l.orderedQty),
-          notes: l.notes,
+          ...p,
         }
       });
 
-      const allocList = (Array.isArray(l.allocations) && l.allocations.length > 0)
-        ? l.allocations.filter((a: any) => parseFloat(a.allocatedQty) > 0)
-        : (targetClient && String(targetClient).trim()
-            ? [{ clientName: String(targetClient).trim(), allocatedQty: parseFloat(l.orderedQty) }]
-            : []);
+      const previousId = l.id && oldLines.some(o => o.id === String(l.id)) && !keptLineIds.has(String(l.id)) ? String(l.id) : null;
+      if (previousId) keptLineIds.add(previousId);
+      const previousCost = previousId ? oldCosts.get(previousId) : undefined;
+      const cost = costs.get(l) ?? previousCost;
+      if (cost !== undefined) {
+        await tx.poLineCost.create({ data: { poLineId: createdLine.id, costPrice: cost, updatedById: req.user!.userId } });
+        if (cost !== previousCost) {
+          await logCostChange(tx, { poId: po.id, poNumber: po.poNumber, lineLabel: poLineLabel(createdLine), oldPrice: previousCost ?? null, newPrice: cost, source: 'PO_EDIT' }, req.user!);
+        }
+      }
 
-      for (const alloc of allocList) {
-        const allocQty = parseFloat(alloc.allocatedQty);
-        if (!allocQty || allocQty <= 0) continue;
-        const cName = (alloc.clientName || '').trim() || (targetClient && String(targetClient).trim()) || 'General Stock';
+      for (const alloc of allocations.perLine.get(l) ?? []) {
         await tx.poLineAllocation.create({
-          data: {
-            poLineId: createdLine.id,
-            clientId: alloc.clientId || null,
-            clientName: cName,
-            allocatedQty: allocQty,
-            notes: alloc.notes?.trim() || null
-          }
+          data: { poLineId: createdLine.id, ...alloc }
         });
+      }
+    }
+
+    // Lines removed in this edit take their cost with them
+    for (const old of oldLines) {
+      if (old.cost && !keptLineIds.has(old.id)) {
+        await logCostChange(tx, { poId: po.id, poNumber: po.poNumber, lineLabel: `${poLineLabel(old)} (line removed)`, oldPrice: Number(old.cost.costPrice), newPrice: null, source: 'PO_EDIT' }, req.user!);
       }
     }
 
@@ -1012,12 +1097,13 @@ router.put('/:id', requirePermission('po.create'), async (req: Request, res: Res
 
   // Auto-learn typed attributes into column master data
   const attributesToLearn: Array<{ type: string; value?: string | null; category?: string | null }> = [];
-  for (const l of lines) {
-    if (l.brand) attributesToLearn.push({ type: 'BRAND', value: l.brand });
-    if (l.quality) attributesToLearn.push({ type: 'QUALITY', value: l.quality, category: l.category });
-    if (l.shade) attributesToLearn.push({ type: 'SHADE', value: l.shade });
-    if (l.name) attributesToLearn.push({ type: 'ITEM_NAME', value: l.name, category: l.category });
-    if (l.artNo) attributesToLearn.push({ type: 'ART_NO', value: l.artNo });
+  for (const p of prepared.values()) {
+    if (p.brand && p.itemType !== 'ACCESSORY') attributesToLearn.push({ type: 'BRAND', value: p.brand });
+    if (p.quality) attributesToLearn.push({ type: 'QUALITY', value: p.quality, category: p.category });
+    if (p.qualityName) attributesToLearn.push({ type: 'QUALITY_NAME', value: p.qualityName, category: p.category });
+    if (p.shade) attributesToLearn.push({ type: 'SHADE', value: p.shade });
+    if (p.name) attributesToLearn.push({ type: 'ITEM_NAME', value: p.name, category: p.itemType });
+    if (p.artNo) attributesToLearn.push({ type: 'ART_NO', value: p.artNo });
   }
   if (attributesToLearn.length > 0) {
     autoLearnAttributes(attributesToLearn).catch(() => {});
@@ -1073,6 +1159,13 @@ router.post('/:id/lines/:lineId/receive', requirePermission('ops.entry_gate'), a
   // Prevent duplicate additions if line is already completely received
   if (line.receivedQty >= line.orderedQty || (line.orderedQty - line.receivedQty) <= 0.001) {
     res.status(400).json({ error: 'This PO line has already been completely received and fulfilled.' });
+    return;
+  }
+
+  const lineUom = line.uom || (line.itemType === 'FABRIC' ? 'METERS' : 'PCS');
+  const badQty = batches.find((b: any) => !(parseFloat(b.quantity) > 0) || (!allowsDecimals(lineUom) && !Number.isInteger(parseFloat(b.quantity))));
+  if (badQty) {
+    res.status(400).json({ error: `Each roll needs a quantity above 0${allowsDecimals(lineUom) ? '' : ` in whole ${unitName(lineUom).toLowerCase()}`}.` });
     return;
   }
 
@@ -1132,11 +1225,12 @@ router.post('/:id/lines/:lineId/receive', requirePermission('ops.entry_gate'), a
           category: categoryVal,
           brand: brandVal,
           quality: qualityVal || null,
+          qualityName: line.qualityName || null,
           shade: shadeVal || null,
           size: sizeVal,
           name: nameVal,
           artNo: artNoVal,
-          uom: line.uom || (line.itemType === 'FABRIC' ? 'METERS' : 'PCS'),
+          uom: lineUom,
           quantity: qty,
           poLineId: lineId as string,
           supplierBundle: batch.supplierBundle || null,
@@ -1239,145 +1333,52 @@ const handlePOPrint = async (req: Request, res: Response) => {
       console.error('Barcode generation failed', err);
     }
 
-    // Build metadata list in GRN format
-    const metaItems: { label: string; value: string }[] = [];
-    
-    // 1. Supplier Name
-    metaItems.push({ label: 'Supplier:', value: `${po.supplierName}${po.supplier?.code ? ` (${po.supplier.code})` : ''}` });
-    
-    // 2. Order Date
-    metaItems.push({ label: 'Order Date:', value: formatDate(po.createdAt) });
-    
-    // 3. Expected Delivery
-    metaItems.push({ label: 'Expected Delivery:', value: formatDate(po.expectedDate) });
-
-    // 4. Order Status
-    metaItems.push({ label: 'Order Status:', value: po.status.replace('_', ' ') });
-
-    // 5. Created By
-    metaItems.push({ label: 'Created By:', value: po.createdBy?.name || '—' });
-
-    // 6. Target Client / Supplier Address
-    if (po.targetClient && po.targetClient.trim()) {
-      metaItems.push({ label: 'Target Client:', value: po.targetClient.trim() });
-    } else {
-      const supAddr = po.supplier?.address || po.supplier?.city;
-      if (supAddr && supAddr.trim()) {
-        metaItems.push({ label: 'Supplier Address:', value: supAddr.trim() });
-      }
-    }
+    // Header details; anything not entered is left off the document
+    const supAddr = (po.supplier?.address || po.supplier?.city || '').trim();
+    const metaItems = filledMeta([
+      ['Supplier', `${po.supplierName}${po.supplier?.code ? ` (${po.supplier.code})` : ''}`],
+      ['Order Date', formatDate(po.createdAt)],
+      ['Expected Delivery', po.expectedDate ? formatDate(po.expectedDate) : ''],
+      ['Created By', po.createdBy?.name],
+      // The PO goes to the supplier, so internal details (order status, which clients the
+      // stock is for) are not printed.
+      ['Supplier Address', supAddr],
+    ]);
 
     let metaRowsHtml = '';
     for (let i = 0; i < metaItems.length; i += 2) {
-      const item1 = metaItems[i];
-      const item2 = metaItems[i + 1];
-      metaRowsHtml += `
-        <tr>
-          <td class="meta-label">${item1.label}</td>
-          <td><strong>${escapeHtml(item1.value)}</strong></td>
-          ${item2 ? `<td class="meta-label">${item2.label}</td><td><strong>${escapeHtml(item2.value)}</strong></td>` : '<td></td><td></td>'}
-        </tr>
-      `;
+      metaRowsHtml += `<tr>${metaItems.slice(i, i + 2)
+        .map(([label, value]) => `<td class="meta-label">${escapeHtml(label)}:</td><td><strong>${escapeHtml(value)}</strong></td>`)
+        .join('')}</tr>`;
     }
 
     const isFabric = po.lines.some((l: any) => l.itemType === 'FABRIC' || (l.uom || '').toUpperCase().startsWith('M'));
-    const isReadyMade = !isFabric && po.lines.some((l: any) => l.itemType === 'READY_MADE' || (l.uom || '').toUpperCase().startsWith('P'));
+    type Line = (typeof po.lines)[number];
+    const lineUnit = (l: Line) => l.uom || (isFabric ? 'METERS' : 'PCS');
+    const ordered = (l: Line) => `${allowsDecimals(lineUnit(l)) ? Number(l.orderedQty.toFixed(2)) : Math.round(l.orderedQty)} ${unitLabel(lineUnit(l))}`;
+    const totalText = totalsByUnit(po.lines.map(l => ({ uom: l.uom, quantity: l.orderedQty })))
+      .map(([u, q]) => `${q} ${unitName(u)}`).join(' + ') || '0';
 
-    let linesHtml = '';
-    for (let i = 0; i < po.lines.length; i++) {
-      const line = po.lines[i];
-      const brand = escapeHtml(line.brand || '—');
-      const quality = escapeHtml(line.quality || '—');
-      const shade = escapeHtml(line.shade || '—');
-      const category = escapeHtml(line.category || '—');
-      const size = escapeHtml(line.size || '—');
-      const name = escapeHtml(line.name || '—');
-      const artNo = escapeHtml(line.artNo || '—');
-      const unit = escapeHtml(line.uom || (isFabric ? 'Meters' : (isReadyMade ? 'Pieces' : 'Units')));
-
-      // Client allocation summary string
-      const lineAllocs = line.allocations;
-      const allocSummaryHtml = lineAllocs.length > 0
-        ? `<div style="font-size: 10px; color: #1e40af; margin-top: 2px; font-weight: 500;">
-             Allocated: ${lineAllocs.map((a: any) => `<strong>${escapeHtml(a.clientName)}</strong> (${a.allocatedQty}${isFabric ? 'm' : ''})`).join(' · ')}
-           </div>`
-        : (po.targetClient && po.targetClient.trim()
-            ? `<div style="font-size: 10px; color: #1e40af; margin-top: 2px; font-weight: 500;">Client: <strong>${escapeHtml(po.targetClient)}</strong></div>`
-            : '');
-
-      if (isFabric) {
-        linesHtml += `
-          <tr>
-            <td style="text-align: center;">${i + 1}</td>
-            <td><strong>${category === 'PLAIN_SHIRTING' ? 'Plain Shirting' : category}</strong></td>
-            <td>
-              <strong>${brand}</strong>
-              ${allocSummaryHtml}
-            </td>
-            <td>${quality}</td>
-            <td>${shade}</td>
-            <td style="text-align: right; font-weight: bold;">${line.orderedQty.toFixed(1)} ${unit}</td>
-          </tr>
-        `;
-      } else {
-        linesHtml += `
-          <tr>
-            <td style="text-align: center;">${i + 1}</td>
-            <td>
-              <strong>${name !== '—' ? name : brand}</strong>
-              ${allocSummaryHtml}
-            </td>
-            <td>${category !== '—' ? category : quality}</td>
-            <td>${artNo !== '—' ? artNo : quality}</td>
-            <td>${shade !== '—' ? shade : size}</td>
-            <td style="text-align: center;">${size !== '—' ? size : '—'}</td>
-            <td style="text-align: right; font-weight: bold;">${Math.round(line.orderedQty)} ${unit}</td>
-          </tr>
-        `;
-      }
-    }
-
-    const totalQty = po.lines.reduce((sum, l) => sum + l.orderedQty, 0);
-
-    let tableHeadHtml = '';
-    let tableFootHtml = '';
-
-    if (isFabric) {
-      tableHeadHtml = `
-        <tr>
-          <th style="width: 32px; text-align: center;">#</th>
-          <th style="text-align: left;">Fabric Category</th>
-          <th style="text-align: left;">Brand</th>
-          <th style="text-align: left;">Quality</th>
-          <th style="text-align: left;">Shade</th>
-          <th style="width: 120px; text-align: right;">Ordered (Meters)</th>
-        </tr>
-      `;
-      tableFootHtml = `
-        <tr style="font-weight: bold; background: #f9f9f9; border-top: 2px solid #000; border-bottom: 2px solid #000;">
-          <td colspan="5" style="text-align: right; padding: 8px;">TOTAL (METERS):</td>
-          <td style="text-align: right; padding: 8px;">${totalQty.toFixed(1)} Meters</td>
-        </tr>
-      `;
-    } else {
-      tableHeadHtml = `
-        <tr>
-          <th style="width: 32px; text-align: center;">#</th>
-          <th style="text-align: left;">Item Name / Brand</th>
-          <th style="text-align: left;">Category</th>
-          <th style="text-align: left;">Art No / Quality</th>
-          <th style="text-align: left;">Color / Shade</th>
-          <th style="width: 60px; text-align: center;">Size</th>
-          <th style="width: 120px; text-align: right;">Ordered (${isReadyMade ? 'Pieces' : 'Units'})</th>
-        </tr>
-      `;
-      tableFootHtml = `
-        <tr style="font-weight: bold; background: #f9f9f9; border-top: 2px solid #000; border-bottom: 2px solid #000;">
-          <td colspan="6" style="text-align: right; padding: 8px;">TOTAL (${isReadyMade ? 'PIECES' : 'UNITS'}):</td>
-          <td style="text-align: right; padding: 8px;">${Math.round(totalQty)} ${isReadyMade ? 'Pieces' : 'Units'}</td>
-        </tr>
-      `;
-    }
+    // Columns nobody filled in (e.g. Quality Name) are left off the document
+    const columns: TableColumn<Line>[] = isFabric ? [
+      { header: '#', align: 'center', width: '32px', cell: (_l, i) => i + 1 },
+      { header: 'Fabric Type', bold: true, cell: l => fabricCategoryLabel(l.category) },
+      { header: 'Brand', bold: true, optional: true, cell: l => l.brand },
+      { header: 'Quality', optional: true, cell: l => l.quality },
+      { header: 'Quality Name', optional: true, cell: l => l.qualityName },
+      { header: 'Shade', optional: true, cell: l => l.shade },
+      { header: 'Ordered', align: 'right', width: '120px', bold: true, cell: ordered, total: totalText },
+    ] : [
+      { header: '#', align: 'center', width: '32px', cell: (_l, i) => i + 1 },
+      { header: 'Item', bold: true, cell: l => l.name || l.brand },
+      { header: 'Category', optional: true, cell: l => l.category },
+      { header: 'Art No', optional: true, cell: l => l.artNo },
+      { header: 'Specification', optional: true, cell: l => l.quality },
+      { header: 'Color / Shade', optional: true, cell: l => l.shade },
+      { header: 'Size', align: 'center', width: '60px', optional: true, cell: l => l.size },
+      { header: 'Ordered', align: 'right', width: '120px', bold: true, cell: ordered, total: totalText },
+    ];
+    const table = documentTable(columns, po.lines);
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1556,13 +1557,13 @@ const handlePOPrint = async (req: Request, res: Response) => {
 
       <table class="data-table">
         <thead>
-          ${tableHeadHtml}
+          ${table.head}
         </thead>
         <tbody>
-          ${linesHtml}
+          ${table.body}
         </tbody>
         <tfoot>
-          ${tableFootHtml}
+          ${table.foot}
         </tfoot>
       </table>
     </div>

@@ -4,6 +4,8 @@ import { requireAuth, requirePermission, userHasPermission } from '../../middlew
 import prisma from '../../lib/prisma';
 import { formatDate } from '../../utils/format';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
+import { filledMeta } from '../../utils/print-document';
+import { fabricCategoryLabel, totalsByUnit, unitName } from '../../utils/units';
 
 const router = Router();
 
@@ -502,17 +504,16 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
     brand: string;
     category: string | null;
     quality: string;
+    qualityName: string | null;
     shade: string;
     size: string | null;
     itemType: string;
     totalQuantity: number;
-    unitCount: number;
+    unitCount: number;   // rolls (fabric) or packs dispatched, cut pieces included
+    cutCount: number;    // of which cut from a roll / pack
     unit: string;
   }> = {};
 
-  let grandTotalFabric = 0;
-  let grandTotalReadyMade = 0;
-  let grandTotalAccessories = 0;
 
   for (const line of dc.lines || []) {
     const batch = line.batch;
@@ -521,13 +522,14 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
     const itemType = batch.itemType || 'FABRIC';
     const name = batch.name || null;
     const artNo = batch.artNo || null;
-    const brand = batch.brand || '—';
+    const brand = batch.brand || '';
     const category = batch.category || null;
     const quality = batch.quality || '';
+    const qualityName = batch.qualityName || null;
     const shade = batch.shade || '';
     const size = batch.size || null;
-    const uomStr = batch.uom || (isFabric ? 'Meters' : (isReadyMade ? 'Pieces' : 'Units'));
-    const key = [itemType, name || '', artNo || '', brand, quality, shade, size || '', uomStr].join('|');
+    const uomStr = batch.uom || (isFabric ? 'METERS' : 'PCS');
+    const key = [itemType, category || '', name || '', artNo || '', brand, quality, qualityName || '', shade, size || '', uomStr].join('|');
 
     if (!groupedProducts[key]) {
       groupedProducts[key] = {
@@ -536,34 +538,51 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
         brand,
         category,
         quality,
+        qualityName,
         shade,
         size,
         itemType,
         totalQuantity: 0,
         unitCount: 0,
+        cutCount: 0,
         unit: uomStr,
       };
     }
 
     groupedProducts[key].totalQuantity += line.quantity;
     groupedProducts[key].unitCount += 1;
-
-    if (isFabric) grandTotalFabric += line.quantity;
-    else if (isReadyMade) grandTotalReadyMade += line.quantity;
-    else grandTotalAccessories += line.quantity;
+    if (line.isPartialCut) groupedProducts[key].cutCount += 1;
   }
+  // Grand total per unit: meters, kg and pieces are never added together
+  const grandTotal = totalsByUnit((dc.lines || []).map(l => ({ uom: l.batch.uom, quantity: l.quantity })))
+    .map(([u, q]) => `${q} ${unitName(u)}`).join(' + ') || '0';
 
   const productList = Object.values(groupedProducts);
   let linesHtml = '';
 
+  // Rolls for fabric, packs for ready-made and accessories: "12 Rolls", "1 Pack"
+  const packages = (n: number, fabric: boolean) => `${n} ${fabric ? (n === 1 ? 'Roll' : 'Rolls') : (n === 1 ? 'Pack' : 'Packs')}`;
+  const hasFabric = productList.some(p => p.itemType === 'FABRIC');
+  const hasOther = productList.some(p => p.itemType !== 'FABRIC');
+  const countHeader = hasFabric && hasOther ? 'Rolls / Packs' : hasFabric ? 'No. of Rolls' : 'No. of Packs';
+  const totalRolls = productList.filter(p => p.itemType === 'FABRIC').reduce((n, p) => n + p.unitCount, 0);
+  const totalPacks = productList.filter(p => p.itemType !== 'FABRIC').reduce((n, p) => n + p.unitCount, 0);
+  const grandCount = [totalRolls ? packages(totalRolls, true) : '', totalPacks ? packages(totalPacks, false) : ''].filter(Boolean).join(' + ');
+
   for (let i = 0; i < productList.length; i++) {
     const p = productList[i];
     const isFabric = p.itemType === 'FABRIC';
-    const countLabel = isFabric 
-      ? `${p.unitCount} ${p.unitCount === 1 ? 'Roll' : 'Rolls'}`
-      : `${p.unitCount} ${p.unitCount === 1 ? 'Item' : 'Items'}`;
+    const cutNote = p.cutCount ? `incl. ${p.cutCount} cut ${p.cutCount === 1 ? 'piece' : 'pieces'}` : '';
 
-    const mainTitle = escapeHtml(p.name || `${p.brand || ''} ${p.quality ? '· ' + p.quality : ''}`.trim());
+    // Only the details that were entered are printed
+    const mainTitle = escapeHtml(p.name || [[p.brand, p.quality].filter(Boolean).join(' · '), p.qualityName ? `(${p.qualityName})` : ''].filter(Boolean).join(' ')
+      || (isFabric ? fabricCategoryLabel(p.category) || 'Fabric' : 'Item'));
+    const details = [
+      isFabric && p.category && mainTitle !== escapeHtml(fabricCategoryLabel(p.category)) ? `Fabric: <strong>${escapeHtml(fabricCategoryLabel(p.category))}</strong>` : '',
+      p.artNo ? `Art No: <strong>${escapeHtml(p.artNo)}</strong>` : '',
+      p.shade ? `Color/Shade: <strong>${escapeHtml(p.shade)}</strong>` : '',
+      p.size ? `Size: <strong>${escapeHtml(p.size)}</strong>` : '',
+    ].filter(Boolean).join(' · ');
 
     linesHtml += `
       <tr>
@@ -573,19 +592,31 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
             ${mainTitle}
           </div>
           <div style="font-size: 10.5px; color: #333333; margin-top: 2px;">
-            ${p.artNo ? `Art No: <strong>${escapeHtml(p.artNo)}</strong> · ` : ''}
-            ${p.shade ? `Color/Shade: <strong>${escapeHtml(p.shade)}</strong>` : ''}
-            ${p.size ? ` · Size: <strong>${escapeHtml(p.size)}</strong>` : ''}
-            <span style="display: inline-block; margin-left: 8px; font-size: 10px; background: #f1f5f9; padding: 1px 6px; border-radius: 3px; font-weight: bold;">
-              ${countLabel}
-            </span>
+            ${details}
           </div>
         </td>
+        <td style="text-align: center; font-weight: bold; font-size: 11.5px; white-space: nowrap;">
+          ${packages(p.unitCount, isFabric)}
+          ${cutNote ? `<div style="font-size: 9.5px; font-weight: normal; color: #333333;">${cutNote}</div>` : ''}
+        </td>
         <td style="text-align: right; font-weight: bold; font-size: 11.5px; white-space: nowrap;">
-          ${parseFloat(p.totalQuantity.toFixed(2))} ${escapeHtml(p.unit)}
+          ${parseFloat(p.totalQuantity.toFixed(2))} ${escapeHtml(unitName(p.unit))}
         </td>
       </tr>
     `;
+  }
+
+  // Header details; anything not entered is left off the document
+  const metaCells: [string, string][] = [
+    ['Customer', `<strong>${escapeHtml(dc.customerName)}</strong>`],
+    ['Dispatched Date', `<strong>${formatDate(dc.dispatchedAt || dc.createdAt)}</strong>`],
+    ...filledMeta([['Destination', dc.destination]]).map(([k, v]): [string, string] => [k, `<strong>${escapeHtml(v)}</strong>`]),
+    ['Delivery Status', `<strong>${dc.status === 'DISPATCHED' ? '<span style="color: #166534;">Dispatched</span>' : '<span style="color: #b45309;">Draft</span>'}</strong>`],
+    ...filledMeta([['Prepared By', dc.createdBy?.name], ['Remarks', dc.remarks]]).map(([k, v]): [string, string] => [k, `<strong>${escapeHtml(v)}</strong>`]),
+  ];
+  let metaRowsHtml = '';
+  for (let i = 0; i < metaCells.length; i += 2) {
+    metaRowsHtml += `<tr>${metaCells.slice(i, i + 2).map(([label, html]) => `<td class="meta-label">${label}:</td><td>${html}</td>`).join('')}</tr>`;
   }
 
   const html = `<!DOCTYPE html>
@@ -760,24 +791,7 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
       </div>
 
       <table class="meta-table">
-        <tr>
-          <td class="meta-label">Customer:</td>
-          <td><strong>${escapeHtml(dc.customerName)}</strong></td>
-          <td class="meta-label">Dispatched Date:</td>
-          <td><strong>${formatDate(dc.dispatchedAt || dc.createdAt)}</strong></td>
-        </tr>
-        <tr>
-          <td class="meta-label">Destination:</td>
-          <td><strong>${escapeHtml(dc.destination || '—')}</strong></td>
-          <td class="meta-label">Delivery Status:</td>
-          <td><strong>${dc.status === 'DISPATCHED' ? '<span style="color: #166534;">Dispatched</span>' : '<span style="color: #b45309;">Draft</span>'}</strong></td>
-        </tr>
-        <tr>
-          <td class="meta-label">Prepared By:</td>
-          <td><strong>${escapeHtml(dc.createdBy?.name || '—')}</strong></td>
-          <td class="meta-label">Remarks:</td>
-          <td><strong>${escapeHtml(dc.remarks || '—')}</strong></td>
-        </tr>
+        ${metaRowsHtml}
       </table>
 
       <table class="data-table">
@@ -785,7 +799,8 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
           <tr>
             <th style="width: 32px; text-align: center;">#</th>
             <th style="text-align: left;">Product Name &amp; Description</th>
-            <th style="width: 180px; text-align: right;">Total Quantity</th>
+            <th style="width: 110px; text-align: center;">${countHeader}</th>
+            <th style="width: 160px; text-align: right;">Total Quantity</th>
           </tr>
         </thead>
         <tbody>
@@ -794,12 +809,9 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
         <tfoot>
           <tr style="font-weight: bold; background: #f9f9f9; border-top: 2px solid #000000; border-bottom: 2px solid #000000;">
             <td colspan="2" style="text-align: right; padding: 8px;">GRAND TOTAL:</td>
+            <td style="text-align: center; padding: 8px; white-space: nowrap;">${grandCount}</td>
             <td style="text-align: right; padding: 8px;">
-              ${[
-                grandTotalFabric > 0 ? `${parseFloat(grandTotalFabric.toFixed(2))} Meters` : '',
-                grandTotalReadyMade > 0 ? `${Math.round(grandTotalReadyMade)} Pieces` : '',
-                grandTotalAccessories > 0 ? `${Math.round(grandTotalAccessories)} Units` : '',
-              ].filter(Boolean).join(' + ') || '0'}
+              ${escapeHtml(grandTotal)}
             </td>
           </tr>
         </tfoot>

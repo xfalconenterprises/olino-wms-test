@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
 import { formatTime } from '../../../utils/format';
+import { formatTotals, unitLabel, uomOf } from '../../../utils/units';
 import { 
   MapPin, 
   ScanLine, 
@@ -16,6 +17,7 @@ import {
   Unlock,
   ArrowRightLeft
 } from 'lucide-react';
+import SpecLine from '../../../components/Common/SpecLine';
 import '../../../styles/components.css';
 
 interface LocationSlot {
@@ -34,6 +36,7 @@ interface PendingBatch {
   category?: string | null;
   brand?: string | null;
   quality?: string | null;
+  qualityName?: string | null;
   shade?: string | null;
   size?: string | null;
   name?: string | null;
@@ -153,6 +156,7 @@ export default function PutAwayPage() {
   const queueStats = useMemo(() => {
     let fabricLumps = 0;
     let fabricMeters = 0;
+    let fabricKg = 0;
     let readyMadePacks = 0;
     let readyMadePcs = 0;
     let accessoryPacks = 0;
@@ -161,7 +165,8 @@ export default function PutAwayPage() {
     for (const b of pendingItems) {
       if (b.itemType === 'FABRIC') {
         fabricLumps += 1;
-        fabricMeters += b.unassignedQty;
+        if ((b.uom || '').toUpperCase() === 'KG') fabricKg += b.unassignedQty;
+        else fabricMeters += b.unassignedQty;
       } else if (b.itemType === 'READY_MADE') {
         readyMadePacks += 1;
         readyMadePcs += b.unassignedQty;
@@ -175,6 +180,7 @@ export default function PutAwayPage() {
       totalLots: pendingItems.length,
       fabricLumps,
       fabricMeters: Math.round(fabricMeters * 10) / 10,
+      fabricKg: Math.round(fabricKg * 100) / 100,
       readyMadePacks,
       readyMadePcs: Math.round(readyMadePcs),
       accessoryPacks,
@@ -182,12 +188,7 @@ export default function PutAwayPage() {
     };
   }, [pendingItems]);
 
-  const getUnitLabel = (item: { uom?: string | null; itemType?: string }) => {
-    if (item.uom) return item.uom.toLowerCase();
-    if (item.itemType === 'FABRIC') return 'm';
-    if (item.itemType === 'READY_MADE') return 'pcs';
-    return 'units';
-  };
+  const getUnitLabel = (item: { uom?: string | null; itemType?: string }) => unitLabel(uomOf(item));
 
   // ─── Step 1: Confirm Location ──────────────────────────────────────────────
   const handleScanLocation = async () => {
@@ -408,7 +409,7 @@ export default function PutAwayPage() {
               {queueStats.fabricLumps} <span style={{ fontSize: 12, fontWeight: 500 }}>{queueStats.fabricLumps === 1 ? 'lump' : 'lumps'}</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
-              {queueStats.fabricMeters} meters total
+              {queueStats.fabricKg > 0 ? `${formatTotals([{ uom: 'METERS', quantity: queueStats.fabricMeters }, { uom: 'KG', quantity: queueStats.fabricKg }].filter(t => t.quantity > 0))} total` : `${queueStats.fabricMeters} meters total`}
             </div>
           </div>
           <div className="card" style={{ padding: '12px 18px', borderLeft: '4px solid #16a34a' }}>
@@ -733,13 +734,16 @@ export default function PutAwayPage() {
                 </span>
               </div>
               <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}>
-                {scannedBatch.itemType === 'FABRIC' ? (
-                  <>Shade: <strong>{scannedBatch.shade || '—'}</strong> · Quality: <strong>{scannedBatch.quality || '—'}</strong></>
-                ) : scannedBatch.itemType === 'READY_MADE' ? (
-                  <>Art No: <strong>{scannedBatch.artNo || '—'}</strong> · Size: <strong>{scannedBatch.size || '—'}</strong></>
-                ) : (
-                  <>Spec / Color: <strong>{scannedBatch.shade || '—'}</strong></>
-                )}
+                <SpecLine separator="·" separatorStyle={{ margin: '0 4px' }} specs={scannedBatch.itemType === 'FABRIC' ? [
+                  ['Shade', scannedBatch.shade],
+                  ['Quality', scannedBatch.quality],
+                  ['Quality Name', scannedBatch.qualityName],
+                ] : scannedBatch.itemType === 'READY_MADE' ? [
+                  ['Art No', scannedBatch.artNo],
+                  ['Size', scannedBatch.size],
+                ] : [
+                  ['Spec / Color', scannedBatch.shade],
+                ]} />
                 {scannedBatch.transactions?.[0]?.notes && (
                   <div style={{ marginTop: 4, fontSize: 12, color: '#b45309', fontWeight: 600 }}>
                     {scannedBatch.transactions[0].notes}

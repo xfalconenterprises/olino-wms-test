@@ -13,6 +13,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
+import { formatUnitTotals } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface GRNItem {
@@ -24,6 +25,7 @@ interface GRNItem {
   poNumber: string | null;
   totalRolls: number;
   totalQuantity: number;
+  quantityTotals?: [string, number][];
   status: string;
   remarks: string | null;
   receivedBy?: { id: string; name: string } | null;
@@ -338,7 +340,7 @@ export default function GRNListPage() {
                         {grn.totalRolls}
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
-                        {grn.totalQuantity.toFixed(1)}
+                        {grn.quantityTotals?.length ? formatUnitTotals(grn.quantityTotals) : grn.totalQuantity.toFixed(1)}
                       </td>
                       <td>
                         {hasDiscrepancy ? (

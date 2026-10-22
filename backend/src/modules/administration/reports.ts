@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
+import { unitLabel, unitName } from '../../utils/units';
 
 const router = Router();
 
@@ -83,12 +84,14 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
 
   // Calculate aggregations
   let inwardFabricMeters = 0;
+  let inwardFabricKg = 0;
   let inwardReadyMadePcs = 0;
   let inwardAccessoryQty = 0;
   let inwardShoesPairs = 0;
   let inwardSocksPairs = 0;
 
   let outwardFabricMeters = 0;
+  let outwardFabricKg = 0;
   let outwardReadyMadePcs = 0;
   let outwardAccessoryQty = 0;
   let outwardShoesPairs = 0;
@@ -118,7 +121,7 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
 
     if (tx.type === 'STOCK_IN') {
       if (itemType === 'FABRIC') {
-        inwardFabricMeters += qty;
+        if (tx.batch?.uom === 'KG') inwardFabricKg += qty; else inwardFabricMeters += qty;
       } else if (itemType === 'READY_MADE') {
         inwardReadyMadePcs += qty;
       } else if (itemType === 'ACCESSORY') {
@@ -131,7 +134,7 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
       timelineMap[dateKey].inwardQty += qty;
     } else if (tx.type === 'STOCK_OUT' || tx.type === 'PARTIAL_CUT') {
       if (itemType === 'FABRIC') {
-        outwardFabricMeters += qty;
+        if (tx.batch?.uom === 'KG') outwardFabricKg += qty; else outwardFabricMeters += qty;
       } else if (itemType === 'READY_MADE') {
         outwardReadyMadePcs += qty;
       } else if (itemType === 'ACCESSORY') {
@@ -149,11 +152,20 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
   let selectedInward = 0;
   let selectedOutward = 0;
   let unit = 'Meters';
+  // Fabric in kg alongside the main figure when a selection has both (never added to meters)
+  let secondary: { inward: number; outward: number; delta: number; unit: string } | null = null;
 
   if (itemTypeFilter === 'FABRIC') {
-    selectedInward = inwardFabricMeters;
-    selectedOutward = outwardFabricMeters;
-    unit = 'Meters';
+    const onlyKg = inwardFabricMeters + outwardFabricMeters === 0 && inwardFabricKg + outwardFabricKg > 0;
+    selectedInward = onlyKg ? inwardFabricKg : inwardFabricMeters;
+    selectedOutward = onlyKg ? outwardFabricKg : outwardFabricMeters;
+    unit = onlyKg ? 'Kg' : 'Meters';
+    if (!onlyKg && inwardFabricKg + outwardFabricKg > 0) {
+      secondary = {
+        inward: parseFloat(inwardFabricKg.toFixed(2)), outward: parseFloat(outwardFabricKg.toFixed(2)),
+        delta: parseFloat((inwardFabricKg - outwardFabricKg).toFixed(2)), unit: 'Kg',
+      };
+    }
   } else if (itemTypeFilter === 'READY_MADE') {
     selectedInward = inwardReadyMadePcs;
     selectedOutward = outwardReadyMadePcs;
@@ -172,8 +184,8 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
     selectedOutward = outwardSocksPairs;
     unit = 'Pairs';
   } else {
-    selectedInward = inwardFabricMeters + inwardReadyMadePcs + inwardAccessoryQty + inwardShoesPairs + inwardSocksPairs;
-    selectedOutward = outwardFabricMeters + outwardReadyMadePcs + outwardAccessoryQty + outwardShoesPairs + outwardSocksPairs;
+    selectedInward = inwardFabricMeters + inwardFabricKg + inwardReadyMadePcs + inwardAccessoryQty + inwardShoesPairs + inwardSocksPairs;
+    selectedOutward = outwardFabricMeters + outwardFabricKg + outwardReadyMadePcs + outwardAccessoryQty + outwardShoesPairs + outwardSocksPairs;
     unit = 'Mixed';
   }
 
@@ -189,9 +201,11 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
       outward: parseFloat(selectedOutward.toFixed(2)),
       delta: parseFloat((selectedInward - selectedOutward).toFixed(2)),
       unit,
+      secondary,
     },
     inward: {
       fabricMeters: parseFloat(inwardFabricMeters.toFixed(2)),
+      fabricKg: parseFloat(inwardFabricKg.toFixed(2)),
       readyMadePcs: inwardReadyMadePcs,
       accessoryQty: inwardAccessoryQty,
       shoesPairs: inwardShoesPairs,
@@ -200,6 +214,7 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
     },
     outward: {
       fabricMeters: parseFloat(outwardFabricMeters.toFixed(2)),
+      fabricKg: parseFloat(outwardFabricKg.toFixed(2)),
       readyMadePcs: outwardReadyMadePcs,
       accessoryQty: outwardAccessoryQty,
       shoesPairs: outwardShoesPairs,
@@ -212,11 +227,12 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
       id: t.id,
       type: t.type,
       batchCode: t.batch?.batchCode || '—',
-      product: `${t.batch?.name || `${t.batch?.brand || ''} ${t.batch?.quality || ''} ${t.batch?.shade || ''}`}`.trim() || 'Item',
+      product: `${t.batch?.name || `${t.batch?.brand || ''} ${t.batch?.quality || ''}${t.batch?.qualityName ? ` (${t.batch.qualityName})` : ''} ${t.batch?.shade || ''}`}`.trim() || 'Item',
       itemType: t.batch?.itemType || 'FABRIC',
       category: t.batch?.category || null,
       size: t.batch?.size || null,
       quantity: t.quantityMoved,
+      unit: unitLabel(t.batch?.uom || ((t.batch?.itemType || 'FABRIC') === 'FABRIC' ? 'METERS' : 'PCS')),
       operator: t.operator?.name || 'System',
       referenceId: t.referenceId || null,
       referenceType: t.referenceType || null,
@@ -262,6 +278,7 @@ router.get('/customer-shipments', requirePermission('admin.reports', 'inv.delive
 
   const result = challans.map((dc: any) => {
     let totalFabricMeters = 0;
+    let totalFabricKg = 0;
     let totalReadyMadePcs = 0;
     let totalAccessoryUnits = 0;
     let totalShoePairs = 0;
@@ -270,7 +287,8 @@ router.get('/customer-shipments', requirePermission('admin.reports', 'inv.delive
     const lines = (dc.lines || []).map((line: any) => {
       const itemType = line.batch?.itemType || 'FABRIC';
       const kind = reportKind(line.batch);
-      if (kind === 'FABRIC') totalFabricMeters += line.quantity;
+      if (kind === 'FABRIC' && line.batch?.uom === 'KG') totalFabricKg += line.quantity;
+      else if (kind === 'FABRIC') totalFabricMeters += line.quantity;
       else if (kind === 'READY_MADE') totalReadyMadePcs += line.quantity;
       else if (kind === 'SHOES') totalShoePairs += line.quantity;
       else if (kind === 'SOCKS') totalSockPairs += line.quantity;
@@ -279,15 +297,16 @@ router.get('/customer-shipments', requirePermission('admin.reports', 'inv.delive
       return {
         id: line.id,
         batchCode: line.batch?.batchCode || '—',
-        brand: line.batch?.brand || line.batch?.name || '—',
-        quality: line.batch?.quality || '—',
-        shade: line.batch?.shade || '—',
+        brand: line.batch?.brand || line.batch?.name || '',
+        quality: line.batch?.quality || '',
+        qualityName: line.batch?.qualityName || null,
+        shade: line.batch?.shade || '',
         category: line.batch?.category || null,
         size: line.batch?.size || null,
         itemType,
         quantity: line.quantity,
         isPartialCut: line.isPartialCut,
-        unit: itemType === 'FABRIC' ? 'Meters' : (line.batch?.uom || 'Pieces'),
+        unit: unitName(line.batch?.uom || (itemType === 'FABRIC' ? 'METERS' : 'PCS')),
       };
     });
 
@@ -298,12 +317,13 @@ router.get('/customer-shipments', requirePermission('admin.reports', 'inv.delive
       challanNumber: dc.challanNumber,
       customerName: dc.customerName,
       customerId: dc.customerId || null,
-      destination: dc.destination || '—',
+      destination: dc.destination || '',
       dispatchedAt: dc.dispatchedAt || dc.createdAt,
       createdAt: dc.createdAt,
       operator: dc.createdBy?.name || 'System',
       remarks: dc.remarks || null,
       totalFabricMeters: parseFloat(totalFabricMeters.toFixed(2)),
+      totalFabricKg: parseFloat(totalFabricKg.toFixed(2)),
       totalReadyMadePcs: Math.round(totalReadyMadePcs),
       totalAccessoryUnits: Math.round(totalAccessoryUnits),
       totalShoePairs,
@@ -350,6 +370,7 @@ router.get('/stock-master', requirePermission('admin.reports'), async (req: Requ
     category: string | null;
     brand: string;
     quality: string;
+    qualityName: string | null;
     shade: string;
     size: string | null;
     unitCount: number;
@@ -362,23 +383,24 @@ router.get('/stock-master', requirePermission('admin.reports'), async (req: Requ
   for (const b of batches) {
     const itemType = b.itemType || 'FABRIC';
     const category = b.category || null;
-    const brand = b.brand || b.name || '—';
-    const quality = b.quality || '—';
-    const shade = b.shade || '—';
+    const brand = b.brand || b.name || '';
+    const quality = b.quality || '';
+    const shade = b.shade || '';
     const size = b.size || null;
 
-    const key = `${itemType}|${category || ''}|${brand}|${quality}|${shade}|${size || ''}`;
+    const key = `${itemType}|${category || ''}|${brand}|${quality}|${b.qualityName || ''}|${shade}|${size || ''}|${b.uom}`;
     if (!grouped[key]) {
       grouped[key] = {
         itemType,
         category,
         brand,
         quality,
+        qualityName: b.qualityName || null,
         shade,
         size,
         unitCount: 0,
         totalQuantity: 0,
-        unit: itemType === 'FABRIC' ? 'Meters' : (b.uom || 'Pieces'),
+        unit: unitName(b.uom || (itemType === 'FABRIC' ? 'METERS' : 'PCS')),
         locations: [],
         skus: [],
       };
@@ -415,6 +437,8 @@ router.get('/supplier-performance', requirePermission('admin.reports'), async (_
     pendingPOs: number;
     totalFabricOrdered: number;
     totalFabricReceived: number;
+    totalFabricKgOrdered: number;
+    totalFabricKgReceived: number;
     totalPairsOrdered: number;
     totalPairsReceived: number;
     lastOrderDate: string;
@@ -430,6 +454,8 @@ router.get('/supplier-performance', requirePermission('admin.reports'), async (_
         pendingPOs: 0,
         totalFabricOrdered: 0,
         totalFabricReceived: 0,
+        totalFabricKgOrdered: 0,
+        totalFabricKgReceived: 0,
         totalPairsOrdered: 0,
         totalPairsReceived: 0,
         lastOrderDate: po.createdAt.toISOString(),
@@ -442,7 +468,10 @@ router.get('/supplier-performance', requirePermission('admin.reports'), async (_
 
     for (const line of po.lines) {
       const isFabric = line.itemType === 'FABRIC';
-      if (isFabric) {
+      if (isFabric && line.uom === 'KG') {
+        supplierMap[sName].totalFabricKgOrdered += line.orderedQty;
+        supplierMap[sName].totalFabricKgReceived += line.receivedQty;
+      } else if (isFabric) {
         supplierMap[sName].totalFabricOrdered += line.orderedQty;
         supplierMap[sName].totalFabricReceived += line.receivedQty;
       } else {
@@ -453,15 +482,21 @@ router.get('/supplier-performance', requirePermission('admin.reports'), async (_
   }
 
   const result = Object.values(supplierMap).map(s => {
-    const fabricRate = s.totalFabricOrdered > 0 ? (s.totalFabricReceived / s.totalFabricOrdered) * 100 : 100;
-    const pairsRate = s.totalPairsOrdered > 0 ? (s.totalPairsReceived / s.totalPairsOrdered) * 100 : 100;
-    const overallRate = parseFloat(((fabricRate + pairsRate) / (s.totalFabricOrdered > 0 && s.totalPairsOrdered > 0 ? 2 : 1)).toFixed(1));
+    // Fulfilment per unit group, then averaged (meters, kg and pieces are not added)
+    const rates = [
+      [s.totalFabricReceived, s.totalFabricOrdered],
+      [s.totalFabricKgReceived, s.totalFabricKgOrdered],
+      [s.totalPairsReceived, s.totalPairsOrdered],
+    ].filter(([, ordered]) => ordered > 0).map(([received, ordered]) => (received / ordered) * 100);
+    const overallRate = rates.length ? parseFloat((rates.reduce((t, r) => t + r, 0) / rates.length).toFixed(1)) : 100;
 
     return {
       ...s,
       fulfillmentRate: Math.min(overallRate, 100),
       totalFabricOrdered: parseFloat(s.totalFabricOrdered.toFixed(1)),
       totalFabricReceived: parseFloat(s.totalFabricReceived.toFixed(1)),
+      totalFabricKgOrdered: parseFloat(s.totalFabricKgOrdered.toFixed(1)),
+      totalFabricKgReceived: parseFloat(s.totalFabricKgReceived.toFixed(1)),
     };
   }).sort((a, b) => b.totalPOs - a.totalPOs);
 
@@ -500,9 +535,9 @@ router.get('/location-map', requirePermission('admin.reports'), async (_req: Req
       const itemType = b.itemType || 'FABRIC';
       return {
         batchCode: b.batchCode,
-        product: `${brand} ${shade}`.trim() || 'Item',
+        product: (b.name || `${brand} ${shade}`).trim() || 'Item',
         quantity: bl.quantity,
-        unit: itemType === 'FABRIC' ? 'm' : 'pairs',
+        unit: unitLabel(b.uom || (itemType === 'FABRIC' ? 'METERS' : 'PCS')),
       };
     }),
     isEmpty: loc.batchLocations.length === 0,

@@ -5,10 +5,13 @@ import { nextBatchCode } from '../../utils/batch-code';
 import { nextDocumentNumber } from '../../utils/document-number';
 import { formatDate } from '../../utils/format';
 import { renderPrintDocument } from '../../utils/print-document';
+import { allowsDecimals, fabricCategoryLabel, unitLabel } from '../../utils/units';
+
+export { unitLabel };
 
 // Customer returns (against a dispatched delivery challan) and returns to supplier.
 const router = Router();
-router.use(requireAuth, requirePermission('inv.returns'));
+router.use(requireAuth, requirePermission('ops.returns'));
 
 export const CUSTOMER_RETURN_REASONS = ['SIZE_EXCHANGE', 'DEFECTIVE', 'WRONG_ITEM', 'EXCESS', 'OTHER'] as const;
 export const SUPPLIER_RETURN_REASONS = ['DEFECTIVE', 'WRONG_ITEM', 'SHORT_LENGTH', 'EXCESS', 'OTHER'] as const;
@@ -23,22 +26,20 @@ class ReturnError extends Error {
 }
 
 type BatchFields = {
-  itemType: string; category: string | null; brand: string | null; quality: string | null; shade: string | null;
-  size: string | null; name: string | null; artNo: string | null; uom: string;
+  itemType: string; category: string | null; brand: string | null; quality: string | null; qualityName?: string | null;
+  shade: string | null; size: string | null; name: string | null; artNo: string | null; uom: string;
 };
 
 export function itemDescription(b: BatchFields): string {
-  if (b.itemType === 'FABRIC') return [`${b.brand ?? ''} ${b.quality ?? ''}`.trim(), b.shade].filter(Boolean).join(' · ');
+  if (b.itemType === 'FABRIC') {
+    return [fabricCategoryLabel(b.category), `${b.brand ?? ''} ${b.quality ?? ''}`.trim(), b.qualityName, b.shade].filter(Boolean).join(' · ');
+  }
   if (b.itemType === 'READY_MADE') return [b.name, b.artNo && `Art ${b.artNo}`, b.size && `Size ${b.size}`, b.shade].filter(Boolean).join(' · ');
   return [b.category, b.name, b.size, b.shade].filter(Boolean).join(' · ');
 }
 
-export function unitLabel(uom: string): string {
-  return ({ METERS: 'm', PCS: 'pcs', GROSS: 'gross', BOXES: 'boxes', PACKETS: 'packets' } as Record<string, string>)[uom] ?? uom.toLowerCase();
-}
-
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
-const wholeUnits = (uom: string) => uom !== 'METERS';
+const wholeUnits = (uom: string) => !allowsDecimals(uom);
 
 function parseQuantity(value: unknown, uom: string, label: string): number {
   const qty = Number(value);
@@ -69,7 +70,7 @@ function returnableLines(dc: { lines: Array<{ id: string; quantity: number; cutR
       cutReference: line.cutReference,
       itemType: line.batch.itemType,
       description: itemDescription(line.batch),
-      category: line.batch.category, brand: line.batch.brand, quality: line.batch.quality, shade: line.batch.shade,
+      category: line.batch.category, brand: line.batch.brand, quality: line.batch.quality, qualityName: line.batch.qualityName, shade: line.batch.shade,
       size: line.batch.size, name: line.batch.name, artNo: line.batch.artNo,
       uom: line.batch.uom,
       shipped: line.quantity,
@@ -142,7 +143,7 @@ router.post('/customer', async (req: Request, res: Response) => {
           data: {
             batchCode,
             itemType: original.itemType, category: original.category, brand: original.brand, quality: original.quality,
-            shade: original.shade, size: original.size, name: original.name, artNo: original.artNo, uom: original.uom,
+            qualityName: original.qualityName, shade: original.shade, size: original.size, name: original.name, artNo: original.artNo, uom: original.uom,
             quantity: p.quantity,
             // Good stock waits for put-away; damaged stock is held until someone inspects it
             status: p.condition === 'GOOD' ? 'IN_STOCK' : 'QC_HOLD',
@@ -259,7 +260,7 @@ router.get('/supplier/lookup/:batchCode', async (req: Request, res: Response) =>
   if (batch.status === 'OUT' || batch.quantity <= 0) { res.status(400).json({ error: `${batchCode} has no stock left` }); return; }
   res.json({
     id: batch.id, batchCode: batch.batchCode, itemType: batch.itemType, description: itemDescription(batch),
-    category: batch.category, brand: batch.brand, quality: batch.quality, shade: batch.shade, size: batch.size, name: batch.name, artNo: batch.artNo,
+    category: batch.category, brand: batch.brand, quality: batch.quality, qualityName: batch.qualityName, shade: batch.shade, size: batch.size, name: batch.name, artNo: batch.artNo,
     uom: batch.uom, quantity: batch.quantity, status: batch.status,
     locations: batch.batchLocations.map(bl => bl.location.code),
     supplier: batchSupplier(batch),
@@ -384,7 +385,7 @@ router.get('/supplier/:id/print', async (req: Request, res: Response) => {
     ],
     columns: [
       { header: '#', align: 'center', width: '32px' }, { header: 'Item' }, { header: 'Barcode', width: '150px' },
-      { header: 'Supplier Bundle', width: '110px' }, { header: 'Quantity', align: 'right', width: '100px' },
+      { header: 'Supplier Bundle', width: '110px', optional: true }, { header: 'Quantity', align: 'right', width: '100px' },
     ],
     rows: r.lines.map((l, i) => [
       String(i + 1), itemDescription(l.batch), l.batch.batchCode, l.batch.supplierBundle ?? '', `${l.quantity} ${unitLabel(l.batch.uom)}`,

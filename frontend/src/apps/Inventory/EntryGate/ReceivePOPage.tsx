@@ -18,7 +18,15 @@ import {
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate } from '../../../utils/format';
+import { allowsDecimals, fabricCategoryLabel, formatTotals, unitLabel, unitName } from '../../../utils/units';
+import SpecLine from '../../../components/Common/SpecLine';
 import '../../../styles/components.css';
+
+// Dropdown text for a PO line, with only the details that were entered: "[Fabric] Brand — Quality (Shade: 12)"
+const optionText = (tag: string, title: string, details: [string, string | null | undefined][]) => {
+  const shown = details.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(', ');
+  return `${tag} ${title}${shown ? ` (${shown})` : ''}`;
+};
 
 interface POLine {
   id: string;
@@ -28,6 +36,7 @@ interface POLine {
   category?: string | null;
   brand?: string | null;
   quality?: string | null;
+  qualityName?: string | null;
   shade?: string | null;
   size?: string | null;
   name?: string | null;
@@ -152,7 +161,7 @@ export default function ReceivePOPage() {
   const currentLineItemType = currentLine?.itemType || poType;
   const isCurrentFabric = currentLineItemType === 'FABRIC';
   const isCurrentReadyMade = currentLineItemType === 'READY_MADE';
-  const currentUnit = currentLine?.uom || (isCurrentFabric ? 'Meters' : isCurrentReadyMade ? 'Pieces' : 'Units');
+  const currentUnit = unitName(currentLine?.uom || (isCurrentFabric ? 'METERS' : 'PCS'));
 
   const isLineComplete = (line: POLine) => line.receivedQty >= line.orderedQty || (line.orderedQty - line.receivedQty) <= 0.001;
 
@@ -185,7 +194,7 @@ export default function ReceivePOPage() {
       list = list.filter(l => {
         const brand = (l.brand || '').toLowerCase();
         const shade = (l.shade || '').toLowerCase();
-        const quality = (l.quality || '').toLowerCase();
+        const quality = `${l.quality || ''} ${l.qualityName || ''}`.toLowerCase();
         const name = (l.name || '').toLowerCase();
         const artNo = (l.artNo || '').toLowerCase();
         const cat = (l.category || '').toLowerCase();
@@ -458,6 +467,13 @@ export default function ReceivePOPage() {
 
   const isPoPartial = poStats.totalRemaining > 0 && poStats.totalReceived > 0;
 
+  // The same totals per unit for display (a fabric PO can mix meter and kg lines)
+  const lineUom = (l: any) => l?.uom || ((l?.itemType || poType) === 'FABRIC' ? 'METERS' : 'PCS');
+  const poTotalText = (pick: (l: any) => number) => formatTotals((po?.lines || []).map(l => ({ uom: lineUom(l), quantity: pick(l) })));
+  const orderedText = poTotalText(l => l.orderedQty || 0);
+  const receivedText = poTotalText(l => l.receivedQty || 0);
+  const remainingText = poTotalText(l => Math.max(0, (l.orderedQty || 0) - (l.receivedQty || 0)));
+
   if (loading) return <div className="loading-center"><span className="spinner spinner-lg" /></div>;
   if (pageError) {
     return (
@@ -491,7 +507,7 @@ export default function ReceivePOPage() {
   const renderLineCard = (line: POLine, originalIdx: number, isComplete: boolean) => {
     const lineIsFabric = line.itemType === 'FABRIC' || (poType === 'FABRIC' && !line.itemType);
     const lineIsReadyMade = line.itemType === 'READY_MADE' || (poType === 'READY_MADE' && !line.itemType);
-    const lineUnit = line.uom ? line.uom.toLowerCase() : (lineIsFabric ? 'm' : 'pcs');
+    const lineUnit = unitLabel(line.uom || (lineIsFabric ? 'METERS' : 'PCS'));
     const remainingQty = cleanNumber(Math.max(0, line.orderedQty - line.receivedQty));
     const progress = line.orderedQty > 0 ? (line.receivedQty / line.orderedQty) * 100 : 0;
 
@@ -549,49 +565,21 @@ export default function ReceivePOPage() {
 
             {/* Specifications Row */}
             <div style={{ fontSize: 13.5, color: '#475569', lineHeight: 1.5 }}>
-              {lineIsFabric ? (
-                <>
-                  Fabric Type: <strong>{line.category === 'PLAIN_SHIRTING' ? 'Plain Shirting' : (line.category || 'Fabric')}</strong>
-                  <span style={{ margin: '0 8px', color: '#cbd5e1' }}>•</span>
-                  Shade: <strong>{line.shade || '—'}</strong>
-                </>
-              ) : lineIsReadyMade ? (
-                <>
-                  Fabric Type: <strong>{line.category || '—'}</strong>
-                  {line.shade && (
-                    <>
-                      <span style={{ margin: '0 8px', color: '#cbd5e1' }}>•</span>
-                      Color / Shade: <strong>{line.shade}</strong>
-                    </>
-                  )}
-                  <span style={{ margin: '0 8px', color: '#cbd5e1' }}>•</span>
-                  Art No: <strong style={{ fontFamily: 'monospace' }}>{line.artNo || '—'}</strong>
-                  <span style={{ margin: '0 8px', color: '#cbd5e1' }}>•</span>
-                  Size: <strong>{line.size || '—'}</strong>
-                </>
-              ) : (
-                <>
-                  Category: <strong>{line.category || '—'}</strong>
-                  {line.quality && (
-                    <>
-                      <span style={{ margin: '0 8px', color: '#cbd5e1' }}>•</span>
-                      Spec: <strong>{line.quality}</strong>
-                    </>
-                  )}
-                  {line.shade && (
-                    <>
-                      <span style={{ margin: '0 8px', color: '#cbd5e1' }}>•</span>
-                      Color: <strong>{line.shade}</strong>
-                    </>
-                  )}
-                  {line.size && (
-                    <>
-                      <span style={{ margin: '0 8px', color: '#cbd5e1' }}>•</span>
-                      Size: <strong>{line.size}</strong>
-                    </>
-                  )}
-                </>
-              )}
+              <SpecLine specs={lineIsFabric ? [
+                ['Fabric Type', fabricCategoryLabel(line.category) || 'Fabric'],
+                ['Quality Name', line.qualityName],
+                ['Shade', line.shade],
+              ] : lineIsReadyMade ? [
+                ['Fabric Type', line.category],
+                ['Color / Shade', line.shade],
+                ['Art No', line.artNo, { fontFamily: 'monospace' }],
+                ['Size', line.size],
+              ] : [
+                ['Category', line.category],
+                ['Spec', line.quality],
+                ['Color', line.shade],
+                ['Size', line.size],
+              ]} />
             </div>
 
             {/* Client Reference */}
@@ -867,7 +855,7 @@ export default function ReceivePOPage() {
             </span>
             {isPoFullyFinalized ? (
               <strong style={{ fontSize: 14, color: '#0f172a', display: 'block', paddingTop: 6 }}>
-                {invoiceRef || latestGrn?.invoiceRef || '—'}
+                {invoiceRef || latestGrn?.invoiceRef}
               </strong>
             ) : (
               <input
@@ -890,7 +878,7 @@ export default function ReceivePOPage() {
                 Order Fulfillment: {poStats.completedLines} of {poStats.totalLines} Items Received
               </span>
               <span className="badge badge-info" style={{ fontSize: 11.5, fontWeight: 700, padding: '3px 9px' }}>
-                {poType === 'FABRIC' ? 'Unit: Meters / Lumps' : poType === 'READY_MADE' ? 'Unit: Pieces (Pcs)' : 'Unit: Quantity (Qty)'}
+                {poType === 'FABRIC' ? `Unit: ${[...new Set((po?.lines || []).map(l => unitName(lineUom(l))))].join(' / ')} · Lumps` : poType === 'READY_MADE' ? 'Unit: Pieces (Pcs)' : 'Unit: Quantity (Qty)'}
               </span>
             </div>
             <span style={{ fontSize: 14, fontWeight: 800, color: poStats.progressPct >= 100 ? '#16a34a' : 'var(--color-brand)' }}>
@@ -912,13 +900,10 @@ export default function ReceivePOPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
             <div style={{ background: '#fff', padding: '12px 16px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-                {poType === 'FABRIC' ? 'Total Received (Meters / Lumps)' : poType === 'READY_MADE' ? 'Total Received (Pcs)' : 'Total Received (Qty)'}
+                Total Received
               </div>
               <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>
-                {formatQty(poStats.totalReceived)}{' '}
-                <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--color-text-muted)' }}>
-                  {poType === 'FABRIC' ? 'Meters' : poType === 'READY_MADE' ? 'Pcs' : 'Qty'}
-                </span>
+                {receivedText}
               </div>
               {poType === 'FABRIC' && (
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-brand)', marginTop: 2 }}>
@@ -929,13 +914,10 @@ export default function ReceivePOPage() {
 
             <div style={{ background: '#fff', padding: '12px 16px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-                {poType === 'FABRIC' ? 'Remaining to Receive (Meters)' : poType === 'READY_MADE' ? 'Remaining to Receive (Pcs)' : 'Remaining to Receive (Qty)'}
+                Remaining to Receive
               </div>
               <div style={{ fontSize: 20, fontWeight: 800, color: poStats.totalRemaining > 0 ? 'var(--color-brand)' : '#16a34a', marginTop: 2 }}>
-                {formatQty(poStats.totalRemaining)}{' '}
-                <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--color-text-muted)' }}>
-                  {poType === 'FABRIC' ? 'Meters' : poType === 'READY_MADE' ? 'Pcs' : 'Qty'}
-                </span>
+                {remainingText}
               </div>
               <div style={{ fontSize: 12, fontWeight: 600, color: poStats.totalRemaining > 0 ? '#b45309' : '#16a34a', marginTop: 2 }}>
                 {poStats.totalRemaining > 0 ? 'Pending Inbound Delivery' : '100% Inwarded'}
@@ -944,13 +926,10 @@ export default function ReceivePOPage() {
 
             <div style={{ background: '#fff', padding: '12px 16px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-                {poType === 'FABRIC' ? 'Total Expected on PO (Meters)' : poType === 'READY_MADE' ? 'Total Expected (Pcs)' : 'Total Expected (Qty)'}
+                Total Expected on PO
               </div>
               <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>
-                {formatQty(poStats.totalOrdered)}{' '}
-                <span style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--color-text-muted)' }}>
-                  {poType === 'FABRIC' ? 'Meters' : poType === 'READY_MADE' ? 'Pcs' : 'Qty'}
-                </span>
+                {orderedText}
               </div>
               <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', marginTop: 2 }}>
                 Across {poStats.totalLines} PO items
@@ -1288,13 +1267,21 @@ export default function ReceivePOPage() {
                     </div>
 
                     <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.5, marginBottom: 10 }}>
-                      {isCurrentFabric ? (
-                        <>Type: <strong>{currentLine.category === 'PLAIN_SHIRTING' ? 'Plain Shirting' : (currentLine.category || '—')}</strong> · Shade: <strong>{currentLine.shade || '—'}</strong></>
-                      ) : isCurrentReadyMade ? (
-                        <>Fabric Type: <strong>{currentLine.category || '—'}</strong>{currentLine.shade ? <> · Shade: <strong>{currentLine.shade}</strong></> : null} · Art No: <strong>{currentLine.artNo || '—'}</strong> · Size: <strong>{currentLine.size || '—'}</strong></>
-                      ) : (
-                        <>Category: <strong>{currentLine.category || '—'}</strong>{currentLine.quality ? <> · Spec: <strong>{currentLine.quality}</strong></> : null}{currentLine.shade ? <> · Color: <strong>{currentLine.shade}</strong></> : null}{currentLine.size ? <> · Size: <strong>{currentLine.size}</strong></> : null}</>
-                      )}
+                      <SpecLine separator="·" separatorStyle={{ margin: '0 4px' }} specs={isCurrentFabric ? [
+                        ['Type', fabricCategoryLabel(currentLine.category)],
+                        ['Quality Name', currentLine.qualityName],
+                        ['Shade', currentLine.shade],
+                      ] : isCurrentReadyMade ? [
+                        ['Fabric Type', currentLine.category],
+                        ['Shade', currentLine.shade],
+                        ['Art No', currentLine.artNo],
+                        ['Size', currentLine.size],
+                      ] : [
+                        ['Category', currentLine.category],
+                        ['Spec', currentLine.quality],
+                        ['Color', currentLine.shade],
+                        ['Size', currentLine.size],
+                      ]} />
                     </div>
 
                     <div style={{
@@ -1388,8 +1375,8 @@ export default function ReceivePOPage() {
                         inputMode="decimal"
                         className="form-input"
                         placeholder={isCurrentFabric ? '0.0' : '0'}
-                        step="any"
-                        min="0.001"
+                        step={allowsDecimals(currentLine?.uom || (isCurrentFabric ? 'METERS' : 'PCS')) ? 'any' : 1}
+                        min={allowsDecimals(currentLine?.uom || (isCurrentFabric ? 'METERS' : 'PCS')) ? 0.001 : 1}
                         value={quantity}
                         onChange={e => setQuantity(e.target.value)}
                         style={{ fontSize: 24, fontWeight: 800, padding: '10px 16px', paddingRight: 75, height: 54 }}
@@ -1409,7 +1396,7 @@ export default function ReceivePOPage() {
                         padding: '4px 10px',
                         borderRadius: 4
                       }}>
-                        {currentLine.uom ? currentLine.uom.toLowerCase() : (isCurrentFabric ? 'm' : 'pcs')}
+                        {unitLabel(currentLine.uom || (isCurrentFabric ? 'METERS' : 'PCS'))}
                       </div>
                     </div>
                   </div>
@@ -1607,7 +1594,7 @@ export default function ReceivePOPage() {
                   )}
                 </div>
                 <div style={{ fontSize: 12.5, color: '#475569', marginBottom: 8 }}>
-                  Ordered: <strong>{formatQty(viewingBarcodeLine.orderedQty)}</strong> · Received: <strong style={{ color: '#16a34a' }}>{formatQty(viewingBarcodeLine.receivedQty)}</strong> {viewingBarcodeLine.uom || (poType === 'FABRIC' ? 'Meters' : 'Pcs')}
+                  Ordered: <strong>{formatQty(viewingBarcodeLine.orderedQty)}</strong> · Received: <strong style={{ color: '#16a34a' }}>{formatQty(viewingBarcodeLine.receivedQty)}</strong> {unitName(lineUom(viewingBarcodeLine))}
                 </div>
                 <div style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#166534', fontWeight: 700 }}>
                   <CheckCircle2 size={15} /> All quantity has been completely entered. You can reprint any barcode below:
@@ -1636,7 +1623,7 @@ export default function ReceivePOPage() {
                           {b.batchCode}
                         </div>
                         <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                          Quantity: <strong>{formatQty(b.quantity)}</strong> {viewingBarcodeLine.uom ? viewingBarcodeLine.uom.toLowerCase() : (poType === 'FABRIC' ? 'm' : 'pcs')}
+                          Quantity: <strong>{formatQty(b.quantity)}</strong> {unitLabel(lineUom(viewingBarcodeLine))}
                         </div>
                       </div>
 
@@ -1886,7 +1873,7 @@ export default function ReceivePOPage() {
                   {po.lines.map(l => {
                     const lType = l.itemType || 'FABRIC';
                     const lBrand = l.brand || '';
-                    const lQuality = l.quality || l.category || '';
+                    const lQuality = l.quality || '';
                     const lShade = l.shade || '';
                     const lName = l.name || '';
                     const lArtNo = l.artNo || '';
@@ -1895,10 +1882,10 @@ export default function ReceivePOPage() {
                     return (
                       <option key={l.id} value={l.id}>
                         {lType === 'FABRIC'
-                          ? `[Fabric] ${lBrand} — ${lQuality} (Shade: ${lShade || 'Std'})`
+                          ? optionText('[Fabric]', [lBrand, lQuality].filter(Boolean).join(' — '), [['Quality Name', l.qualityName], ['Shade', lShade]])
                           : lType === 'READY_MADE'
-                          ? `[Ready-Made] ${lName || lBrand} (${lCategory ? `Fabric: ${lCategory}, ` : ''}${lShade ? `Shade: ${lShade}, ` : ''}Art: ${lArtNo || '—'}, Size: ${lSize || '—'})`
-                          : `[Accessory] ${lCategory ? `${lCategory} - ` : ''}${lName || lBrand} (Size: ${lSize || 'Std'})`}
+                          ? optionText('[Ready-Made]', lName || lBrand, [['Fabric', lCategory], ['Shade', lShade], ['Art', lArtNo], ['Size', lSize]])
+                          : optionText('[Accessory]', [lCategory, lName || lBrand].filter(Boolean).join(' - '), [['Size', lSize]])}
                       </option>
                     );
                   })}
@@ -2045,7 +2032,7 @@ export default function ReceivePOPage() {
                       Partial Receiving Detected — Finalize Partial GRN
                     </div>
                     <div style={{ fontSize: 12.5, color: '#78350f', lineHeight: 1.5 }}>
-                      You have received <strong>{formatQty(poStats.totalReceived)} of {formatQty(poStats.totalOrdered)} {poType === 'FABRIC' ? 'Meters' : 'Units'}</strong> on this order. The purchase order still has <strong>{formatQty(poStats.totalRemaining)} {poType === 'FABRIC' ? 'Meters' : 'Units'}</strong> pending.
+                      You have received <strong>{receivedText} of {orderedText}</strong> on this order. The purchase order still has <strong>{remainingText}</strong> pending.
                     </div>
                     <div style={{ fontSize: 12, color: '#92400e', marginTop: 4, fontWeight: 600 }}>
                       Finalizing this Partial GRN will confirm the received inventory and print your official Partial GRN voucher. The remaining balance stays open on this PO so you can inward the rest later.
@@ -2067,7 +2054,7 @@ export default function ReceivePOPage() {
                 }}>
                   <CheckCircle2 size={20} color="#16a34a" style={{ flexShrink: 0 }} />
                   <div>
-                    <strong>Full Order Fulfillment Confirmed:</strong> All {formatQty(poStats.totalOrdered)} {poType === 'FABRIC' ? 'Meters' : 'Units'} on this order are 100% received. Finalizing will generate the complete GRN voucher.
+                    <strong>Full Order Fulfillment Confirmed:</strong> All {orderedText} on this order are 100% received. Finalizing will generate the complete GRN voucher.
                   </div>
                 </div>
               )}
@@ -2080,11 +2067,11 @@ export default function ReceivePOPage() {
                 </div>
                 <div style={{ background: '#f8fafc', padding: '10px 12px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
                   <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>TOTAL ORDERED</div>
-                  <strong style={{ fontSize: 14 }}>{formatQty(poStats.totalOrdered)} {poType === 'FABRIC' ? 'm' : 'pcs'}</strong>
+                  <strong style={{ fontSize: 14 }}>{orderedText}</strong>
                 </div>
                 <div style={{ background: '#f8fafc', padding: '10px 12px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
                   <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>RECEIVED SO FAR</div>
-                  <strong style={{ fontSize: 14, color: '#065f46' }}>{formatQty(poStats.totalReceived)} {poType === 'FABRIC' ? 'm' : 'pcs'}</strong>
+                  <strong style={{ fontSize: 14, color: '#065f46' }}>{receivedText}</strong>
                 </div>
                 <div style={{
                   background: isPoPartial ? '#fffbeb' : '#f0fdf4',
@@ -2094,7 +2081,7 @@ export default function ReceivePOPage() {
                 }}>
                   <div style={{ fontSize: 10.5, color: isPoPartial ? '#92400e' : '#166534', fontWeight: 600 }}>PO BALANCE</div>
                   <strong style={{ fontSize: 14, color: isPoPartial ? '#b45309' : '#16a34a' }}>
-                    {isPoPartial ? `${formatQty(poStats.totalRemaining)} ${poType === 'FABRIC' ? 'm' : 'pcs'}` : '0 Fulfilled'}
+                    {isPoPartial ? remainingText : '0 Fulfilled'}
                   </strong>
                   <div style={{ fontSize: 10, color: isPoPartial ? '#b45309' : '#15803d', marginTop: 1 }}>
                     {isPoPartial ? 'Open for later' : '100% Complete'}
@@ -2114,7 +2101,7 @@ export default function ReceivePOPage() {
                   </label>
                   {isPoFullyFinalized ? (
                     <strong style={{ fontSize: 13.5, color: '#0f172a', display: 'block', paddingTop: 6 }}>
-                      {invoiceRef || latestGrn?.invoiceRef || '—'}
+                      {invoiceRef || latestGrn?.invoiceRef}
                     </strong>
                   ) : (
                     <input

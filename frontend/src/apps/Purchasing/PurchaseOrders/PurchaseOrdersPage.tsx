@@ -25,6 +25,7 @@ import {
   FileCheck
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
+import { fabricCategoryLabel, formatTotals, unitLabel } from '../../../utils/units';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import '../../../styles/components.css';
@@ -36,6 +37,7 @@ export interface POLineItem {
   category?: string | null;
   brand?: string | null;
   quality?: string | null;
+  qualityName?: string | null;
   shade?: string | null;
   size?: string | null;
   name?: string | null;
@@ -85,6 +87,7 @@ export interface FlattenedPOItem {
   itemType: string;
   brand: string;
   quality: string;
+  qualityName: string;
   shade: string;
   name: string;
   artNo: string;
@@ -181,14 +184,14 @@ export default function PurchaseOrdersPage() {
     for (const po of pos) {
       for (const line of (po.lines || [])) {
         const lineItemType = line.itemType || 'FABRIC';
-        const brand = line.brand || '—';
-        const quality = line.quality || '—';
-        const shade = line.shade || '—';
+        const brand = line.brand || '';
+        const quality = line.quality || '';
+        const shade = line.shade || '';
         const name = line.name || '';
         const artNo = line.artNo || '';
         const category = line.category || '';
         const size = line.size || '';
-        const uom = line.uom || (lineItemType === 'FABRIC' ? 'Meters' : 'Pieces');
+        const uom = line.uom || (lineItemType === 'FABRIC' ? 'METERS' : 'PCS');
         const ordered = Number(line.orderedQty) || 0;
         const received = Number(line.receivedQty) || 0;
         const progress = ordered > 0 ? (received / ordered) * 100 : 0;
@@ -208,7 +211,7 @@ export default function PurchaseOrdersPage() {
         }));
 
         const clientSummary = allocations.length > 0
-          ? allocations.map(a => `${a.clientName}: ${a.allocatedQty}${lineItemType === 'FABRIC' ? 'm' : ''}`).join(', ')
+          ? allocations.map(a => `${a.clientName}: ${a.allocatedQty} ${unitLabel(uom)}`).join(', ')
           : (po.targetClient || 'General Stock');
 
         list.push({
@@ -221,6 +224,7 @@ export default function PurchaseOrdersPage() {
           itemType: lineItemType,
           brand,
           quality,
+          qualityName: line.qualityName || '',
           shade,
           name,
           artNo,
@@ -683,7 +687,6 @@ export default function PurchaseOrdersPage() {
                   {filteredPos.map(po => {
                     const progress = po.totalOrdered > 0 ? (po.totalReceived / po.totalOrdered) * 100 : 0;
                     const poType = po.lines?.[0]?.itemType || 'FABRIC';
-                    const unit = poType === 'FABRIC' ? 'm' : 'pcs';
                     
                     return (
                       <tr
@@ -719,8 +722,8 @@ export default function PurchaseOrdersPage() {
                         </td>
                         <td style={{ minWidth: 180 }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                            <span style={{ fontWeight: 600 }}>{po.totalReceived.toFixed(poType === 'FABRIC' ? 1 : 0)} {unit}</span>
-                            <span className="text-muted">/ {po.totalOrdered.toFixed(poType === 'FABRIC' ? 1 : 0)} {unit}</span>
+                            <span style={{ fontWeight: 600 }}>{formatTotals((po.lines || []).map(l => ({ uom: l.uom || (poType === 'FABRIC' ? 'METERS' : 'PCS'), quantity: l.receivedQty })))}</span>
+                            <span className="text-muted">/ {formatTotals((po.lines || []).map(l => ({ uom: l.uom || (poType === 'FABRIC' ? 'METERS' : 'PCS'), quantity: l.orderedQty })))}</span>
                           </div>
                           <div style={{ width: '100%', height: 6, background: 'var(--color-bg-subtle)', borderRadius: 3, overflow: 'hidden' }}>
                             <div style={{ 
@@ -741,7 +744,7 @@ export default function PurchaseOrdersPage() {
                               <button
                                 className="btn btn-sm btn-ghost btn-icon"
                                 onClick={e => handlePrintGrn(po.grns![0].id, e)}
-                                title={po.totalReceived < po.totalOrdered ? `Print Partial GRN (${po.totalReceived.toFixed(1)} received)` : 'Print Complete GRN'}
+                                title={po.totalReceived < po.totalOrdered ? 'Print Partial GRN' : 'Print Complete GRN'}
                                 style={{ color: po.totalReceived < po.totalOrdered ? '#b45309' : '#16a34a' }}
                               >
                                 <FileCheck size={16} />
@@ -1025,9 +1028,9 @@ export default function PurchaseOrdersPage() {
                           <span>Client Allocation</span>
                         </div>
                       </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('orderedQty')} title="Sort by Meters">
+                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('orderedQty')} title="Sort by quantity">
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Ordered vs Reached (Meters)</span>
+                          <span>Ordered vs Reached</span>
                           {renderSortIcon('orderedQty')}
                         </div>
                       </th>
@@ -1050,17 +1053,24 @@ export default function PurchaseOrdersPage() {
                     {filteredAndSortedItems.map((item, idx) => (
                       <tr key={item.lineId} className="hover-row" onClick={() => navigate(`/purchase-orders/${item.poId}/view`)} style={{ cursor: 'pointer' }}>
                         <td style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
-                        <td><span style={{ fontWeight: 700, color: '#0f172a' }}>{item.brand || '—'}</span></td>
-                        <td><span style={{ fontWeight: 500, color: '#1e293b' }}>{item.quality || '—'}</span></td>
+                        <td>{item.brand && <span style={{ fontWeight: 700, color: '#0f172a' }}>{item.brand}</span>}</td>
                         <td>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
-                            {item.shade || '—'}
-                          </span>
+                          {item.quality && <span style={{ fontWeight: 500, color: '#1e293b' }}>{item.quality}</span>}
+                          {item.qualityName && <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{item.qualityName}</div>}
                         </td>
                         <td>
-                          <span style={{ display: 'inline-flex', padding: '2px 8px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', fontSize: 11.5, fontWeight: 600 }}>
-                            {item.category === 'PLAIN_SHIRTING' ? 'Plain Shirting' : (item.category || 'Suiting')}
-                          </span>
+                          {item.shade && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
+                              {item.shade}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          {fabricCategoryLabel(item.category) && (
+                            <span style={{ display: 'inline-flex', padding: '2px 8px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', fontSize: 11.5, fontWeight: 600 }}>
+                              {fabricCategoryLabel(item.category)}
+                            </span>
+                          )}
                         </td>
                         <td>
                           <span style={{ fontWeight: 700, color: 'var(--color-brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1086,11 +1096,11 @@ export default function PurchaseOrdersPage() {
                                     color: a.receivedQty >= a.allocatedQty ? '#166534' : '#1e40af',
                                     border: `1px solid ${a.receivedQty >= a.allocatedQty ? '#bbf7d0' : '#bfdbfe'}`
                                   }}
-                                  title={`${a.clientName}: ${a.receivedQty}/${a.allocatedQty}m`}
+                                  title={`${a.clientName}: ${a.receivedQty}/${a.allocatedQty} ${unitLabel(item.uom)}`}
                                 >
                                   <Users size={10} />
-                                  <strong>{a.clientName}:</strong> {a.allocatedQty}m
-                                  {a.receivedQty > 0 && <span style={{ opacity: 0.75 }}>({a.receivedQty}m in)</span>}
+                                  <strong>{a.clientName}:</strong> {a.allocatedQty} {unitLabel(item.uom)}
+                                  {a.receivedQty > 0 && <span style={{ opacity: 0.75 }}>({a.receivedQty} {unitLabel(item.uom)} in)</span>}
                                 </span>
                               ))}
                             </div>
@@ -1101,9 +1111,9 @@ export default function PurchaseOrdersPage() {
                         <td style={{ minWidth: 150 }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
                             <span style={{ fontWeight: 700, color: item.reachedStatus === 'FULLY_REACHED' ? '#166534' : '#0f172a' }}>
-                              {item.receivedQty}m
+                              {item.receivedQty} {unitLabel(item.uom)}
                             </span>
-                            <span style={{ color: '#64748b' }}>/ {item.orderedQty}m</span>
+                            <span style={{ color: '#64748b' }}>/ {item.orderedQty} {unitLabel(item.uom)}</span>
                           </div>
                           <div style={{ width: '100%', height: 5, background: '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
                             <div style={{
@@ -1218,24 +1228,28 @@ export default function PurchaseOrdersPage() {
                     {filteredAndSortedItems.map((item, idx) => (
                       <tr key={item.lineId} className="hover-row" onClick={() => navigate(`/purchase-orders/${item.poId}/view`)} style={{ cursor: 'pointer' }}>
                         <td style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
-                        <td><span style={{ fontWeight: 700, color: '#0f172a' }}>{item.name || item.brand || '—'}</span></td>
-                        <td><span style={{ fontWeight: 500, color: '#1e293b' }}>{item.category || '—'}</span></td>
+                        <td><span style={{ fontWeight: 700, color: '#0f172a' }}>{item.name || item.brand}</span></td>
+                        <td>{item.category && <span style={{ fontWeight: 500, color: '#1e293b' }}>{item.category}</span>}</td>
                         <td>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
-                            {item.shade || '—'}
-                          </span>
+                          {item.shade && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
+                              {item.shade}
+                            </span>
+                          )}
                         </td>
                         <td>
                           {item.artNo ? (
                             <span style={{ fontFamily: 'monospace', fontSize: 11.5, background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, border: '1px solid #e2e8f0', fontWeight: 600 }}>
                               {item.artNo}
                             </span>
-                          ) : '—'}
+                          ) : null}
                         </td>
                         <td>
-                          <span style={{ display: 'inline-flex', padding: '2px 6px', borderRadius: 4, background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: 11.5, fontWeight: 700 }}>
-                            {item.size || '—'}
-                          </span>
+                          {item.size && (
+                            <span style={{ display: 'inline-flex', padding: '2px 6px', borderRadius: 4, background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: 11.5, fontWeight: 700 }}>
+                              {item.size}
+                            </span>
+                          )}
                         </td>
                         <td>
                           <span style={{ fontWeight: 700, color: 'var(--color-brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1392,16 +1406,20 @@ export default function PurchaseOrdersPage() {
                             {item.category || 'Accessory'}
                           </span>
                         </td>
-                        <td><span style={{ fontWeight: 600, color: '#0f172a' }}>{item.name || item.quality || '—'}</span></td>
+                        <td><span style={{ fontWeight: 600, color: '#0f172a' }}>{item.name || item.quality}</span></td>
                         <td>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
-                            {item.shade || '—'}
-                          </span>
+                          {item.shade && (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
+                              {item.shade}
+                            </span>
+                          )}
                         </td>
                         <td>
-                          <span style={{ display: 'inline-flex', padding: '2px 6px', borderRadius: 4, background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: 11.5, fontWeight: 700 }}>
-                            {item.size || '—'}
-                          </span>
+                          {item.size && (
+                            <span style={{ display: 'inline-flex', padding: '2px 6px', borderRadius: 4, background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: 11.5, fontWeight: 700 }}>
+                              {item.size}
+                            </span>
+                          )}
                         </td>
                         <td>
                           <span style={{ fontWeight: 700, color: 'var(--color-brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1427,10 +1445,10 @@ export default function PurchaseOrdersPage() {
                                     color: a.receivedQty >= a.allocatedQty ? '#166534' : '#1e40af',
                                     border: `1px solid ${a.receivedQty >= a.allocatedQty ? '#bbf7d0' : '#bfdbfe'}`
                                   }}
-                                  title={`${a.clientName}: ${a.receivedQty}/${a.allocatedQty} ${item.uom}`}
+                                  title={`${a.clientName}: ${a.receivedQty}/${a.allocatedQty} ${unitLabel(item.uom)}`}
                                 >
                                   <Users size={10} />
-                                  <strong>{a.clientName}:</strong> {a.allocatedQty} {item.uom}
+                                  <strong>{a.clientName}:</strong> {a.allocatedQty} {unitLabel(item.uom)}
                                   {a.receivedQty > 0 && <span style={{ opacity: 0.75 }}>({a.receivedQty} in)</span>}
                                 </span>
                               ))}
@@ -1442,9 +1460,9 @@ export default function PurchaseOrdersPage() {
                         <td style={{ minWidth: 150 }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
                             <span style={{ fontWeight: 700, color: item.reachedStatus === 'FULLY_REACHED' ? '#166534' : '#0f172a' }}>
-                              {item.receivedQty} {item.uom}
+                              {item.receivedQty} {unitLabel(item.uom)}
                             </span>
-                            <span style={{ color: '#64748b' }}>/ {item.orderedQty} {item.uom}</span>
+                            <span style={{ color: '#64748b' }}>/ {item.orderedQty} {unitLabel(item.uom)}</span>
                           </div>
                           <div style={{ width: '100%', height: 5, background: '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
                             <div style={{

@@ -3,6 +3,9 @@ import bwipjs from 'bwip-js';
 import QRCode from 'qrcode';
 import { formatDate } from '../../utils/format';
 import { escapeHtml } from '../../utils/html';
+import { costCodeForBatch } from '../administration/cost-prices';
+import { labelField } from './printer';
+import { labelUnit } from '../../utils/units';
 import prisma from '../../lib/prisma';
 
 const router = Router();
@@ -35,6 +38,8 @@ router.get('/preview/:batchCode', async (req: Request, res: Response) => {
     if (quantity !== undefined && !isNaN(Number(quantity))) {
       batch.quantity = Number(quantity);
     }
+    // Secret cost code (letters only; '' when no cost or no code word)
+    const costCode = await costCodeForBatch(batch);
     if (isRemainder !== undefined) {
       (batch as any).isRemainder = isRemainder === 'true';
     }
@@ -59,46 +64,33 @@ router.get('/preview/:batchCode', async (req: Request, res: Response) => {
     const isFabric = itemType === 'FABRIC';
 
     // Format short UOM: "M" for fabric/meters, "PCS", "PAIRS", etc.
-    const rawUom = (batch.uom || '').toUpperCase().trim();
-    let uomShort = 'M';
-    if (isFabric || rawUom === 'METERS' || rawUom === 'METER' || rawUom === 'M') {
-      uomShort = 'M';
-    } else if (rawUom === 'PCS' || rawUom === 'PIECES' || rawUom === 'PIECE' || itemType === 'READY_MADE') {
-      uomShort = 'PCS';
-    } else if (rawUom) {
-      uomShort = rawUom;
-    }
+    // The roll's own unit: M for meters, KG for fabric weighed in kilograms (e.g. Knits), PCS, …
+    const uomShort = labelUnit(batch.uom, itemType);
     
-    const brand = escapeHtml((batch.brand || '').trim());
-    const quality = escapeHtml((batch.quality || batch.category || '').trim());
-    const shade = escapeHtml((batch.shade || '').trim());
-    const name = escapeHtml((batch.name || '').trim());
-    const artNo = escapeHtml((batch.artNo || '').trim());
-    const size = escapeHtml((batch.size || '').trim());
+    // Same limit as the printed label, so the preview shows exactly what prints
+    const brand = escapeHtml(labelField(batch.brand));
+    // Accessories use their category as the spec when none was entered; fabric prints only what was entered
+    const quality = escapeHtml(labelField(batch.quality || (isFabric ? '' : batch.category)));
+    const qualityName = escapeHtml(labelField(batch.qualityName));
+    const shade = escapeHtml(labelField(batch.shade));
+    const name = escapeHtml(labelField(batch.name));
+    const artNo = escapeHtml(labelField(batch.artNo));
+    const size = escapeHtml(labelField(batch.size));
     const safeCode = escapeHtml(batchCode);
 
     // Order received date (DD-MM-YYYY in IST)
     const dateFormatted = formatDate(batch.createdAt || new Date());
 
+    // Only the details that were entered are printed
+    const specLine = ([label, value]: [string, string]) => value ? `<div><strong>${label}:</strong> ${value}</div>` : '';
+    const heading = (text: string) => `<div style="font-weight: 800; font-size: 11.5px; color: #0f172a; margin-bottom: 2px;">${text}</div>`;
     let specsHtml = '';
     if (isFabric) {
-      specsHtml = `
-        <div><strong>BRAND:</strong> ${brand || '—'}</div>
-        <div><strong>QUAL:</strong> ${quality || '—'}</div>
-        <div><strong>SHADE:</strong> ${shade || '—'}</div>
-      `;
+      specsHtml = ([['BRAND', brand], ['QUAL', quality], ['Q. NAME', qualityName], ['SHADE', shade]] as [string, string][]).map(specLine).join('');
     } else if (itemType === 'READY_MADE') {
-      specsHtml = `
-        <div style="font-weight: 800; font-size: 11.5px; color: #0f172a; margin-bottom: 2px;">${name || 'GARMENT'}</div>
-        <div><strong>ART:</strong> ${artNo || '—'}</div>
-        <div><strong>SIZE:</strong> ${size || '—'}</div>
-      `;
+      specsHtml = heading(name || 'GARMENT') + ([['ART', artNo], ['SIZE', size], ['SHADE', shade]] as [string, string][]).map(specLine).join('');
     } else {
-      specsHtml = `
-        <div style="font-weight: 800; font-size: 11.5px; color: #0f172a; margin-bottom: 2px;">${name || 'ACCESSORY'}</div>
-        <div><strong>SPEC:</strong> ${quality || '—'}</div>
-        <div><strong>SIZE:</strong> ${size || '—'}</div>
-      `;
+      specsHtml = heading(name || 'ACCESSORY') + ([['SPEC', quality], ['SIZE', size], ['SHADE', shade]] as [string, string][]).map(specLine).join('');
     }
 
     const html = `<!DOCTYPE html>
@@ -162,6 +154,12 @@ router.get('/preview/:batchCode', async (req: Request, res: Response) => {
       line-height: 1.45;
       font-family: Arial, sans-serif;
       font-weight: 600;
+      min-width: 0;
+    }
+    .specs-area > div {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .specs-area strong {
       color: #000;
@@ -180,6 +178,13 @@ router.get('/preview/:batchCode', async (req: Request, res: Response) => {
       font-size: 18px;
       font-weight: 900;
       white-space: nowrap;
+    }
+    .qty-code {
+      font-size: 9px;
+      font-weight: 700;
+      color: #475569;
+      letter-spacing: 1px;
+      margin-top: 2px;
     }
     .qr-area {
       flex-shrink: 0;
@@ -225,6 +230,7 @@ router.get('/preview/:batchCode', async (req: Request, res: Response) => {
       <div class="qty-box">
         <div class="qty-label">${Boolean((batch as any).isRemainder || batch.status === 'PARTIALLY_USED') ? 'REMAINDER' : 'ROLL QTY'}</div>
         <div class="qty-val">${batch.quantity} ${escapeHtml(uomShort)}</div>
+        ${costCode ? `<div class="qty-code">${escapeHtml(costCode)}</div>` : ''}
       </div>
 
       <div class="qr-area">

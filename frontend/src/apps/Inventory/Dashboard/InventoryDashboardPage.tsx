@@ -26,6 +26,7 @@ import {
 import api from '../../../utils/api';
 import { formatDateTime, formatDate } from '../../../utils/format';
 import { exportToExcel } from '../../../utils/exportExcel';
+import { fabricCategoryLabel, unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface SKUChildBatch {
@@ -51,6 +52,7 @@ interface AggregatedSKU {
   itemType: string;
   brand: string;
   quality: string | null;
+  qualityName?: string | null;
   shade: string | null;
   size: string | null;
   category: string | null;
@@ -79,6 +81,7 @@ interface BatchRecord {
   category?: string | null;
   brand?: string | null;
   quality?: string | null;
+  qualityName?: string | null;
   shade?: string | null;
   size?: string | null;
   name?: string | null;
@@ -123,6 +126,7 @@ interface InventorySummary {
   totalBatches: number;
   fabric: {
     totalMeters: number;
+    totalKg?: number;
     lumpCount: number;
     fullRolls: number;
     partialRolls: number;
@@ -138,6 +142,7 @@ interface InventorySummary {
   dockQueue: {
     unassignedCount: number;
     unassignedFabricMeters: number;
+    unassignedFabricKg?: number;
     unassignedReadyMadePcs: number;
     unassignedAccessoryUnits: number;
   };
@@ -410,8 +415,10 @@ export default function InventoryDashboardPage() {
       try {
         const params = new URLSearchParams();
         if (sku.itemType) params.append('itemType', sku.itemType);
-        if (sku.brand && sku.brand !== '—') params.append('brand', sku.brand);
+        if (sku.brand) params.append('brand', sku.brand);
         if (sku.quality) params.append('quality', sku.quality);
+        params.append('qualityName', sku.qualityName || '');
+        if (sku.uom) params.append('uom', sku.uom);
         if (sku.shade) params.append('shade', sku.shade);
         if (sku.size) params.append('size', sku.size);
         if (sku.category) params.append('category', sku.category);
@@ -431,20 +438,14 @@ export default function InventoryDashboardPage() {
   };
 
   const getBatchItemType = (b: BatchRecord) => b.itemType || 'FABRIC';
-  const getBatchBrand = (b: BatchRecord) => b.brand || '—';
+  const getBatchBrand = (b: BatchRecord) => b.brand || '';
   const getBatchQuality = (b: BatchRecord) => b.quality || '';
   const getBatchShade = (b: BatchRecord) => b.shade || '';
   const getBatchSize = (b: BatchRecord) => b.size || '';
   const getBatchCategory = (b: BatchRecord) => b.category || '';
   const getBatchName = (b: BatchRecord) => b.name || '';
   const getBatchArtNo = (b: BatchRecord) => b.artNo || '';
-  const getBatchUnit = (b: BatchRecord) => {
-    if (b.uom) return b.uom.toLowerCase();
-    const type = getBatchItemType(b);
-    if (type === 'FABRIC') return 'm';
-    if (type === 'READY_MADE') return 'pcs';
-    return 'units';
-  };
+  const getBatchUnit = (b: BatchRecord) => unitLabel(uomOf({ uom: b.uom, itemType: getBatchItemType(b) }));
 
   // Sorting
   const sortedBatches = useMemo(() => {
@@ -489,6 +490,7 @@ export default function InventoryDashboardPage() {
         'Article No',
         'Total Quantity',
         'UOM',
+        'Quality Name',
         'Active Lumps/Batches',
         'Full Rolls/Packs',
         'Partial Rolls',
@@ -504,6 +506,7 @@ export default function InventoryDashboardPage() {
         s.artNo || '',
         s.totalQuantity,
         s.uom,
+        s.qualityName || '',
         s.activeBatches,
         s.fullRollsCount || 0,
         s.partialRollsCount || 0,
@@ -647,6 +650,9 @@ export default function InventoryDashboardPage() {
             </div>
             <div style={{ fontSize: 24, fontWeight: 800, color: '#0369a1', marginTop: 4 }}>
               {summary.fabric.totalMeters.toLocaleString()} <span style={{ fontSize: 13, fontWeight: 500 }}>meters</span>
+              {(summary.fabric.totalKg || 0) > 0 && (
+                <> <span style={{ fontSize: 16, color: 'var(--color-text-muted)' }}>+</span> {summary.fabric.totalKg!.toLocaleString()} <span style={{ fontSize: 13, fontWeight: 500 }}>kg</span></>
+              )}
             </div>
             <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginTop: 2 }}>
               {summary.fabric.lumpCount} lumps ({summary.fabric.fullRolls} full · {summary.fabric.partialRolls} cut)
@@ -993,7 +999,7 @@ export default function InventoryDashboardPage() {
                   <th>Fabric Brand</th>
                   <th>Quality Grade</th>
                   <th>Color / Shade</th>
-                  <th>In Stock (Meters)</th>
+                  <th>In Stock</th>
                   <th>Lumps Count (Full vs Cut)</th>
                   <th>Physical Shelves</th>
                 </tr>
@@ -1038,7 +1044,7 @@ export default function InventoryDashboardPage() {
             <tbody>
               {skus.map(s => {
                 const isExpanded = !!expandedSkuIds[s.id];
-                const unitStr = s.itemType === 'FABRIC' ? 'm' : (s.itemType === 'READY_MADE' ? 'pcs' : 'units');
+                const unitStr = unitLabel(uomOf(s));
                 const childBatches = s.batches || [];
 
                 return (
@@ -1062,12 +1068,12 @@ export default function InventoryDashboardPage() {
                       {/* ── Category-Specific Cells ── */}
                       {categoryTab === 'FABRIC' ? (
                         <>
-                          <td><strong>{s.brand}</strong></td>
-                          <td><span style={{ fontWeight: 600, color: '#334155' }}>{s.quality || '—'}</span></td>
-                          <td><span className="badge badge-secondary" style={{ fontWeight: 600 }}>{s.shade || '—'}</span></td>
+                          <td><strong>{s.brand}</strong>{s.category && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{fabricCategoryLabel(s.category)}</div>}</td>
+                          <td>{s.quality && <span style={{ fontWeight: 600, color: '#334155' }}>{s.quality}</span>}{s.qualityName && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{s.qualityName}</div>}</td>
+                          <td>{s.shade && <span className="badge badge-secondary" style={{ fontWeight: 600 }}>{s.shade}</span>}</td>
                           <td>
                             <span style={{ fontSize: 15, fontWeight: 700, color: '#0369a1' }}>
-                              {s.totalQuantity} m
+                              {s.totalQuantity} {unitStr}
                             </span>
                           </td>
                           <td>
@@ -1086,9 +1092,9 @@ export default function InventoryDashboardPage() {
                             {s.artNo && s.name && <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Art: {s.artNo}</div>}
                           </td>
                           <td>{s.brand}</td>
-                          <td>{s.category || '—'}</td>
-                          <td>{s.shade || '—'}</td>
-                          <td><span className="badge badge-secondary" style={{ fontWeight: 700 }}>{s.size || '—'}</span></td>
+                          <td>{s.category}</td>
+                          <td>{s.shade}</td>
+                          <td>{s.size && <span className="badge badge-secondary" style={{ fontWeight: 700 }}>{s.size}</span>}</td>
                           <td>
                             <span style={{ fontSize: 15, fontWeight: 700, color: '#15803d' }}>
                               {s.totalQuantity} pcs
@@ -1104,12 +1110,12 @@ export default function InventoryDashboardPage() {
                             <strong>{s.name || 'Accessory'}</strong>
                           </td>
                           <td>{s.brand}</td>
-                          <td>{s.quality || '—'}</td>
-                          <td>{s.shade || '—'}</td>
-                          <td>{s.size || s.artNo || '—'}</td>
+                          <td>{s.quality}</td>
+                          <td>{s.shade}</td>
+                          <td>{s.size || s.artNo}</td>
                           <td>
                             <span style={{ fontSize: 15, fontWeight: 700, color: '#6d28d9' }}>
-                              {s.totalQuantity} {s.uom.toLowerCase()}
+                              {s.totalQuantity} {unitStr}
                             </span>
                           </td>
                           <td>
@@ -1124,16 +1130,10 @@ export default function InventoryDashboardPage() {
                             </span>
                           </td>
                           <td><strong>{s.brand}</strong></td>
-                          <td>{s.itemType === 'FABRIC' ? (s.quality || '—') : (s.name || s.quality || '—')}</td>
-                          <td>{s.shade || '—'}</td>
+                          <td>{s.itemType === 'FABRIC' ? s.quality : (s.name || s.quality)}</td>
+                          <td>{s.shade}</td>
                           <td>
-                            {s.category || s.size || s.artNo ? (
-                              <span>
-                                {s.category ? `${s.category} ` : ''}
-                                {s.size ? `· Size ${s.size} ` : ''}
-                                {s.artNo ? `· Art ${s.artNo}` : ''}
-                              </span>
-                            ) : '—'}
+                            {[s.category && (s.itemType === 'FABRIC' ? fabricCategoryLabel(s.category) : s.category), s.size && `Size ${s.size}`, s.artNo && `Art ${s.artNo}`].filter(Boolean).join(' · ')}
                           </td>
                           <td>
                             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-brand)' }}>
@@ -1190,7 +1190,7 @@ export default function InventoryDashboardPage() {
                               <thead>
                                 <tr>
                                   <th>{s.itemType === 'FABRIC' ? 'Roll Barcode' : 'Pack / Barcode'}</th>
-                                  <th>{s.itemType === 'FABRIC' ? 'Remaining Meters' : 'In Stock Quantity'}</th>
+                                  <th>{s.itemType === 'FABRIC' ? `Remaining (${unitStr})` : 'In Stock Quantity'}</th>
                                   <th>{s.itemType === 'FABRIC' ? 'Roll Status' : 'Pack Status'}</th>
                                   <th>Physical Shelf</th>
                                   <th>Client Earmark</th>
@@ -1246,10 +1246,10 @@ export default function InventoryDashboardPage() {
                                           )}
                                         </td>
                                         <td>
-                                          {cb.supplierBundle || '—'}
+                                          {cb.supplierBundle}
                                         </td>
                                         <td>
-                                          {cb.invoiceRef || '—'}
+                                          {cb.invoiceRef}
                                         </td>
                                         <td style={{ whiteSpace: 'nowrap' }}>
                                           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1269,6 +1269,7 @@ export default function InventoryDashboardPage() {
                                                   itemType: s.itemType,
                                                   brand: s.brand,
                                                   quality: s.quality,
+                                                  qualityName: s.qualityName,
                                                   shade: s.shade,
                                                   size: s.size,
                                                   category: s.category,
@@ -1341,7 +1342,7 @@ export default function InventoryDashboardPage() {
                   </th>
                   <th style={{ cursor: 'pointer' }} onClick={() => handleSort('quantity')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      Meters In Stock <ArrowUpDown size={12} />
+                      Qty In Stock <ArrowUpDown size={12} />
                     </div>
                   </th>
                   <th>Roll Status</th>
@@ -1445,9 +1446,9 @@ export default function InventoryDashboardPage() {
                     {/* Category-Specific Granular Cells */}
                     {categoryTab === 'FABRIC' ? (
                       <>
-                        <td><strong>{bBrand}</strong></td>
-                        <td><span style={{ fontWeight: 600, color: '#334155' }}>{bQuality || '—'}</span></td>
-                        <td><span className="badge badge-secondary" style={{ fontWeight: 600 }}>{bShade || '—'}</span></td>
+                        <td><strong>{bBrand}</strong>{bCat && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{fabricCategoryLabel(bCat)}</div>}</td>
+                        <td>{bQuality && <span style={{ fontWeight: 600, color: '#334155' }}>{bQuality}</span>}{b.qualityName && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{b.qualityName}</div>}</td>
+                        <td>{bShade && <span className="badge badge-secondary" style={{ fontWeight: 600 }}>{bShade}</span>}</td>
                       </>
                     ) : categoryTab === 'READY_MADE' ? (
                       <>
@@ -1456,17 +1457,17 @@ export default function InventoryDashboardPage() {
                           {bArt && bName && <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Art: {bArt}</div>}
                         </td>
                         <td>{bBrand}</td>
-                        <td>{bCat || '—'}</td>
-                        <td>{bShade || '—'}</td>
-                        <td><span className="badge badge-secondary" style={{ fontWeight: 700 }}>{bSize || '—'}</span></td>
+                        <td>{bCat}</td>
+                        <td>{bShade}</td>
+                        <td>{bSize && <span className="badge badge-secondary" style={{ fontWeight: 700 }}>{bSize}</span>}</td>
                       </>
                     ) : categoryTab === 'ACCESSORY' ? (
                       <>
                         <td><strong>{bName || 'Accessory'}</strong></td>
                         <td>{bBrand}</td>
-                        <td>{bQuality || '—'}</td>
-                        <td>{bShade || '—'}</td>
-                        <td>{bSize || bArt || '—'}</td>
+                        <td>{bQuality}</td>
+                        <td>{bShade}</td>
+                        <td>{bSize || bArt}</td>
                       </>
                     ) : (
                       <>
@@ -1481,21 +1482,17 @@ export default function InventoryDashboardPage() {
                             {bQuality} {bName ? `· ${bName}` : ''}
                           </div>
                         </td>
-                        <td>{bShade || '—'}</td>
+                        <td>{bShade}</td>
                         <td>
-                          {bCat || bSize || bArt ? (
-                            <span style={{ fontSize: 12.5 }}>
-                              {bCat ? `${bCat} ` : ''}
-                              {bSize ? `· Size: ${bSize} ` : ''}
-                              {bArt ? `· Art: ${bArt}` : ''}
-                            </span>
-                          ) : '—'}
+                          <span style={{ fontSize: 12.5 }}>
+                            {[bCat, bSize && `Size: ${bSize}`, bArt && `Art: ${bArt}`].filter(Boolean).join(' · ')}
+                          </span>
                         </td>
                       </>
                     )}
 
                     <td>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{b.poLine?.po?.poNumber || (b.invoiceRef ? `Inv: ${b.invoiceRef}` : '—')}</div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{b.poLine?.po?.poNumber || (b.invoiceRef ? `Inv: ${b.invoiceRef}` : null)}</div>
                       {b.poLine?.po?.supplierName && (
                         <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginTop: 2 }}>
                           {b.poLine.po.supplierName}
@@ -1505,7 +1502,7 @@ export default function InventoryDashboardPage() {
                     <td>
                       {b.batchLocations && b.batchLocations.length > 0 ? (
                         <span className="badge badge-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <MapPin size={12} /> {b.batchLocations[0]?.location?.code || '—'} 
+                          <MapPin size={12} /> {b.batchLocations[0]?.location?.code} 
                           {b.batchLocations.length > 1 && ` (+${b.batchLocations.length - 1})`}
                         </span>
                       ) : (
@@ -1564,7 +1561,7 @@ export default function InventoryDashboardPage() {
         const dSize = getBatchSize(selectedBatch);
         const dCategory = getBatchCategory(selectedBatch);
         const dArtNo = getBatchArtNo(selectedBatch);
-        const dUnit = selectedBatch.uom ? selectedBatch.uom : (isFabric ? 'Meters' : 'Pieces / Units');
+        const dUnit = unitLabel(uomOf({ uom: selectedBatch.uom, itemType: dType }));
 
         return (
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9999, display: 'flex', justifyContent: 'flex-end' }}>
@@ -1635,14 +1632,14 @@ export default function InventoryDashboardPage() {
                     <div>
                       <label style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block', marginBottom: 2, textTransform: 'uppercase', fontWeight: 600 }}>Brand &amp; Quality</label>
                       <div style={{ fontSize: 14, fontWeight: 700 }}>{dBrand}</div>
-                      <div style={{ fontSize: 12.5, color: '#475569' }}>{dQuality || '—'}</div>
+                      <div style={{ fontSize: 12.5, color: '#475569' }}>{dQuality}{selectedBatch.qualityName ? ` · ${selectedBatch.qualityName}` : ''}</div>
                     </div>
                     <div>
                       <label style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'block', marginBottom: 2, textTransform: 'uppercase', fontWeight: 600 }}>Color / Size</label>
-                      <div style={{ fontSize: 14, fontWeight: 700 }}>{dShade || dSize || '—'}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700 }}>{dShade || dSize}</div>
                       {(dCategory || dArtNo) && (
                         <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                          {dCategory} {dArtNo ? `· Art: ${dArtNo}` : ''}
+                          {[isFabric ? fabricCategoryLabel(dCategory) : dCategory, dArtNo && `Art: ${dArtNo}`].filter(Boolean).join(' · ')}
                         </div>
                       )}
                     </div>
@@ -1695,7 +1692,7 @@ export default function InventoryDashboardPage() {
                       {selectedBatch.batchLocations.map((bl, i) => (
                         <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: '#f8fafc', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
                           <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, color: 'var(--color-brand)' }}>
-                            <MapPin size={16} /> {bl.location?.code || '—'}
+                            <MapPin size={16} /> {bl.location?.code}
                           </span>
                           <strong style={{ color: 'var(--color-text-main)', fontSize: 13.5 }}>{bl.quantity} {dUnit}</strong>
                         </div>
@@ -1735,17 +1732,25 @@ export default function InventoryDashboardPage() {
                       </div>
                     )}
                   </div>
-                  <div style={{ borderTop: '1px solid var(--color-border)', margin: '10px 0' }} />
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>Delivery Invoice</div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{selectedBatch.invoiceRef || '—'}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>Supplier Bundle</div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{selectedBatch.supplierBundle || '—'}</div>
-                    </div>
-                  </div>
+                  {(selectedBatch.invoiceRef || selectedBatch.supplierBundle) && (
+                    <>
+                      <div style={{ borderTop: '1px solid var(--color-border)', margin: '10px 0' }} />
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        {selectedBatch.invoiceRef && (
+                          <div>
+                            <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>Delivery Invoice</div>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>{selectedBatch.invoiceRef}</div>
+                          </div>
+                        )}
+                        {selectedBatch.supplierBundle && (
+                          <div>
+                            <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>Supplier Bundle</div>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>{selectedBatch.supplierBundle}</div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
                   <div style={{ borderTop: '1px solid var(--color-border)', margin: '10px 0' }} />
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                     <Calendar size={15} color="var(--color-text-muted)" />
@@ -1873,7 +1878,7 @@ export default function InventoryDashboardPage() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   <span style={{ color: 'var(--color-text-muted)' }}>Item:</span>
-                  <strong>{getBatchBrand(batchToReallocate)} {getBatchQuality(batchToReallocate) || getBatchName(batchToReallocate)} ({getBatchShade(batchToReallocate)})</strong>
+                  <strong>{[getBatchBrand(batchToReallocate), getBatchQuality(batchToReallocate) || getBatchName(batchToReallocate)].filter(Boolean).join(' ')}{getBatchShade(batchToReallocate) ? ` (${getBatchShade(batchToReallocate)})` : ''}</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   <span style={{ color: 'var(--color-text-muted)' }}>Available Quantity:</span>

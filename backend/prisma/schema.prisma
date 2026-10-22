@@ -187,11 +187,12 @@ model ItemBatch {
   category       String?     // Fabric: SUITING/SHIRTING/PLAIN_SHIRTING | Ready-Made: Fabric Type | Accessory: Category
   brand          String?     // Fabric: Brand | Shoes: Brand | Generic: Manufacturer
   quality        String?     // Fabric: Quality | Accessory: Spec
+  qualityName    String?     @map("quality_name") // Fabric: optional descriptive quality name
   shade          String?     // Color or Shade name/code
   size           String?     // Ready-Made garment size | Shoes size
   name           String?     // Garment Item Name / Accessory Item Name
   artNo          String?     // Article / Style Number
-  uom            String      @default("METERS") // METERS, PCS, PAIRS, SETS
+  uom            String      @default("METERS") // METERS, KG, PCS, PAIRS, SETS, GROSS, BOXES, PACKETS
   quantity       Float
   status         BatchStatus @default(IN_STOCK)
   poLineId       String?     // Links batch to the PO line it was received against
@@ -281,11 +282,12 @@ model PurchaseOrderLine {
   category    String?  // Fabric: SUITING/SHIRTING/PLAIN_SHIRTING | Ready-Made: Fabric Type | Accessory: Category
   brand       String?  // Fabric: Brand | Shoes: Brand
   quality     String?  // Fabric: Quality | Accessory: Spec
+  qualityName String?  @map("quality_name") // Fabric: optional descriptive quality name
   shade       String?  // Color or Shade name/code
   size        String?  // Ready-Made garment size | Shoes size
   name        String?  // Garment Item Name / Accessory Item Name
   artNo       String?  // Article / Style Number
-  uom         String   @default("METERS") // METERS, PCS, PAIRS, SETS
+  uom         String   @default("METERS") // METERS, KG, PCS, PAIRS, SETS, GROSS, BOXES, PACKETS
   orderedQty  Float
   receivedQty Float    @default(0)
   notes       String?
@@ -296,8 +298,55 @@ model PurchaseOrderLine {
   batches     ItemBatch[]
   grnLines    GoodsReceiptNoteLine[]
   allocations PoLineAllocation[]
+  cost        PoLineCost?
 
   @@map("purchase_order_lines")
+}
+
+// ─── Confidential cost prices ────────────────────────────────────────────────
+// Kept apart from the PO line so no screen, document or export picks the price up with the
+// line. Only the Cost Prices tab (explicit permission, unlocked with the user's password)
+// reads it; labels print it only as the secret cost code.
+
+model PoLineCost {
+  poLineId    String   @id @map("po_line_id")
+  costPrice   Decimal  @map("cost_price") @db.Decimal(12, 2)  // per unit of the line (m, kg, pcs…), item cost only
+  updatedById String?  @map("updated_by_id")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  poLine      PurchaseOrderLine @relation(fields: [poLineId], references: [id], onDelete: Cascade)
+
+  @@map("po_line_costs")
+}
+
+// Every change to a cost price or to the cost code settings
+model CostPriceLog {
+  id            String   @id @default(uuid())
+  poId          String?  @map("po_id")
+  poNumber      String?  @map("po_number")
+  lineLabel     String   @map("line_label")
+  oldPrice      Decimal? @map("old_price") @db.Decimal(12, 2)
+  newPrice      Decimal? @map("new_price") @db.Decimal(12, 2)
+  source        String   // PO_CREATE, PO_EDIT, COST_TAB, CODE_SETTINGS
+  changedById   String?  @map("changed_by_id")
+  changedByName String?  @map("changed_by_name")
+  changedAt     DateTime @default(now()) @map("changed_at")
+
+  @@index([changedAt])
+  @@map("cost_price_logs")
+}
+
+// The secret code word that turns a cost into letters on the label (one row)
+model CostCodeSettings {
+  id           Int      @id @default(1)
+  codeWord     String   @map("code_word")      // 10 different letters for 1,2,…,9,0
+  repeatLetter String?  @map("repeat_letter")  // written instead of a digit repeated straight after itself
+  prefix       String?                          // decoy letters before the code
+  suffix       String?                          // decoy letters after the code
+  updatedById  String?  @map("updated_by_id")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("cost_code_settings")
 }
 
 // ─── Purchase Order Line Allocations (Internal Client Split Breakdown) ───────
@@ -443,9 +492,10 @@ model InboundDiscrepancy {
 
 model MasterAttribute {
   id         String   @id @default(uuid())
-  type       String   // "BRAND", "QUALITY", "SHADE", "ITEM_NAME", "ART_NO", "ACCESSORY_CATEGORY"
+  type       String   // "FABRIC_CATEGORY", "BRAND", "QUALITY", "QUALITY_NAME", "SHADE", "ITEM_NAME", "FABRIC_TYPE", "ART_NO", "ACCESSORY_CATEGORY"
   value      String
   category   String?  // Optional context, e.g. "SUITING", "SHIRTING", "FABRIC", "READY_MADE"
+  unit       String?  // FABRIC_CATEGORY only: how that fabric is measured, METERS or KG
   usageCount Int      @default(1)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -495,6 +545,7 @@ model GoodsReceiptNoteLine {
   itemType    String             @default("FABRIC")
   brand       String?
   quality     String?
+  qualityName String?            @map("quality_name")
   shade       String?
   category    String?
   size        String?

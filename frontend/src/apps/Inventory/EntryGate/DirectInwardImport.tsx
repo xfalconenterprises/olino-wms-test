@@ -4,6 +4,7 @@ import {
   IMPORT_COLUMNS, ITEM_TYPE_LABEL, buildImportTemplate, fieldValue, itemFieldColumns, readImportFile, remainingQty,
   unitLabel, validateImportRows, withoutDuplicates, type ImportLine, type InwardItemType,
 } from '../../../utils/directInwardImport';
+import { allowsDecimals, useFabricCategories } from '../../../utils/units';
 
 interface Props {
   itemType: InwardItemType;
@@ -18,9 +19,11 @@ const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
 export default function DirectInwardImport({ itemType, lines, onLinesChange, inwardLump }: Props) {
   const label = ITEM_TYPE_LABEL[itemType];
   const columns = IMPORT_COLUMNS[itemType];
-  const fieldColumns = itemFieldColumns(itemType);
+  const fabricTypes = useFabricCategories();
   const bundleLabel = itemType === 'ACCESSORY' ? 'Packet / Box No.' : 'Bundle No.';
   const ownLines = lines.filter(l => l.itemType === itemType);
+  // Optional fields (Quality Name) get a column only when a row has one
+  const fieldColumns = itemFieldColumns(itemType).filter(c => c.key !== 'qualityName' || ownLines.some(l => l.fields.qualityName));
   // Bundle and remarks are usually blank, so their columns appear only when a row has one
   const showBundle = ownLines.some(l => l.fields.bundle);
   const showNotes = ownLines.some(l => l.fields.notes);
@@ -57,7 +60,7 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const downloadTemplate = () => {
-    const href = URL.createObjectURL(buildImportTemplate(itemType));
+    const href = URL.createObjectURL(buildImportTemplate(itemType, fabricTypes));
     const a = document.createElement('a');
     a.href = href;
     a.download = `olino-direct-inward-${itemType.toLowerCase().replace('_', '-')}-template.xlsx`;
@@ -74,7 +77,7 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
     setRejectedFile('');
     setImportNotice('');
     try {
-      const result = validateImportRows(itemType, await readImportFile(file));
+      const result = validateImportRows(itemType, await readImportFile(file), fabricTypes);
       if (result.errors.length > 0) {
         setImportErrors(result.errors);
         setRejectedFile(file.name);
@@ -101,7 +104,7 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
     if (!selected) return;
     const qty = Number(lumpQty);
     if (!qty || qty <= 0) { setLumpError('Enter the quantity of this lump.'); return; }
-    if (itemType === 'READY_MADE' && !Number.isInteger(qty)) { setLumpError('Pieces must be a whole number.'); return; }
+    if (!allowsDecimals(selected.uom) && !Number.isInteger(qty)) { setLumpError(`Enter whole ${unitLabel(selected.uom)}.`); return; }
     if (qty > remaining + 0.001) {
       setLumpError(`Only ${fmt(remaining)} ${unitLabel(selected.uom)} left on this item (total ${fmt(selected.quantity)}).`);
       return;
@@ -236,7 +239,7 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
                         </td>
                       ))}
                       {showBundle && <td>{line.fields.bundle || <span style={{ color: 'var(--color-text-muted)' }}>—</span>}</td>}
-                      {showNotes && <td style={{ color: 'var(--color-text-muted)' }}>{line.fields.notes || '—'}</td>}
+                      {showNotes && <td style={{ color: 'var(--color-text-muted)' }}>{line.fields.notes}</td>}
                       <td style={{ textAlign: 'right' }}>{fmt(line.quantity)} {unit}</td>
                       <td style={{ textAlign: 'right' }}>{fmt(line.received)} {unit}{line.lumps > 0 && <span style={{ color: 'var(--color-text-muted)' }}> ({line.lumps})</span>}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: left > 0 ? '#b45309' : '#047857' }}>{fmt(left)} {unit}</td>
@@ -285,8 +288,8 @@ export default function DirectInwardImport({ itemType, lines, onLinesChange, inw
                   <label className="form-label" style={{ fontSize: 13, fontWeight: 600 }}>
                     This lump ({unitLabel(selected.uom)}) <span className="required">*</span>
                   </label>
-                  <input ref={qtyInput} type="number" className="form-input" min={itemType === 'READY_MADE' ? 1 : 0.001}
-                    step={itemType === 'READY_MADE' ? 1 : 'any'} placeholder={itemType === 'FABRIC' ? 'e.g. 52.40' : 'e.g. 24'}
+                  <input ref={qtyInput} type="number" className="form-input" min={allowsDecimals(selected.uom) ? 0.001 : 1}
+                    step={allowsDecimals(selected.uom) ? 'any' : 1} placeholder={allowsDecimals(selected.uom) ? 'e.g. 52.40' : 'e.g. 24'}
                     value={lumpQty} onChange={e => setLumpQty(e.target.value)}
                     style={{ height: 40, fontSize: 15, fontWeight: 700 }} />
                 </div>

@@ -12,6 +12,7 @@ import {
   ScanLine 
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
+import { formatTotals, unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface PendingBatch {
@@ -161,6 +162,7 @@ export default function BatchesPage() {
   const pendingStats = useMemo(() => {
     let fabricLumps = 0;
     let fabricMeters = 0;
+    let fabricKg = 0;
     let readyMadePacks = 0;
     let readyMadePcs = 0;
     let accessoryPacks = 0;
@@ -169,7 +171,8 @@ export default function BatchesPage() {
     for (const b of pendingItems) {
       if (b.itemType === 'FABRIC') {
         fabricLumps += 1;
-        fabricMeters += b.unassignedQty;
+        if ((b.uom || '').toUpperCase() === 'KG') fabricKg += b.unassignedQty;
+        else fabricMeters += b.unassignedQty;
       } else if (b.itemType === 'READY_MADE') {
         readyMadePacks += 1;
         readyMadePcs += b.unassignedQty;
@@ -183,6 +186,7 @@ export default function BatchesPage() {
       totalLots: pendingItems.length,
       fabricLumps,
       fabricMeters: Math.round(fabricMeters * 10) / 10,
+      fabricKg: Math.round(fabricKg * 100) / 100,
       readyMadePacks,
       readyMadePcs: Math.round(readyMadePcs),
       accessoryPacks,
@@ -190,12 +194,7 @@ export default function BatchesPage() {
     };
   }, [pendingItems]);
 
-  const formatUnit = (item: { uom?: string | null; itemType?: string }) => {
-    if (item.uom) return item.uom.toLowerCase();
-    if (item.itemType === 'FABRIC') return 'm';
-    if (item.itemType === 'READY_MADE') return 'pcs';
-    return 'units';
-  };
+  const formatUnit = (item: { uom?: string | null; itemType?: string }) => unitLabel(uomOf(item));
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', paddingBottom: 40 }}>
@@ -252,7 +251,7 @@ export default function BatchesPage() {
             {pendingStats.fabricLumps} <span style={{ fontSize: 13, fontWeight: 500 }}>{pendingStats.fabricLumps === 1 ? 'lump' : 'lumps'}</span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
-            {pendingStats.fabricMeters} meters total
+            {pendingStats.fabricKg > 0 ? `${formatTotals([{ uom: 'METERS', quantity: pendingStats.fabricMeters }, { uom: 'KG', quantity: pendingStats.fabricKg }].filter(t => t.quantity > 0))} total` : `${pendingStats.fabricMeters} meters total`}
           </div>
         </div>
         <div className="card" style={{ padding: '14px 18px', borderLeft: '4px solid #16a34a' }}>
@@ -361,18 +360,20 @@ export default function BatchesPage() {
                     </td>
                     <td>
                       {item.itemType === 'FABRIC' ? (
-                        <span className="badge badge-neutral" style={{ fontSize: 11.5 }}>
-                          {item.shade || '—'}
-                        </span>
+                        item.shade ? (
+                          <span className="badge badge-neutral" style={{ fontSize: 11.5 }}>
+                            {item.shade}
+                          </span>
+                        ) : null
                       ) : item.itemType === 'READY_MADE' ? (
                         <div style={{ fontSize: 12.5 }}>
-                          <span>Art: <strong>{item.artNo || '—'}</strong></span>
+                          {item.artNo && <span>Art: <strong>{item.artNo}</strong></span>}
                           {item.size && <span style={{ marginLeft: 6 }} className="badge badge-neutral">Sz: {item.size}</span>}
                           {item.shade && <span style={{ marginLeft: 6, color: 'var(--color-text-muted)' }}>({item.shade})</span>}
                         </div>
                       ) : (
                         <div style={{ fontSize: 12.5 }}>
-                          <span>{item.shade || '—'}</span>
+                          {item.shade && <span>{item.shade}</span>}
                           {item.size && <span style={{ marginLeft: 6 }} className="badge badge-neutral">{item.size}</span>}
                         </div>
                       )}

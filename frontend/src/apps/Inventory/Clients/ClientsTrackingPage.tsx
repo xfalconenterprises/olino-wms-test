@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import api from '../../../utils/api';
 import { formatDate } from '../../../utils/format';
+import { formatTotals, unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface ClientItem {
@@ -36,6 +37,7 @@ interface ClientItem {
   isActive: boolean;
   totalShipments: number;
   totalFabricMeters: number;
+  totalFabricKg?: number;
   totalOtherUnits: number;
   lastDispatchedAt: string | null;
   createdAt: string;
@@ -261,6 +263,7 @@ export default function ClientsTrackingPage() {
       'GSTIN',
       'Total Delivery Challans',
       'Fabric Shipped (Meters)',
+      'Fabric Shipped (Kg)',
       'Units Shipped',
       'Last Dispatched Date',
       'Status'
@@ -278,6 +281,7 @@ export default function ClientsTrackingPage() {
       `"${c.gstin || ''}"`,
       c.totalShipments,
       c.totalFabricMeters,
+      c.totalFabricKg || 0,
       c.totalOtherUnits,
       c.lastDispatchedAt ? formatDate(c.lastDispatchedAt) : 'None',
       c.isActive ? 'Active' : 'Inactive'
@@ -474,8 +478,8 @@ export default function ClientsTrackingPage() {
                       </span>
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 800, fontSize: 14, color: c.totalFabricMeters > 0 ? '#16a34a' : 'var(--color-text-muted)' }}>
-                        {c.totalFabricMeters > 0 ? `${c.totalFabricMeters.toLocaleString()} M` : '0 M'}
+                      <div style={{ fontWeight: 800, fontSize: 14, color: c.totalFabricMeters > 0 || (c.totalFabricKg || 0) > 0 ? '#16a34a' : 'var(--color-text-muted)' }}>
+                        {formatTotals([{ uom: 'METERS', quantity: c.totalFabricMeters }, ...((c.totalFabricKg || 0) > 0 ? [{ uom: 'KG', quantity: c.totalFabricKg! }] : [])])}
                       </div>
                       {c.totalOtherUnits > 0 && (
                         <div style={{ fontSize: 11, color: '#8b5cf6', marginTop: 2, fontWeight: 600 }}>
@@ -810,8 +814,8 @@ export default function ClientsTrackingPage() {
                       ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                           {selectedClientData.challans.map(dc => {
-                            const fabricTotal = dc.lines?.filter(l => l.batch?.itemType === 'FABRIC' || !l.batch?.itemType)
-                              .reduce((sum, l) => sum + (l.quantity || 0), 0) || 0;
+                            const fabricLines = dc.lines?.filter(l => l.batch?.itemType === 'FABRIC' || !l.batch?.itemType) || [];
+                            const fabricTotal = formatTotals(fabricLines.map(l => ({ uom: uomOf(l.batch), quantity: l.quantity || 0 })));
                             const itemsTotal = dc.lines?.length || 0;
 
                             return (
@@ -837,7 +841,7 @@ export default function ClientsTrackingPage() {
                                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                                     <div style={{ textAlign: 'right' }}>
                                       <div style={{ fontWeight: 800, fontSize: 15, color: '#16a34a' }}>
-                                        {fabricTotal > 0 ? `${fabricTotal} M` : `${itemsTotal} items`}
+                                        {fabricLines.length > 0 ? fabricTotal : `${itemsTotal} items`}
                                       </div>
                                       <div style={{ fontSize: 11, color: '#64748b' }}>
                                         {itemsTotal} lines dispatched
@@ -877,7 +881,7 @@ export default function ClientsTrackingPage() {
                                             gap: 4
                                           }}
                                         >
-                                          <strong>{line.batch?.batchCode || 'Batch'}</strong>: {line.quantity} {line.batch?.uom || 'M'}
+                                          <strong>{line.batch?.batchCode || 'Batch'}</strong>: {line.quantity} {unitLabel(uomOf(line.batch))}
                                           {line.batch?.brand && <span style={{ color: '#0369a1' }}>({line.batch.brand}{line.batch.shade ? ` - ${line.batch.shade}` : ''})</span>}
                                           {line.isPartialCut && <span style={{ color: '#d97706', fontWeight: 700, fontSize: 10 }}>[CUT]</span>}
                                         </span>
@@ -925,9 +929,9 @@ export default function ClientsTrackingPage() {
                                   <tr key={idx}>
                                     <td>
                                       <div style={{ fontWeight: 700, color: 'var(--color-text-main)' }}>
-                                        {item.brand} {item.quality !== '-' ? `· ${item.quality}` : ''}
+                                        {[item.brand, item.quality].filter(Boolean).join(' · ')}
                                       </div>
-                                      {item.name !== '-' && (
+                                      {item.name && (
                                         <div style={{ fontSize: 11.5, color: '#64748b' }}>
                                           {item.name}
                                         </div>
@@ -950,7 +954,7 @@ export default function ClientsTrackingPage() {
                                     </td>
                                     <td style={{ textAlign: 'right' }}>
                                       <strong style={{ fontSize: 14, color: '#16a34a' }}>
-                                        {item.totalQuantity} {item.uom}
+                                        {item.totalQuantity} {unitLabel(item.uom)}
                                       </strong>
                                     </td>
                                     <td style={{ fontSize: 12, color: '#64748b' }}>

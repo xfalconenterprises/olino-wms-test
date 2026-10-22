@@ -21,6 +21,7 @@ import {
   CornerDownRight
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
+import { allowsDecimals, fabricCategoryLabel, formatTotals, unitLabel, uomOf } from '../../../utils/units';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import '../../../styles/components.css';
@@ -33,6 +34,7 @@ interface POLine {
   category?: string | null;
   brand?: string | null;
   quality?: string | null;
+  qualityName?: string | null;
   shade?: string | null;
   size?: string | null;
   name?: string | null;
@@ -268,8 +270,10 @@ export default function ViewPOPage() {
   const isLocked = po.status === 'PARTIALLY_RECEIVED' || po.status === 'RECEIVED';
   const firstLine = po.lines?.[0];
   const isFabric = (firstLine?.itemType || 'FABRIC') === 'FABRIC';
-  const isReadyMade = firstLine?.itemType === 'READY_MADE';
-  const unit = isFabric ? 'Meters' : isReadyMade ? 'Pieces' : (firstLine?.uom || 'Units');
+  // Totals per unit: a fabric PO can mix meter and kg lines
+  const lineTotals = (pick: (l: POLine) => number) => formatTotals((po.lines || []).map(l => ({ uom: uomOf(l), quantity: pick(l) })));
+  const poUnits = new Set((po.lines || []).map(l => uomOf(l)));
+  const singleUnit = poUnits.size === 1 ? [...poUnits][0] : null;
 
   const hasSize = po.lines?.some(l => Boolean(l.size));
   const hasArtNo = po.lines?.some(l => Boolean(l.artNo));
@@ -478,7 +482,7 @@ export default function ViewPOPage() {
               </span>
             </div>
             <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>
-              {totalReceived.toFixed(isFabric ? 1 : 0)} / {totalOrdered.toFixed(isFabric ? 1 : 0)} <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-muted)' }}>{unit}</span>
+              {lineTotals(l => l.receivedQty)} <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-muted)' }}>of</span> {lineTotals(l => l.orderedQty)}
             </div>
             <div style={{ width: '100%', height: 6, background: '#cbd5e1', borderRadius: 3, overflow: 'hidden' }}>
               <div style={{ 
@@ -618,7 +622,8 @@ export default function ViewPOPage() {
                   const isPartial = received > 0 && !isComplete;
                   const itemType = line?.itemType || 'FABRIC';
                   const isLineFabric = itemType === 'FABRIC';
-                  const lineUnit = line?.uom ? line.uom.toLowerCase() : (isLineFabric ? 'm' : 'pcs');
+                  const lineUnit = unitLabel(uomOf(line));
+                  const dp = allowsDecimals(uomOf(line)) ? 2 : 0;
 
                   return (
                     <tr key={line.id} className="hover-row">
@@ -631,7 +636,7 @@ export default function ViewPOPage() {
                         </div>
                         {line.category && (
                           <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>
-                            {line.category.replace(/_/g, ' ')}
+                            {isLineFabric ? fabricCategoryLabel(line.category) : line.category}
                           </div>
                         )}
 
@@ -653,7 +658,7 @@ export default function ViewPOPage() {
                                 <CornerDownRight size={13} style={{ color: '#94a3b8', flexShrink: 0 }} />
                                 <span style={{ fontWeight: 600, color: '#1e293b' }}>{al.clientName}</span>
                                 <span style={{ color: 'var(--color-text-muted)', fontSize: 11.5 }}>
-                                  ({al.allocatedQty.toFixed(isLineFabric ? 1 : 0)} {lineUnit})
+                                  ({Number(al.allocatedQty.toFixed(dp))} {lineUnit})
                                 </span>
                               </div>
                             ))}
@@ -666,25 +671,26 @@ export default function ViewPOPage() {
                         ) : null}
                       </td>
                       <td>
-                        {line.quality || line.name || '—'}
+                        {line.quality}
+                        {line.qualityName && <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{line.qualityName}</div>}
                       </td>
                       <td>
                         {line.shade ? (
                           <span style={{ fontWeight: 700, fontFamily: 'monospace', color: 'var(--color-brand)' }}>
                             {line.shade}
                           </span>
-                        ) : '—'}
+                        ) : null}
                       </td>
-                      {hasSize && <td>{line.size || '—'}</td>}
-                      {hasArtNo && <td><span style={{ fontFamily: 'monospace', fontSize: 12 }}>{line.artNo || '—'}</span></td>}
+                      {hasSize && <td>{line.size}</td>}
+                      {hasArtNo && <td><span style={{ fontFamily: 'monospace', fontSize: 12 }}>{line.artNo}</span></td>}
                       <td style={{ textAlign: 'right', fontWeight: 600 }}>
-                        {ordered.toFixed(isLineFabric ? 1 : 0)} {lineUnit}
+                        {Number(ordered.toFixed(dp))} {lineUnit}
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: isComplete ? 'var(--color-success)' : isPartial ? '#0284c7' : 'var(--color-text-muted)' }}>
-                        {received.toFixed(isLineFabric ? 1 : 0)} {lineUnit}
+                        {Number(received.toFixed(dp))} {lineUnit}
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: balance > 0 ? '#b45309' : 'var(--color-success)' }}>
-                        {balance > 0 ? `${balance.toFixed(isLineFabric ? 1 : 0)} ${lineUnit}` : '—'}
+                        {balance > 0 ? `${Number(balance.toFixed(dp))} ${lineUnit}` : '—'}
                       </td>
                       <td style={{ textAlign: 'center' }}>
                         {isComplete ? (
@@ -713,13 +719,13 @@ export default function ViewPOPage() {
                     Summary Totals ({po.lines.length} lines)
                   </td>
                   <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 13.5, color: '#0f172a' }}>
-                    {totalOrdered.toFixed(isFabric ? 1 : 0)} {unit.toLowerCase()}
+                    {lineTotals(l => l.orderedQty)}
                   </td>
                   <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 13.5, color: totalReceived >= totalOrdered ? 'var(--color-success)' : '#0284c7' }}>
-                    {totalReceived.toFixed(isFabric ? 1 : 0)} {unit.toLowerCase()}
+                    {lineTotals(l => l.receivedQty)}
                   </td>
                   <td style={{ textAlign: 'right', padding: '12px 16px', fontSize: 13.5, color: totalBalance > 0 ? '#b45309' : 'var(--color-success)' }}>
-                    {totalBalance > 0 ? `${totalBalance.toFixed(isFabric ? 1 : 0)} ${unit.toLowerCase()}` : '0 ' + unit.toLowerCase()}
+                    {totalBalance > 0 ? lineTotals(l => Math.max(0, l.orderedQty - l.receivedQty)) : '0'}
                   </td>
                   <td style={{ textAlign: 'center', padding: '12px 16px', fontSize: 12 }}>
                     <span style={{ fontWeight: 700, color: progressPct === 100 ? 'var(--color-success)' : 'var(--color-brand)' }}>
@@ -805,7 +811,7 @@ export default function ViewPOPage() {
                       {grn.totalRolls}
                     </td>
                     <td style={{ textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
-                      {grn.totalQuantity.toFixed(isFabric ? 1 : 0)} {unit.toLowerCase()}
+                      {singleUnit ? `${Number(grn.totalQuantity.toFixed(allowsDecimals(singleUnit) ? 2 : 0))} ${unitLabel(singleUnit)}` : 'See GRN'}
                     </td>
                     <td style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
                       {grn.receivedBy?.name || 'Staff'}

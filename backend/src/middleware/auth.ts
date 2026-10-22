@@ -89,6 +89,12 @@ async function authenticate(req: Request, res: Response, next: NextFunction, all
     return;
   }
 
+  // Cost-unlock tokens only open the Cost Prices tab; they are never a login session
+  if ((decoded as { purpose?: string }).purpose === COST_UNLOCK_PURPOSE) {
+    res.status(401).json({ error: 'Unauthorized — invalid or expired token' });
+    return;
+  }
+
   if (decoded.scope === 'reset' && !allowResetScope) {
     res.status(403).json({ error: 'Reset your password or PIN before using the system' });
     return;
@@ -137,4 +143,43 @@ export function requirePermission(...permissions: string[]) {
     }
     next();
   };
+}
+
+// ─── Confidential cost prices ────────────────────────────────────────────────
+// Granted only by name: full access ('*') and module fallbacks do not include it, so a user sees
+// costs only when someone who already has this access gives it to them.
+export const COST_PRICE_PERMISSION = 'secure.cost_prices';
+const COST_UNLOCK_PURPOSE = 'cost-unlock';
+export const COST_UNLOCK_MINUTES = 15;
+
+export function hasCostAccess(user: { permissions?: string[] | null }): boolean {
+  return (user.permissions || []).includes(COST_PRICE_PERMISSION);
+}
+
+export function requireCostAccess(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user || !hasCostAccess(req.user)) {
+    res.status(403).json({ error: 'You do not have access to cost prices' });
+    return;
+  }
+  next();
+}
+
+/** Short-lived token issued after the user re-enters their password on the Cost Prices tab. */
+export function signCostUnlockToken(userId: string): { token: string; expiresAt: number } {
+  const token = jwt.sign({ userId, purpose: COST_UNLOCK_PURPOSE }, getJwtSecret(), { expiresIn: `${COST_UNLOCK_MINUTES}m` });
+  return { token, expiresAt: Date.now() + COST_UNLOCK_MINUTES * 60 * 1000 };
+}
+
+/** The tab must be unlocked (X-Cost-Unlock header) by the same user who is signed in. */
+export function requireCostUnlock(req: Request, res: Response, next: NextFunction): void {
+  const token = req.headers['x-cost-unlock'];
+  try {
+    const decoded = jwt.verify(String(token ?? ''), getJwtSecret()) as { userId?: string; purpose?: string };
+    if (decoded.purpose === COST_UNLOCK_PURPOSE && decoded.userId === req.user?.userId) {
+      next();
+      return;
+    }
+  } catch { /* falls through */ }
+  // 423 (not 401): a locked tab must not sign the user out
+  res.status(423).json({ error: 'Cost prices are locked. Enter your password to unlock.', locked: true });
 }

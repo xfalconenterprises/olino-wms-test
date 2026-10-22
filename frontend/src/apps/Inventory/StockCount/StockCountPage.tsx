@@ -6,6 +6,7 @@ import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import { apiError } from '../../../utils/printPage';
 import { formatDateTime } from '../../../utils/format';
+import { allowsDecimals } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface CountLocation { id: string; code: string; type: string; countedAt: string | null; countedBy: string | null; entryCount: number }
@@ -242,7 +243,7 @@ export default function StockCountPage() {
 
   return (
     <div style={{ maxWidth: 1180, margin: '0 auto' }}>
-      <button className="btn btn-ghost btn-sm" onClick={() => navigate('/inventory/stock-counts')} style={{ marginBottom: 10, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => navigate('/stock-counts')} style={{ marginBottom: 10, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         <ArrowLeft size={14} /> All counts
       </button>
 
@@ -338,7 +339,7 @@ export default function StockCountPage() {
                           {pending.usedUp && <div style={{ fontSize: 12.5, color: '#b45309', marginBottom: 8 }}>The system shows this item as used up. Count it anyway; it will be reviewed.</div>}
                           <label className="form-label">2. Quantity found ({pending.unit})</label>
                           <div style={{ display: 'flex', gap: 8 }}>
-                            <input ref={qtyRef} type="number" step={pending.uom === 'METERS' ? 'any' : 1} min="0" className="form-input" value={qty}
+                            <input ref={qtyRef} type="number" step={allowsDecimals(pending.uom) ? 'any' : 1} min="0" className="form-input" value={qty}
                               onChange={e => setQty(e.target.value)} style={{ height: 42, fontSize: 16, fontWeight: 700 }} />
                             <button className="btn btn-primary" type="submit" disabled={busy} style={{ whiteSpace: 'nowrap' }}>Save (Enter)</button>
                             <button className="btn btn-ghost" type="button" onClick={() => { setPending(null); itemRef.current?.focus(); }}>Cancel</button>

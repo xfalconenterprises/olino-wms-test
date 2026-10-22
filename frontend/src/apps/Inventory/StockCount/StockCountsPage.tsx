@@ -55,7 +55,7 @@ export default function StockCountsPage() {
     setError('');
     try {
       const { data } = await api.post('/api/stock-counts', { scope, rackIds: scope === 'RACKS' ? rackIds : undefined, notes });
-      navigate(`/inventory/stock-counts/${data.id}`);
+      navigate(`/stock-counts/${data.id}`);
     } catch (err) {
       setError(apiError(err, 'Could not start the count'));
     } finally {
@@ -147,7 +147,7 @@ export default function StockCountsPage() {
               </thead>
               <tbody>
                 {counts.map(c => (
-                  <tr key={c.id} onClick={() => navigate(`/inventory/stock-counts/${c.id}`)} style={{ cursor: 'pointer' }}>
+                  <tr key={c.id} onClick={() => navigate(`/stock-counts/${c.id}`)} style={{ cursor: 'pointer' }}>
                     <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{c.countNumber}</td>
                     <td>{c.scopeLabel}</td>
                     <td><span className={`badge ${STATUS_BADGE[c.status]}`}>{c.status === 'OPEN' ? 'Open' : c.status === 'COMPLETED' ? 'Completed' : 'Cancelled'}</span></td>

@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import { printTSPL } from '../../../utils/printer';
 import { formatDateTime } from '../../../utils/format';
+import { allowsDecimals, formatQty, formatTotals, unitLabel, uomOf } from '../../../utils/units';
+import { QuickAddClientModal } from '../../../components/Common/QuickAddModals';
 import '../../../styles/components.css';
 
 interface DeliveryChallan {
@@ -51,6 +53,7 @@ interface DeliveryChallanLine {
     itemType: 'FABRIC' | 'READY_MADE' | 'ACCESSORY';
     brand?: string | null;
     quality?: string | null;
+    qualityName?: string | null;
     shade?: string | null;
     size?: string | null;
     name?: string | null;
@@ -117,73 +120,28 @@ export default function ExitGatePage() {
 
   // Quick Add Client Modal State
   const [showQuickAddClientModal, setShowQuickAddClientModal] = useState(false);
-  const [quickClientForm, setQuickClientForm] = useState({
-    name: '',
-    clientType: '',
-    contactPerson: '',
-    phone: '',
-    city: '',
-    address: '',
-    notes: '',
-  });
-  const [quickClientSubmitting, setQuickClientSubmitting] = useState(false);
-  const [quickClientError, setQuickClientError] = useState('');
+  const [quickClientInitial, setQuickClientInitial] = useState({ name: '', type: '', city: '' });
 
   const openQuickAddClient = (initialName?: string, initialType?: string) => {
-    setQuickClientForm({
-      name: initialName || newCustomer.trim() || '',
-      clientType: initialType || '',
-      contactPerson: '',
-      phone: '',
-      city: newDestination.trim() || '',
-      address: '',
-      notes: ''
-    });
-    setQuickClientError('');
+    setQuickClientInitial({ name: initialName || newCustomer.trim(), type: initialType || '', city: newDestination.trim() });
     setShowQuickAddClientModal(true);
   };
 
-  const handleQuickAddClientSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setQuickClientError('');
-    if (!quickClientForm.name.trim()) {
-      setQuickClientError('Client / Customer name is required.');
-      return;
-    }
-
-    setQuickClientSubmitting(true);
-    try {
-      const res = await api.post('/api/clients', {
-        name: quickClientForm.name.trim(),
-        clientType: quickClientForm.clientType.trim() || undefined,
-        contactPerson: quickClientForm.contactPerson.trim() || undefined,
-        phone: quickClientForm.phone.trim() || undefined,
-        city: quickClientForm.city.trim() || undefined,
-        address: quickClientForm.address.trim() || undefined,
-        notes: quickClientForm.notes.trim() || undefined,
-      });
-
-      const newCli = res.data;
-      const newEntry: CustomerDirectoryEntry = {
-        customerName: newCli.name,
-        destination: newCli.city || newCli.address || null,
-        address: newCli.address || null,
-        phone: newCli.phone || null,
-        code: newCli.code || null,
-        clientType: newCli.clientType || null,
-        clientId: newCli.id
-      };
-      setCustomerDirectory(prev => [newEntry, ...prev.filter(c => c.customerName.toLowerCase() !== newCli.name.toLowerCase())]);
-      setNewCustomer(newCli.name);
-      setNewDestination(newCli.city || newCli.address || '');
-      setSelectedCustomerId(newCli.id);
-      setShowQuickAddClientModal(false);
-      setQuickClientForm({ name: '', clientType: '', contactPerson: '', phone: '', city: '', address: '', notes: '' });
-    } catch (err: any) {
-      setQuickClientError(err.response?.data?.error || 'Failed to save client details');
-    } finally {
-      setQuickClientSubmitting(false);
-    }
+  const handleQuickClientCreated = (newCli: any) => {
+    const newEntry: CustomerDirectoryEntry = {
+      customerName: newCli.name,
+      destination: newCli.city || newCli.address || null,
+      address: newCli.address || null,
+      phone: newCli.phone || null,
+      code: newCli.code || null,
+      clientType: newCli.clientType || null,
+      clientId: newCli.id
+    };
+    setCustomerDirectory(prev => [newEntry, ...prev.filter(c => c.customerName.toLowerCase() !== newCli.name.toLowerCase())]);
+    setNewCustomer(newCli.name);
+    setNewDestination(newCli.city || newCli.address || '');
+    setSelectedCustomerId(newCli.id);
+    setShowQuickAddClientModal(false);
   };
 
   useEffect(() => {
@@ -418,7 +376,9 @@ export default function ExitGatePage() {
   };
 
   // Calculations for active DC
-  const totalFabricMeters = activeDC?.lines?.reduce((sum, l) => l.batch.itemType === 'FABRIC' ? sum + l.quantity : sum, 0) || 0;
+  // Fabric totals per unit (meters and kg are never added together)
+  const fabricLines = activeDC?.lines?.filter(l => l.batch.itemType === 'FABRIC') || [];
+  const totalFabricText = formatTotals(fabricLines.map(l => ({ uom: uomOf(l.batch), quantity: l.quantity })));
   const totalReadyMade = activeDC?.lines?.reduce((sum, l) => l.batch.itemType === 'READY_MADE' ? sum + l.quantity : sum, 0) || 0;
   const totalAccessories = activeDC?.lines?.reduce((sum, l) => l.batch.itemType === 'ACCESSORY' ? sum + l.quantity : sum, 0) || 0;
   const partialCutCount = activeDC?.lines?.filter(l => l.isPartialCut).length || 0;
@@ -490,10 +450,10 @@ export default function ExitGatePage() {
               <span style={{ fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase', display: 'block', fontWeight: 600 }}>Packed Items</span>
               <strong style={{ fontSize: 18, color: 'var(--color-text-main)' }}>{activeDC.lines?.length || 0}</strong>
             </div>
-            {totalFabricMeters > 0 && (
+            {fabricLines.length > 0 && (
               <div style={{ textAlign: 'center', borderLeft: '1px solid var(--color-border)', paddingLeft: 16 }}>
                 <span style={{ fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase', display: 'block', fontWeight: 600 }}>Total Fabric</span>
-                <strong style={{ fontSize: 18, color: 'var(--color-brand)' }}>{totalFabricMeters.toFixed(1)} m</strong>
+                <strong style={{ fontSize: 18, color: 'var(--color-brand)' }}>{totalFabricText}</strong>
               </div>
             )}
             {totalReadyMade > 0 && (
@@ -635,9 +595,7 @@ export default function ExitGatePage() {
                 </tr>
               ) : (
                 activeDC.lines.map((line, idx) => {
-                  const isFabric = line.batch.itemType === 'FABRIC';
-                  const isReadyMade = line.batch.itemType === 'READY_MADE';
-                  const lineUnit = line.batch.uom ? line.batch.uom.toLowerCase() : (isFabric ? 'm' : (isReadyMade ? 'pcs' : 'units'));
+                  const lineUnit = unitLabel(uomOf(line.batch));
                   return (
                     <tr key={line.id}>
                       <td className="text-muted text-xs">{idx + 1}</td>
@@ -647,7 +605,7 @@ export default function ExitGatePage() {
                         </code>
                       </td>
                       <td>
-                        <strong>{line.batch.name || line.batch.brand || 'Item'}</strong> {line.batch.quality ? `— ${line.batch.quality}` : ''}
+                        <strong>{line.batch.name || line.batch.brand || 'Item'}</strong> {line.batch.quality ? `— ${line.batch.quality}` : ''}{line.batch.qualityName ? ` (${line.batch.qualityName})` : ''}
                         {line.earmarkOverride && (
                           <div style={{ marginTop: 3, fontSize: 11, color: '#92400e' }} title={line.earmarkOverride}>
                             Released from {line.earmarkedFor}: {line.earmarkOverride}
@@ -662,7 +620,7 @@ export default function ExitGatePage() {
                         )}
                       </td>
                       <td>
-                        {line.batch.shade || '—'} {line.batch.size ? `(Size ${line.batch.size})` : ''}
+                        {[line.batch.shade, line.batch.size && `Size ${line.batch.size}`].filter(Boolean).join(' · ')}
                       </td>
                       <td>
                         <strong style={{ fontSize: 14 }}>
@@ -812,11 +770,11 @@ export default function ExitGatePage() {
                     SKU: <code style={{ fontWeight: 700, color: 'var(--color-brand)' }}>{scannedBatch.batchCode}</code>
                   </div>
                   <div>
-                    Product: <strong>{scannedBatch.name || scannedBatch.brand || 'Item'}</strong> {scannedBatch.quality ? `— ${scannedBatch.quality}` : ''}
+                    Product: <strong>{scannedBatch.name || scannedBatch.brand || 'Item'}</strong> {scannedBatch.quality ? `— ${scannedBatch.quality}` : ''}{scannedBatch.qualityName ? ` (${scannedBatch.qualityName})` : ''}
                   </div>
                   <div style={{ marginTop: 6, fontSize: 14 }}>
                     Total In Stock: <strong style={{ color: 'var(--color-brand)' }}>
-                      {scannedBatch.quantity} {scannedBatch.uom ? scannedBatch.uom.toLowerCase() : (scannedBatch.itemType === 'FABRIC' ? 'Meters' : (scannedBatch.itemType === 'READY_MADE' ? 'Pieces' : 'Units'))}
+                      {formatQty(scannedBatch.quantity, uomOf(scannedBatch))}
                     </strong>
                   </div>
                 </div>
@@ -913,7 +871,7 @@ export default function ExitGatePage() {
                       onClick={() => { setCutMode('FULL'); setCutQty(String(scannedBatch.quantity)); }}
                       style={{ flex: 1, height: 40, fontWeight: 600 }}
                     >
-                      Ship Full Roll ({scannedBatch.quantity}m)
+                      Ship Full Roll ({formatQty(scannedBatch.quantity, uomOf(scannedBatch))})
                     </button>
                     <button
                       type="button"
@@ -928,14 +886,14 @@ export default function ExitGatePage() {
 
                 <div className="form-group">
                   <label className="form-label" style={{ fontWeight: 700 }}>
-                    Quantity to Dispatch ({scannedBatch.uom ? scannedBatch.uom.toLowerCase() : (scannedBatch.itemType === 'FABRIC' ? 'Meters' : (scannedBatch.itemType === 'READY_MADE' ? 'Pieces' : 'Units'))}) <span className="required">*</span>
+                    Quantity to Dispatch ({unitLabel(uomOf(scannedBatch))}) <span className="required">*</span>
                   </label>
                   <input
                     ref={cutInputRef}
                     type="number"
-                    step="any"
+                    step={allowsDecimals(uomOf(scannedBatch)) ? 'any' : 1}
                     max={scannedBatch.quantity}
-                    min="0.001"
+                    min={allowsDecimals(uomOf(scannedBatch)) ? 0.001 : 1}
                     className="form-input"
                     value={cutQty}
                     onChange={e => setCutQty(e.target.value)}
@@ -945,7 +903,7 @@ export default function ExitGatePage() {
                   <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--color-text-muted)' }}>
                     {parseFloat(cutQty) < scannedBatch.quantity ? (
                       <span style={{ color: '#b45309', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <Scissors size={14} /> Partial Cut: {(scannedBatch.quantity - (parseFloat(cutQty) || 0)).toFixed(1)}m will remain in inventory (remainder barcode label will be generated).
+                        <Scissors size={14} /> Partial Cut: {formatQty(scannedBatch.quantity - (parseFloat(cutQty) || 0), uomOf(scannedBatch))} will remain in inventory (remainder barcode label will be generated).
                       </span>
                     ) : (
                       <span style={{ color: 'var(--color-success)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -1247,129 +1205,9 @@ export default function ExitGatePage() {
           </div>
         </div>
       )}
-      {/* Modal: Quick Add Client */}
       {showQuickAddClientModal && (
-        <div className="modal-overlay" style={{ zIndex: 1100 }} onClick={() => setShowQuickAddClientModal(false)}>
-          <div className="modal" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Users size={18} color="var(--color-brand)" /> Quick Add Master Client
-              </h3>
-              <button className="btn btn-ghost btn-icon" onClick={() => setShowQuickAddClientModal(false)}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleQuickAddClientSubmit}>
-              <div className="modal-body" style={{ padding: 20 }}>
-                {quickClientError && (
-                  <div className="alert alert-danger" style={{ marginBottom: 14 }}>
-                    {quickClientError}
-                  </div>
-                )}
-
-                <div className="form-group" style={{ marginBottom: 14 }}>
-                  <label className="form-label">Client / Customer Name <span className="required">*</span></label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Al-Ameen School Uniforms, DPS"
-                    value={quickClientForm.name}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, name: e.target.value })}
-                    required
-                    autoFocus
-                  />
-                </div>
-
-                <div className="form-group" style={{ marginBottom: 14 }}>
-                  <label className="form-label">Type of Client <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(Optional)</span></label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    list="quick-dc-client-types"
-                    placeholder="Select or enter type (e.g. School, Wholesaler, Retailer, Corporate)"
-                    value={quickClientForm.clientType}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, clientType: e.target.value })}
-                  />
-                  <datalist id="quick-dc-client-types">
-                    <option value="School" />
-                    <option value="Wholesaler" />
-                    <option value="Retailer" />
-                    <option value="Corporate" />
-                    <option value="Institution" />
-                    <option value="Uniform Distributor" />
-                    <option value="Garment Manufacturer" />
-                    <option value="Other" />
-                  </datalist>
-                </div>
-
-                <div className="form-row" style={{ display: 'flex', gap: 12, marginBottom: 14 }}>
-                  <div className="form-group" style={{ flex: 1, margin: 0 }}>
-                    <label className="form-label">Contact Person</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      placeholder="e.g. Mr. Rajesh / Principal"
-                      value={quickClientForm.contactPerson}
-                      onChange={e => setQuickClientForm({ ...quickClientForm, contactPerson: e.target.value })}
-                    />
-                  </div>
-                  <div className="form-group" style={{ flex: 1, margin: 0 }}>
-                    <label className="form-label">Phone Number</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      placeholder="e.g. +91 98470 12345"
-                      value={quickClientForm.phone}
-                      onChange={e => setQuickClientForm({ ...quickClientForm, phone: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group" style={{ marginBottom: 14 }}>
-                  <label className="form-label">City / Destination</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Manjeri, Malappuram"
-                    value={quickClientForm.city}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, city: e.target.value })}
-                  />
-                </div>
-
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Full Address</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Main Road, Near Bus Stand"
-                    value={quickClientForm.address}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, address: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '12px 20px' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowQuickAddClientModal(false)}
-                  disabled={quickClientSubmitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={quickClientSubmitting}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  {quickClientSubmitting ? <span className="spinner" /> : 'Save & Select Client'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <QuickAddClientModal initialName={quickClientInitial.name} initialType={quickClientInitial.type} initialCity={quickClientInitial.city}
+          onClose={() => setShowQuickAddClientModal(false)} onCreated={handleQuickClientCreated} />
       )}
     </div>
   );

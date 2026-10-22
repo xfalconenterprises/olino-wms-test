@@ -1,9 +1,11 @@
 import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
-import { ShoppingCart, Plus, Trash2, ArrowLeft, Repeat2, Edit, Building2, X, Search, CheckCircle2, Users, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { ShoppingCart, Plus, Trash2, ArrowLeft, Repeat2, Edit, Building2, X, Search, CheckCircle2, Users, UserPlus, LockKeyhole, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
 import LearningTypeaheadInput from '../../../components/Common/LearningTypeaheadInput';
+import { QuickAddClientModal, QuickAddSupplierModal } from '../../../components/Common/QuickAddModals';
+import { allowsDecimals, fabricCategoryLabel, fabricUnit, formatTotals, unitLabel, unitName, useFabricCategories } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface SupplierOption {
@@ -32,14 +34,6 @@ export default function CreatePOPage() {
 
   // Quick Add Supplier Modal State
   const [showQuickAddModal, setShowQuickAddModal] = useState(false);
-  const [quickForm, setQuickForm] = useState({
-    name: '',
-    address: '',
-    city: '',
-    phone: '',
-  });
-  const [quickSubmitting, setQuickSubmitting] = useState(false);
-  const [quickError, setQuickError] = useState('');
 
   const [form, setForm] = useState({
     supplierId: '',
@@ -59,18 +53,11 @@ export default function CreatePOPage() {
 
   // Quick Add Client Modal State
   const [showQuickAddClientModal, setShowQuickAddClientModal] = useState(false);
-  const [quickClientForm, setQuickClientForm] = useState({
-    name: '',
-    clientType: '',
-    contactPerson: '',
-    phone: '',
-    city: '',
-    address: '',
-    notes: '',
-  });
-  const [quickClientSubmitting, setQuickClientSubmitting] = useState(false);
-  const [quickClientError, setQuickClientError] = useState('');
+  const [quickClientInitial, setQuickClientInitial] = useState({ name: '', type: '' });
   const [expandedAllocIndex, setExpandedAllocIndex] = useState<number | null>(null);
+  // Allocation row waiting for a client being added through "+ Add new client"
+  const [quickClientTarget, setQuickClientTarget] = useState<{ lineIdx: number; allocIdx: number } | null>(null);
+  useEffect(() => { if (!showQuickAddClientModal) setQuickClientTarget(null); }, [showQuickAddClientModal]);
 
   interface LineAllocationItem {
     clientId?: string;
@@ -85,11 +72,15 @@ export default function CreatePOPage() {
     artNo?: string;
     brand: string;
     quality: string;
+    qualityName?: string;
     shade: string;
     size: string;
     orderedQty: string;
     notes: string;
     allocations?: LineAllocationItem[];
+    id?: string;          // saved line (edit mode): a blank cost keeps the line's saved cost
+    costPrice?: string;   // confidential: typed here, never shown back
+    hasCost?: boolean;    // the saved line already has a cost
   }[]>([
     { name: '', category: 'SUITING', artNo: '', brand: '', quality: '', shade: '', size: '', orderedQty: '', notes: '', allocations: [] }
   ]);
@@ -97,6 +88,7 @@ export default function CreatePOPage() {
   const [masterAttributes, setMasterAttributes] = useState<{
     BRAND: string[];
     QUALITY: string[];
+    QUALITY_NAME: string[];
     SHADE: string[];
     ITEM_NAME: string[];
     ART_NO: string[];
@@ -106,13 +98,19 @@ export default function CreatePOPage() {
   }>({
     BRAND: [],
     QUALITY: [],
+    QUALITY_NAME: [],
     SHADE: [],
     ITEM_NAME: [],
     ART_NO: [],
-    CATEGORY: ['SUITING', 'SHIRTING', 'PLAIN_SHIRTING'],
+    CATEGORY: [],
     FABRIC_TYPE: [],
     ACCESSORY_CATEGORY: [],
   });
+
+  // Fabric types from the master catalogue; each line is ordered in its fabric type's unit
+  const fabricCategories = useFabricCategories();
+  const lineUom = (l: { category: string }) =>
+    poType === 'FABRIC' ? fabricUnit(fabricCategories, l.category) : 'PCS';
 
   const loadSuppliers = async () => {
     try {
@@ -142,10 +140,11 @@ export default function CreatePOPage() {
         setMasterAttributes({
           BRAND: res.data.BRAND || [],
           QUALITY: res.data.QUALITY || [],
+          QUALITY_NAME: res.data.QUALITY_NAME || [],
           SHADE: res.data.SHADE || [],
           ITEM_NAME: res.data.ITEM_NAME || [],
           ART_NO: res.data.ART_NO || [],
-          CATEGORY: res.data.CATEGORY || ['SUITING', 'SHIRTING', 'PLAIN_SHIRTING'],
+          CATEGORY: res.data.CATEGORY || [],
           FABRIC_TYPE: res.data.FABRIC_TYPE || [],
           ACCESSORY_CATEGORY: res.data.ACCESSORY_CATEGORY || [],
         });
@@ -161,7 +160,7 @@ export default function CreatePOPage() {
     loadMasterAttributes();
 
     if (isEditMode) {
-      api.get(`/api/purchase-orders/${id}`).then(r => {
+      api.get(`/api/purchase-orders/${id}`, { params: { for: 'edit' } }).then(r => {
         const po = r.data;
         if (po.status !== 'PENDING') {
           setError('This Purchase Order has already begun receiving stock and cannot be edited.');
@@ -185,10 +184,14 @@ export default function CreatePOPage() {
             artNo: l.artNo || '',
             brand: l.brand || '',
             quality: l.quality || '',
+            qualityName: l.qualityName || '',
             shade: l.shade || '',
             size: l.size || '',
             orderedQty: (l.orderedQty || '').toString(),
             notes: l.notes || '',
+            id: l.id,
+            costPrice: '',
+            hasCost: Boolean(l.hasCost),
             allocations: (l.allocations || []).map((a: any) => ({
               clientId: a.clientId || undefined,
               clientName: a.clientName || '',
@@ -272,7 +275,8 @@ export default function CreatePOPage() {
 
   const duplicateLine = (index: number) => {
     const newLines = [...lines];
-    newLines.splice(index + 1, 0, { ...lines[index] });
+    // A copy is a new line: it keeps what was typed here but not the saved line's stored cost
+    newLines.splice(index + 1, 0, { ...lines[index], id: undefined, hasCost: false });
     setLines(newLines);
   };
 
@@ -309,6 +313,28 @@ export default function CreatePOPage() {
     setLines(newLines);
   };
 
+  // Allocation rows name a client from the Clients Master; rows saved by name only are matched by name
+  const allocationClientId = (a: LineAllocationItem): string =>
+    a.clientId || clientsList.find(c => c.name.trim().toLowerCase() === a.clientName.trim().toLowerCase())?.id || '';
+
+  const setAllocationClient = (lineIdx: number, allocIdx: number, client: { id: string; name: string } | undefined) => {
+    setLines(prev => prev.map((line, i) => {
+      if (i !== lineIdx) return line;
+      const allocs = [...(line.allocations || [])];
+      allocs[allocIdx] = { ...allocs[allocIdx], clientId: client?.id, clientName: client?.name ?? '' };
+      return { ...line, allocations: allocs };
+    }));
+  };
+
+  const chooseAllocationClient = (lineIdx: number, allocIdx: number, value: string) => {
+    if (value === '__new__') {
+      setQuickClientTarget({ lineIdx, allocIdx });
+      openQuickAddClient('');
+      return;
+    }
+    setAllocationClient(lineIdx, allocIdx, clientsList.find(c => c.id === value));
+  };
+
   const removeAllocation = (lineIdx: number, allocIdx: number) => {
     const newLines = [...lines];
     newLines[lineIdx].allocations = (newLines[lineIdx].allocations || []).filter((_, i) => i !== allocIdx);
@@ -334,90 +360,30 @@ export default function CreatePOPage() {
     ]);
   };
 
-  const handleQuickAddSupplierSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setQuickError('');
-    if (!quickForm.name.trim()) {
-      setQuickError('Supplier name is required.');
-      return;
-    }
-
-    setQuickSubmitting(true);
-    try {
-      const res = await api.post('/api/suppliers', {
-        name: quickForm.name.trim(),
-        address: quickForm.address.trim() || undefined,
-        city: quickForm.city.trim() || undefined,
-        phone: quickForm.phone.trim() || undefined,
-      });
-
-      const newSup = res.data;
-      setSuppliersList(prev => [newSup, ...prev]);
-      setForm(f => ({
-        ...f,
-        supplierId: newSup.id,
-        supplierName: newSup.name,
-      }));
-      setSupplierInput(newSup.name);
-      setShowSupplierMenu(false);
-      setShowQuickAddModal(false);
-      setQuickForm({ name: '', address: '', city: '', phone: '' });
-    } catch (err: any) {
-      setQuickError(err.response?.data?.error || 'Failed to create supplier');
-    } finally {
-      setQuickSubmitting(false);
-    }
+  const handleQuickSupplierCreated = (newSup: any) => {
+    setSuppliersList(prev => [newSup, ...prev]);
+    setForm(f => ({ ...f, supplierId: newSup.id, supplierName: newSup.name }));
+    setSupplierInput(newSup.name);
+    setShowSupplierMenu(false);
+    setShowQuickAddModal(false);
   };
 
   const openQuickAddClient = (initialName?: string, initialType?: string) => {
-    setQuickClientForm({
-      name: initialName || clientInput.trim() || '',
-      clientType: initialType || '',
-      contactPerson: '',
-      phone: '',
-      city: '',
-      address: '',
-      notes: ''
-    });
-    setQuickClientError('');
+    setQuickClientInitial({ name: initialName ?? clientInput.trim(), type: initialType || '' });
     setShowQuickAddClientModal(true);
   };
 
-  const handleQuickAddClientSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setQuickClientError('');
-    if (!quickClientForm.name.trim()) {
-      setQuickClientError('Client / School name is required.');
-      return;
-    }
-
-    setQuickClientSubmitting(true);
-    try {
-      const res = await api.post('/api/clients', {
-        name: quickClientForm.name.trim(),
-        clientType: quickClientForm.clientType.trim() || undefined,
-        contactPerson: quickClientForm.contactPerson.trim() || undefined,
-        phone: quickClientForm.phone.trim() || undefined,
-        city: quickClientForm.city.trim() || undefined,
-        address: quickClientForm.address.trim() || undefined,
-        notes: quickClientForm.notes.trim() || undefined,
-      });
-
-      const newCli = res.data;
-      setClientsList(prev => [newCli, ...prev]);
-      setForm(f => ({
-        ...f,
-        targetClient: newCli.name
-      }));
+  const handleQuickClientCreated = (newCli: any) => {
+    setClientsList(prev => [newCli, ...prev]);
+    if (quickClientTarget) {
+      // Added from an allocation row: that row gets the new client
+      setAllocationClient(quickClientTarget.lineIdx, quickClientTarget.allocIdx, newCli);
+    } else {
+      setForm(f => ({ ...f, targetClient: newCli.name }));
       setClientInput(newCli.name);
       setShowClientMenu(false);
-      setShowQuickAddClientModal(false);
-      setQuickClientForm({ name: '', clientType: '', contactPerson: '', phone: '', city: '', address: '', notes: '' });
-    } catch (err: any) {
-      setQuickClientError(err.response?.data?.error || 'Failed to save client details');
-    } finally {
-      setQuickClientSubmitting(false);
     }
+    setShowQuickAddClientModal(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -437,6 +403,17 @@ export default function CreatePOPage() {
     const matchedMasterClient = masterClient
       ? clientsList.find(c => c.name.toLowerCase() === masterClient.toLowerCase())
       : undefined;
+    if (masterClient && !matchedMasterClient) {
+      setError(`Client "${masterClient}" is not in the Clients Master. Pick it from the list or use + Add New Client.`);
+      return;
+    }
+    const lineMissingClient = validLines.findIndex(l =>
+      (l.allocations || []).some(a => parseFloat(a.allocatedQty) > 0 && !allocationClientId(a)));
+    if (lineMissingClient >= 0) {
+      setError(`Line ${lines.indexOf(validLines[lineMissingClient]) + 1}: choose a client from the Clients Master for every allocation.`);
+      setExpandedAllocIndex(lines.indexOf(validLines[lineMissingClient]));
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -449,13 +426,16 @@ export default function CreatePOPage() {
           // If line has custom client split entered, use it
           if (l.allocations && l.allocations.length > 0) {
             lineAllocations = l.allocations
-              .filter(a => a.clientName.trim() && parseFloat(a.allocatedQty) > 0)
-              .map(a => ({
-                clientId: a.clientId || undefined,
-                clientName: a.clientName.trim(),
-                allocatedQty: parseFloat(a.allocatedQty),
-                notes: a.notes?.trim() || undefined
-              }));
+              .filter(a => parseFloat(a.allocatedQty) > 0)
+              .map(a => {
+                const client = clientsList.find(c => c.id === allocationClientId(a));
+                return {
+                  clientId: client?.id,
+                  clientName: client?.name ?? a.clientName.trim(),
+                  allocatedQty: parseFloat(a.allocatedQty),
+                  notes: a.notes?.trim() || undefined
+                };
+              });
           } else if (masterClient) {
             // Otherwise inherit the PO's master client 100%
             lineAllocations = [{
@@ -471,13 +451,16 @@ export default function CreatePOPage() {
             category: l.category || undefined,
             brand: l.brand?.trim() || undefined,
             quality: l.quality?.trim() || undefined,
+            qualityName: poType === 'FABRIC' ? l.qualityName?.trim() || undefined : undefined,
             shade: l.shade?.trim() || undefined,
             name: l.name?.trim() || undefined,
             artNo: l.artNo?.trim().toUpperCase() || undefined,
             size: l.size ? l.size.trim() : null,
             orderedQty: parseFloat(l.orderedQty),
             notes: l.notes?.trim() || undefined,
-            allocations: lineAllocations && lineAllocations.length > 0 ? lineAllocations : undefined
+            allocations: lineAllocations && lineAllocations.length > 0 ? lineAllocations : undefined,
+            id: l.id,
+            costPrice: l.costPrice?.trim() ? parseFloat(l.costPrice) : undefined
           };
         })
       };
@@ -487,6 +470,7 @@ export default function CreatePOPage() {
       for (const l of validLines) {
         if (l.brand) itemsToLearn.push({ type: 'BRAND', value: l.brand });
         if (l.quality) itemsToLearn.push({ type: 'QUALITY', value: l.quality, category: l.category });
+        if (poType === 'FABRIC' && l.qualityName) itemsToLearn.push({ type: 'QUALITY_NAME', value: l.qualityName, category: l.category });
         if (l.shade) itemsToLearn.push({ type: 'SHADE', value: l.shade });
         if (l.name) itemsToLearn.push({ type: 'ITEM_NAME', value: l.name, category: poType });
         if (l.artNo) itemsToLearn.push({ type: 'ART_NO', value: l.artNo });
@@ -514,7 +498,7 @@ export default function CreatePOPage() {
   if (loading) return <div className="loading-center"><span className="spinner spinner-lg" /></div>;
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+    <div style={{ maxWidth: 1480, margin: '0 auto' }}>
       <div className="page-header" style={{ marginBottom: 20 }}>
         <div>
           <button className="btn btn-ghost" onClick={() => navigate(-1)} style={{ padding: 0, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-muted)' }}>
@@ -547,7 +531,7 @@ export default function CreatePOPage() {
                 Product Category:
               </span>
               <span className="badge badge-brand" style={{ fontSize: 13, fontWeight: 700, padding: '4px 10px' }}>
-                {poType === 'FABRIC' ? 'Fabric Rolls (Meters)' : poType === 'READY_MADE' ? 'Ready-Made Garments (Pieces)' : 'Accessories & Trims (Mixed)'}
+                {poType === 'FABRIC' ? 'Fabric Rolls (Meters / Kg)' : poType === 'READY_MADE' ? 'Ready-Made Garments (Pieces)' : 'Accessories & Trims (Mixed)'}
               </span>
             </div>
             <button
@@ -598,7 +582,7 @@ export default function CreatePOPage() {
               onChange={e => handleCategoryChange(e.target.value)}
             >
               <option value="" disabled>Choose a product category...</option>
-              <option value="FABRIC">Fabric Rolls (Meters)</option>
+              <option value="FABRIC">Fabric Rolls (Meters / Kg)</option>
               <option value="READY_MADE">Ready-Made Garments (Pieces)</option>
               <option value="ACCESSORY">Accessories & Trims (Mixed)</option>
             </select>
@@ -891,7 +875,7 @@ export default function CreatePOPage() {
                       }}>
                         {filteredClients.length === 0 ? (
                           <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--color-text-muted)' }}>
-                            No matching clients found. Type directly or click <strong>+ Add New Client</strong>.
+                            No matching client in the Clients Master. Click <strong>+ Add New Client</strong> to add it.
                           </div>
                         ) : (
                           filteredClients.map(c => {
@@ -1020,7 +1004,7 @@ export default function CreatePOPage() {
                   <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: '#0f172a' }}>Order Items</h2>
                   <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
                     {poType === 'FABRIC' 
-                      ? 'Specify fabric roll quality, shade, type, and expected meters'
+                      ? 'Specify fabric type, brand, quality, shade and the quantity ordered (meters, or kg for fabric types weighed by weight)'
                       : poType === 'READY_MADE'
                       ? 'Specify garment item, fabric type, article number, size, color, and expected pieces'
                       : 'Specify accessory item, category, specification, size, and expected quantity'}
@@ -1032,42 +1016,49 @@ export default function CreatePOPage() {
               </div>
 
               <div style={{ overflowX: 'auto', minHeight: 320, paddingBottom: 120 }}>
-                <table className="table order-items-table" style={{ borderRadius: 'var(--radius-md)', minWidth: 960 }}>
+                <table className="table order-items-table" style={{ borderRadius: 'var(--radius-md)', width: '100%', minWidth: poType === 'FABRIC' ? 1410 : 1360, tableLayout: 'fixed' }}>
                   <thead style={{ background: '#f8fafc' }}>
                     {poType === 'FABRIC' ? (
                       <tr>
                         <th style={{ width: 140 }}>Fabric Type</th>
-                        <th style={{ width: 220 }}>Brand</th>
-                        <th style={{ width: 220 }}>Quality</th>
-                        <th style={{ width: 200 }}>Shade</th>
-                        <th style={{ width: 110 }}>Meters *</th>
-                        <th>Notes</th>
-                        <th style={{ width: 140 }}>Client Split</th>
-                        <th style={{ width: 70, textAlign: 'center' }}></th>
+                        <th style={{ width: 180 }}>Brand</th>
+                        <th style={{ width: 170 }}>Quality</th>
+                        <th style={{ width: 170 }}>Quality Name</th>
+                        <th style={{ width: 150 }}>Shade</th>
+                        <th style={{ width: 150 }}>Quantity *</th>
+                        <th style={{ width: 140 }} title="Confidential: only visible in Administration → Cost Prices">
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><LockKeyhole size={12} /> Cost / unit</span>
+                        </th>
+                        <th style={{ width: 200 }}>Notes</th>
+                        <th style={{ width: 110, textAlign: 'center' }}></th>
                       </tr>
                     ) : poType === 'READY_MADE' ? (
                       <tr>
-                        <th style={{ width: 220 }}>Item Name</th>
-                        <th style={{ width: 140 }}>Fabric Type</th>
+                        <th style={{ width: 210 }}>Item Name</th>
+                        <th style={{ width: 160 }}>Fabric Type</th>
                         <th style={{ width: 160 }}>Color / Shade</th>
-                        <th style={{ width: 130 }}>Art No</th>
-                        <th style={{ width: 85 }}>Size</th>
-                        <th style={{ width: 100 }}>Pieces *</th>
-                        <th>Notes</th>
-                        <th style={{ width: 140 }}>Client Split</th>
-                        <th style={{ width: 70, textAlign: 'center' }}></th>
+                        <th style={{ width: 140 }}>Art No</th>
+                        <th style={{ width: 100 }}>Size</th>
+                        <th style={{ width: 140 }}>Pieces *</th>
+                        <th style={{ width: 140 }} title="Confidential: only visible in Administration → Cost Prices">
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><LockKeyhole size={12} /> Cost / unit</span>
+                        </th>
+                        <th style={{ width: 200 }}>Notes</th>
+                        <th style={{ width: 110, textAlign: 'center' }}></th>
                       </tr>
                     ) : (
                       <tr>
-                        <th style={{ width: 140 }}>Category</th>
-                        <th style={{ width: 220 }}>Accessory Item</th>
-                        <th style={{ width: 180 }}>Spec / Quality</th>
+                        <th style={{ width: 150 }}>Category</th>
+                        <th style={{ width: 210 }}>Accessory Item</th>
+                        <th style={{ width: 170 }}>Spec / Quality</th>
                         <th style={{ width: 140 }}>Color</th>
-                        <th style={{ width: 85 }}>Size</th>
-                        <th style={{ width: 100 }}>Quantity *</th>
-                        <th>Notes</th>
-                        <th style={{ width: 140 }}>Client Split</th>
-                        <th style={{ width: 70, textAlign: 'center' }}></th>
+                        <th style={{ width: 100 }}>Size</th>
+                        <th style={{ width: 140 }}>Quantity *</th>
+                        <th style={{ width: 140 }} title="Confidential: only visible in Administration → Cost Prices">
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><LockKeyhole size={12} /> Cost / unit</span>
+                        </th>
+                        <th style={{ width: 200 }}>Notes</th>
+                        <th style={{ width: 110, textAlign: 'center' }}></th>
                       </tr>
                     )}
                   </thead>
@@ -1080,9 +1071,12 @@ export default function CreatePOPage() {
                           <>
                             <td style={{ padding: '8px' }}>
                               <select className="form-select" style={{ height: 36, padding: '4px 8px' }} value={line.category} onChange={e => updateLine(idx, 'category', e.target.value)}>
-                                <option value="SUITING">Suiting</option>
-                                <option value="SHIRTING">Shirting</option>
-                                <option value="PLAIN_SHIRTING">Plain Shirting</option>
+                                {fabricCategories.map(c => (
+                                  <option key={c.value} value={c.value}>{c.label}{c.unit === 'KG' ? ' (kg)' : ''}</option>
+                                ))}
+                                {line.category && !fabricCategories.some(c => c.value === line.category) && (
+                                  <option value={line.category}>{fabricCategoryLabel(line.category)}</option>
+                                )}
                               </select>
                             </td>
                             <td style={{ padding: '8px' }}>
@@ -1101,8 +1095,17 @@ export default function CreatePOPage() {
                                 onChange={val => updateLine(idx, 'quality', val)}
                                 options={masterAttributes.QUALITY}
                                 attributeType="Quality"
-                                placeholder="e.g. Poly Viscose 65/35"
+                                placeholder="e.g. PV-2041"
                                 required
+                              />
+                            </td>
+                            <td style={{ padding: '8px' }}>
+                              <LearningTypeaheadInput
+                                value={line.qualityName || ''}
+                                onChange={val => updateLine(idx, 'qualityName', val)}
+                                options={masterAttributes.QUALITY_NAME}
+                                attributeType="Quality Name"
+                                placeholder="Optional, e.g. Poly Viscose Twill"
                               />
                             </td>
                             <td style={{ padding: '8px' }}>
@@ -1215,7 +1218,29 @@ export default function CreatePOPage() {
 
                         {/* Ordered Quantity */}
                         <td style={{ padding: '8px' }}>
-                          <input type="number" className="form-input" style={{ height: 36, padding: '4px 8px' }} placeholder={poType === 'FABRIC' ? "Meters" : "Qty"} step={poType === 'FABRIC' ? "0.1" : "1"} min={poType === 'FABRIC' ? "0.1" : "1"} value={line.orderedQty} onChange={e => updateLine(idx, 'orderedQty', e.target.value)} required />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input type="number" className="form-input" style={{ height: 36, padding: '4px 8px' }} placeholder={unitName(lineUom(line))} step={allowsDecimals(lineUom(line)) ? 'any' : '1'} min={allowsDecimals(lineUom(line)) ? '0.01' : '1'} value={line.orderedQty} onChange={e => updateLine(idx, 'orderedQty', e.target.value)} required />
+                            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-muted)', minWidth: 22 }}>{unitLabel(lineUom(line))}</span>
+                          </div>
+                        </td>
+
+                        {/* Confidential cost: write-only. A saved cost is never shown; blank keeps it. */}
+                        <td style={{ padding: '8px' }}>
+                          <input
+                            type="number"
+                            className="form-input"
+                            style={{ height: 36, padding: '4px 8px' }}
+                            step="0.01"
+                            min="0.01"
+                            inputMode="decimal"
+                            autoComplete="off"
+                            placeholder={line.hasCost ? 'Saved' : `₹ / ${unitLabel(lineUom(line))}`}
+                            title={line.hasCost
+                              ? 'A cost is saved for this line. Leave blank to keep it, or enter a new cost to replace it.'
+                              : 'Item cost per unit. Confidential: not shown on any screen or document.'}
+                            value={line.costPrice ?? ''}
+                            onChange={e => updateLine(idx, 'costPrice', e.target.value)}
+                          />
                         </td>
 
                         {/* Notes */}
@@ -1223,34 +1248,25 @@ export default function CreatePOPage() {
                           <input type="text" className="form-input" style={{ height: 36, padding: '4px 8px' }} placeholder="Optional notes" value={line.notes} onChange={e => updateLine(idx, 'notes', e.target.value)} />
                         </td>
 
-                        {/* Client Split Button */}
-                        <td style={{ padding: '8px' }}>
-                          <button
-                            type="button"
-                            className={`btn btn-sm ${line.allocations?.length ? 'btn-secondary' : 'btn-ghost'}`}
-                            onClick={() => setExpandedAllocIndex(expandedAllocIndex === idx ? null : idx)}
-                            style={{
-                              fontSize: 12,
-                              padding: '4px 8px',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 5,
-                              whiteSpace: 'nowrap',
-                              color: line.allocations?.length ? 'var(--color-brand)' : (form.targetClient ? '#1e40af' : 'var(--color-text-muted)')
-                            }}
-                            title={line.allocations?.length ? 'View or edit custom client split' : (form.targetClient ? `Defaulted to ${form.targetClient}. Click to split.` : 'Allocate across clients')}
-                          >
-                            <Users size={14} />
-                            {line.allocations?.length 
-                              ? `${line.allocations.length} Clients` 
-                              : (form.targetClient ? `${form.targetClient} (100%)` : '+ Split Client')}
-                            {expandedAllocIndex === idx ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                          </button>
-                        </td>
-
                         {/* Action buttons */}
                         <td style={{ padding: '8px', textAlign: 'center' }}>
                           <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-icon"
+                              onClick={() => setExpandedAllocIndex(expandedAllocIndex === idx ? null : idx)}
+                              style={{
+                                color: line.allocations?.length || expandedAllocIndex === idx ? 'var(--color-brand)' : 'var(--color-text-muted)',
+                                background: line.allocations?.length ? '#eff6ff' : undefined,
+                              }}
+                              title={line.allocations?.length
+                                ? `Split across ${line.allocations.length} clients — click to view or edit`
+                                : (form.targetClient ? `For ${form.targetClient}. Click to split across clients.` : 'Split across clients')}
+                              aria-label="Split across clients"
+                              aria-expanded={expandedAllocIndex === idx}
+                            >
+                              <UserPlus size={16} />
+                            </button>
                             <button type="button" className="btn btn-ghost btn-icon" onClick={() => duplicateLine(idx)} style={{ color: 'var(--color-brand)' }} title="Duplicate Line">
                               <Repeat2 size={16} />
                             </button>
@@ -1275,7 +1291,7 @@ export default function CreatePOPage() {
                         return (
                           <tr key={`alloc-${idx}`}>
                             <td
-                              colSpan={poType === 'FABRIC' ? 8 : (poType === 'READY_MADE' ? 9 : 9)}
+                              colSpan={9}
                               style={{
                                 background: '#f8fafc',
                                 padding: '16px 20px',
@@ -1293,7 +1309,7 @@ export default function CreatePOPage() {
                                       </strong>
                                     </div>
                                     <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                                      Earmark this {lineQty} {poType === 'FABRIC' ? 'meters' : 'units'} order across clients internally. Barcode labels remain standard.
+                                      Earmark this {lineQty} {unitLabel(lineUom(line))} order across clients internally. Barcode labels remain standard.
                                     </div>
                                   </div>
 
@@ -1320,37 +1336,51 @@ export default function CreatePOPage() {
                                   <div style={{ padding: '14px', textAlign: 'center', color: 'var(--color-text-muted)', background: '#f8fafc', borderRadius: 6, fontSize: 13 }}>
                                     {form.targetClient 
                                       ? `This line is currently 100% earmarked for ${form.targetClient}. Click "+ Add Client" if you want to split it across multiple clients.`
-                                      : `No specific clients entered. The full ${lineQty || 0} ${poType === 'FABRIC' ? 'meters' : 'units'} will be treated as General Stock. Click "+ Add Client" to allocate.`}
+                                      : `No specific clients entered. The full ${lineQty || 0} ${unitLabel(lineUom(line))} will be treated as General Stock. Click "+ Add Client" to allocate.`}
                                   </div>
                                 ) : (
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                     {allocs.map((alloc, aIdx) => (
                                       <div key={aIdx} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 2fr 36px', gap: 10, alignItems: 'center' }}>
                                         <div>
-                                          <input
-                                            type="text"
-                                            className="form-input"
-                                            placeholder="Client Name (e.g. St. Joseph's Academy)"
-                                            value={alloc.clientName}
-                                            onChange={e => {
-                                              const val = e.target.value;
-                                              const match = clientsList.find(c => c.name.toLowerCase() === val.toLowerCase());
-                                              updateAllocation(idx, aIdx, 'clientName', val);
-                                              if (match) updateAllocation(idx, aIdx, 'clientId', match.id);
-                                            }}
-                                            list={`clients-datalist-${idx}`}
-                                            style={{ height: 34, fontSize: 13 }}
-                                            required
-                                          />
-                                          <datalist id={`clients-datalist-${idx}`}>
-                                            {clientsList.map(c => <option key={c.id} value={c.name} />)}
-                                          </datalist>
+                                          {(() => {
+                                            // Only clients from the Clients Master; each client once per line
+                                            const selectedId = allocationClientId(alloc);
+                                            const usedElsewhere = new Set(allocs.filter((_, j) => j !== aIdx).map(allocationClientId).filter(Boolean));
+                                            const unknownName = !selectedId && alloc.clientName.trim();
+                                            return (
+                                              <>
+                                                <select
+                                                  className="form-select"
+                                                  value={selectedId}
+                                                  onChange={e => chooseAllocationClient(idx, aIdx, e.target.value)}
+                                                  style={{ height: 34, fontSize: 13, borderColor: unknownName ? 'var(--color-danger)' : undefined }}
+                                                  required
+                                                >
+                                                  <option value="">Choose client…</option>
+                                                  {clientsList
+                                                    .filter(c => c.isActive !== false || c.id === selectedId)
+                                                    .map(c => (
+                                                      <option key={c.id} value={c.id} disabled={usedElsewhere.has(c.id)}>
+                                                        {c.name}{c.city ? ` — ${c.city}` : ''}{usedElsewhere.has(c.id) ? ' (already in this line)' : ''}
+                                                      </option>
+                                                    ))}
+                                                  <option value="__new__">+ Add new client…</option>
+                                                </select>
+                                                {unknownName && (
+                                                  <div style={{ fontSize: 11.5, color: 'var(--color-danger)', marginTop: 3 }}>
+                                                    "{alloc.clientName}" is not in the Clients Master. Choose a client.
+                                                  </div>
+                                                )}
+                                              </>
+                                            );
+                                          })()}
                                         </div>
                                         <div>
                                           <input
                                             type="number"
                                             className="form-input"
-                                            placeholder={poType === 'FABRIC' ? "Meters" : "Qty"}
+                                            placeholder={unitName(lineUom(line))}
                                             step={poType === 'FABRIC' ? "0.1" : "1"}
                                             min="0.1"
                                             value={alloc.allocatedQty}
@@ -1396,11 +1426,7 @@ export default function CreatePOPage() {
               </div>
               
               <div style={{ marginTop: 16, textAlign: 'right', fontWeight: 700, fontSize: 16, paddingRight: 16, color: 'var(--color-brand)' }}>
-                {poType === 'FABRIC'
-                  ? `Total Expected: ${lines.reduce((sum, l) => sum + (parseFloat(l.orderedQty) || 0), 0).toFixed(1)} Meters`
-                  : poType === 'READY_MADE'
-                  ? `Total Expected: ${lines.reduce((sum, l) => sum + (parseFloat(l.orderedQty) || 0), 0)} Pieces`
-                  : `Total Expected: ${lines.reduce((sum, l) => sum + (parseFloat(l.orderedQty) || 0), 0)} Units`}
+                Total Expected: {formatTotals(lines.map(l => ({ uom: lineUom(l), quantity: parseFloat(l.orderedQty) || 0 })), true)}
               </div>
             </div>
 
@@ -1414,281 +1440,13 @@ export default function CreatePOPage() {
         )}
       </form>
 
-      {/* ── Quick Add Supplier Modal ── */}
       {showQuickAddModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(15, 23, 42, 0.45)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: 20
-        }}>
-          <div style={{
-            background: '#fff',
-            borderRadius: 'var(--radius-lg)',
-            width: '100%',
-            maxWidth: 520,
-            boxShadow: 'var(--shadow-xl)',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              padding: '16px 20px',
-              borderBottom: '1px solid var(--color-border)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: '#fafbfc'
-            }}>
-              <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Building2 size={18} /> Quick Add Supplier
-              </h2>
-              <button 
-                type="button"
-                className="btn btn-ghost" 
-                onClick={() => setShowQuickAddModal(false)}
-                style={{ padding: 4, color: 'var(--color-text-muted)' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleQuickAddSupplierSubmit} style={{ padding: 20 }}>
-              {quickError && (
-                <div className="alert alert-danger" style={{ marginBottom: 16 }}>
-                  {quickError}
-                </div>
-              )}
-
-              <div className="form-group" style={{ marginBottom: 14 }}>
-                <label className="form-label">Official Legal / Mill Name <span className="required">*</span></label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. Siyaram Silk Mills Ltd., Raymond Limited"
-                  value={quickForm.name}
-                  onChange={e => setQuickForm({ ...quickForm, name: e.target.value })}
-                  required
-                  autoFocus
-                />
-              </div>
-
-              <div className="form-row" style={{ marginBottom: 14 }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">City</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Surat"
-                    value={quickForm.city}
-                    onChange={e => setQuickForm({ ...quickForm, city: e.target.value })}
-                  />
-                </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Phone</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. +91 98200 12345"
-                    value={quickForm.phone}
-                    onChange={e => setQuickForm({ ...quickForm, phone: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 20 }}>
-                <label className="form-label">Factory Address</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. B-12, Textile Market, Ring Road"
-                  value={quickForm.address}
-                  onChange={e => setQuickForm({ ...quickForm, address: e.target.value })}
-                />
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowQuickAddModal(false)}
-                  disabled={quickSubmitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={quickSubmitting}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  {quickSubmitting ? <span className="spinner" /> : 'Save & Select Supplier'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <QuickAddSupplierModal initialName={supplierInput} onClose={() => setShowQuickAddModal(false)} onCreated={handleQuickSupplierCreated} />
       )}
 
-      {/* ── Quick Add Client Modal ── */}
       {showQuickAddClientModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(15, 23, 42, 0.45)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: 20
-        }}>
-          <div style={{
-            background: '#fff',
-            borderRadius: 'var(--radius-lg)',
-            width: '100%',
-            maxWidth: 520,
-            boxShadow: 'var(--shadow-xl)',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              padding: '16px 20px',
-              borderBottom: '1px solid var(--color-border)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              background: '#fafbfc'
-            }}>
-              <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Users size={18} /> Quick Add Master Client
-              </h2>
-              <button 
-                type="button"
-                className="btn btn-ghost" 
-                onClick={() => setShowQuickAddClientModal(false)}
-                style={{ padding: 4, color: 'var(--color-text-muted)' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleQuickAddClientSubmit} style={{ padding: 20 }}>
-              {quickClientError && (
-                <div className="alert alert-danger" style={{ marginBottom: 16 }}>
-                  {quickClientError}
-                </div>
-              )}
-
-              <div className="form-group" style={{ marginBottom: 14 }}>
-                <label className="form-label">Client / School / Customer Name <span className="required">*</span></label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. Al-Ameen School Uniforms, DPS International"
-                  value={quickClientForm.name}
-                  onChange={e => setQuickClientForm({ ...quickClientForm, name: e.target.value })}
-                  required
-                  autoFocus
-                />
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 14 }}>
-                <label className="form-label">Type of Client <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(Optional)</span></label>
-                <input
-                  type="text"
-                  className="form-input"
-                  list="quick-po-client-types"
-                  placeholder="Select or enter type (e.g. School, Wholesaler, Retailer, Corporate)"
-                  value={quickClientForm.clientType}
-                  onChange={e => setQuickClientForm({ ...quickClientForm, clientType: e.target.value })}
-                />
-                <datalist id="quick-po-client-types">
-                  <option value="School" />
-                  <option value="Wholesaler" />
-                  <option value="Retailer" />
-                  <option value="Corporate" />
-                  <option value="Institution" />
-                  <option value="Uniform Distributor" />
-                  <option value="Garment Manufacturer" />
-                  <option value="Other" />
-                </datalist>
-              </div>
-
-              <div className="form-row" style={{ marginBottom: 14 }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Contact Person</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Mr. Rajesh / Principal"
-                    value={quickClientForm.contactPerson}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, contactPerson: e.target.value })}
-                  />
-                </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">Phone Number</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. +91 98470 12345"
-                    value={quickClientForm.phone}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, phone: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-row" style={{ marginBottom: 14 }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">City / Destination</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Manjeri, Calicut"
-                    value={quickClientForm.city}
-                    onChange={e => setQuickClientForm({ ...quickClientForm, city: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 20 }}>
-                <label className="form-label">Full Address / Delivery Location</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. Main Campus, P.O. Box 14, Near Junction"
-                  value={quickClientForm.address}
-                  onChange={e => setQuickClientForm({ ...quickClientForm, address: e.target.value })}
-                />
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowQuickAddClientModal(false)}
-                  disabled={quickClientSubmitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={quickClientSubmitting}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  {quickClientSubmitting ? <span className="spinner" /> : 'Save & Select Client'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <QuickAddClientModal initialName={quickClientInitial.name} initialType={quickClientInitial.type}
+          onClose={() => setShowQuickAddClientModal(false)} onCreated={handleQuickClientCreated} />
       )}
     </div>
   );

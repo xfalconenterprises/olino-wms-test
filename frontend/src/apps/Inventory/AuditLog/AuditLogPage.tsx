@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../../utils/api';
 import { ArrowRightLeft, ArrowDownToLine, ArrowUpFromLine, Scissors, Search, RefreshCw, MapPin } from 'lucide-react';
 import { formatDateTime } from '../../../utils/format';
+import { unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface Tx {
@@ -192,8 +193,7 @@ export default function AuditLogPage() {
             </thead>
             <tbody>
               {filteredTxs.map(tx => {
-                const isFabric = tx.batch?.itemType === 'FABRIC';
-                const unit = tx.batch?.uom ? tx.batch.uom.toLowerCase() : (isFabric ? 'm' : 'pcs');
+                const unit = unitLabel(uomOf(tx.batch));
 
                 return (
                   <tr key={tx.id}>
@@ -237,7 +237,7 @@ export default function AuditLogPage() {
                       <strong style={{ fontSize: 14 }}>{tx.quantityMoved} {unit}</strong>
                     </td>
                     <td className="text-muted text-sm">
-                      {tx.notes || tx.referenceType || '—'}
+                      {tx.notes || tx.referenceType}
                     </td>
                     <td>
                       <span style={{ fontWeight: 600, color: 'var(--color-text-main)' }}>{tx.operator?.name || 'System'}</span>

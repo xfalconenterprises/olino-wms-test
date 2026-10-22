@@ -3,7 +3,9 @@ import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 import bwipjs from 'bwip-js';
 import { formatDate } from '../../utils/format';
+import { allowsDecimals, fabricCategoryLabel, totalsByUnit, unitLabel } from '../../utils/units';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
+import { documentTable, filledMeta, TableColumn } from '../../utils/print-document';
 
 const router = Router();
 
@@ -48,6 +50,7 @@ router.get('/', requireAuth, requirePermission('inv.grn', 'ops.entry_gate', 'po.
         include: {
           supplier: { select: { id: true, code: true, name: true } },
           receivedBy: { select: { id: true, name: true, username: true } },
+          lines: { select: { uom: true, receivedQty: true } },
           _count: {
             select: {
               lines: true,
@@ -62,7 +65,11 @@ router.get('/', requireAuth, requirePermission('inv.grn', 'ops.entry_gate', 'po.
       }),
     ]);
 
-    res.json({ grns, total, limit: take, offset: skip });
+    // Received quantity per unit, e.g. [["METERS", 520.5], ["KG", 84]]
+    res.json({
+      grns: grns.map(({ lines, ...g }) => ({ ...g, quantityTotals: totalsByUnit(lines.map(l => ({ uom: l.uom, quantity: l.receivedQty }))) })),
+      total, limit: take, offset: skip,
+    });
   } catch (err: any) {
     console.error('Failed to list GRNs:', err);
     res.status(500).json({ error: 'Failed to retrieve Goods Receipt Notes' });
@@ -101,6 +108,7 @@ router.get('/:id', requireAuth, requirePermission('inv.grn', 'ops.entry_gate', '
             itemType: true,
             brand: true,
             quality: true,
+            qualityName: true,
             shade: true,
             size: true,
             category: true,
@@ -234,6 +242,7 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
       itemType: string;
       brand: string;
       quality: string;
+      qualityName: string;
       shade: string;
       category: string;
       size: string;
@@ -251,6 +260,7 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
       const itemType = b.itemType || 'FABRIC';
       const brand = b.brand || b.poLine?.brand || '';
       const quality = b.quality || b.poLine?.quality || '';
+      const qualityName = b.qualityName || b.poLine?.qualityName || '';
       const shade = b.shade || b.poLine?.shade || '';
       const category = b.category || b.poLine?.category || '';
       const size = b.size || b.poLine?.size || '';
@@ -259,13 +269,14 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
       const uom = b.uom || b.poLine?.uom || (itemType === 'FABRIC' ? 'METERS' : 'PCS');
       const poLineId = b.poLineId || undefined;
 
-      const key = `${itemType}__${brand}__${quality}__${shade}__${category}__${size}__${name}__${artNo}__${uom}`;
+      const key = `${itemType}__${brand}__${quality}__${qualityName}__${shade}__${category}__${size}__${name}__${artNo}__${uom}`;
 
       if (!groupMap.has(key)) {
         groupMap.set(key, {
           itemType,
           brand,
           quality,
+          qualityName,
           shade,
           category,
           size,
@@ -300,6 +311,7 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
         itemType: g.itemType,
         brand: g.brand || null,
         quality: g.quality || null,
+        qualityName: g.qualityName || null,
         shade: g.shade || null,
         category: g.category || null,
         size: g.size || null,
@@ -408,131 +420,65 @@ router.get('/:id/print', requireAuth, requirePermission('inv.grn', 'ops.entry_ga
     }
 
     // Determine PO / GRN Item Type: FABRIC | READY_MADE | ACCESSORIES
-    const isFabric = grn.lines.some((l: any) => (l.uom || '').toUpperCase().startsWith('M'));
-    const isReadyMade = !isFabric && grn.lines.some((l: any) => (l.uom || '').toUpperCase().startsWith('P'));
+    const isFabric = grn.lines.some((l: any) => l.itemType === 'FABRIC');
+    const isReadyMade = !isFabric && grn.lines.some((l: any) => l.itemType === 'READY_MADE');
 
-    const totalInvoiced = grn.lines.reduce((s: number, l: any) => s + (l.invoicedQty || l.receivedQty || 0), 0);
-    const totalReceived = grn.lines.reduce((s: number, l: any) => s + (l.receivedQty || 0), 0);
-    const totalShortage = grn.lines.reduce((s: number, l: any) => s + (l.shortageQty || 0), 0);
+    // Quantities show with their unit; totals are per unit (meters and kg are never added)
+    const qty = (n: number, uom: string) => `${allowsDecimals(uom) ? Number(n.toFixed(2)) : Math.round(n)} ${unitLabel(uom)}`;
+    const total = (pick: (l: any) => number) =>
+      totalsByUnit(grn.lines.map((l: any) => ({ uom: l.uom, quantity: pick(l) }))).map(([u, q]) => qty(q, u)).join(' + ') || '0';
+    const totalInvoiced = total(l => l.invoicedQty || l.receivedQty || 0);
+    const totalReceived = total(l => l.receivedQty || 0);
+    const totalShortage = total(l => l.shortageQty || 0);
     const totalRolls = grn.lines.reduce((s: number, l: any) => s + (l.rollsCount || 1), 0);
 
     const isPartialGrn = (grn.remarks || '').toUpperCase().includes('PARTIAL') ||
       grn.lines.some((l: any) => (l.shortageQty && l.shortageQty > 0.01) || (l.poLine && l.poLine.receivedQty < l.poLine.orderedQty));
 
-    let tableHeadHtml = '';
-    let tableBodyHtml = '';
-    let tableFootHtml = '';
+    // Columns nobody filled in (e.g. Quality Name) are left off the document
+    const invoiced = { header: isReadyMade ? 'Invoiced (Pcs)' : 'Invoiced', align: 'right', width: '85px', total: totalInvoiced,
+      cell: (l: any) => isReadyMade ? Math.round(l.invoicedQty || l.receivedQty) : qty(l.invoicedQty || l.receivedQty, l.uom) } as const;
+    const received = { header: isReadyMade ? 'Received (Pcs)' : 'Received', align: 'right', width: '90px', bold: true, total: totalReceived,
+      cell: (l: any) => isReadyMade ? Math.round(l.receivedQty) : qty(l.receivedQty, l.uom) } as const;
+    const shortage = { header: 'Shortage', align: 'right', width: '80px', total: totalShortage,
+      cell: (l: any) => isReadyMade ? Math.round(l.shortageQty > 0 ? l.shortageQty : 0) : qty(l.shortageQty > 0.01 ? l.shortageQty : 0, l.uom) } as const;
+    const columns: TableColumn<any>[] = isFabric ? [
+      { header: '#', align: 'center', width: '32px', cell: (_l, i) => i + 1 },
+      { header: 'Fabric Type', bold: true, cell: l => fabricCategoryLabel(l.category) || 'Fabric' },
+      { header: 'Brand', optional: true, cell: l => l.brand },
+      { header: 'Quality', optional: true, cell: l => l.quality },
+      { header: 'Quality Name', optional: true, cell: l => l.qualityName },
+      { header: 'Shade', optional: true, cell: l => l.shade },
+      invoiced, received,
+      { header: 'Rolls', align: 'center', width: '55px', cell: l => l.rollsCount || 1, total: String(totalRolls) },
+      shortage,
+    ] : [
+      { header: '#', align: 'center', width: '32px', cell: (_l, i) => i + 1 },
+      { header: 'Item Name', bold: true, cell: l => l.name || l.brand || (isReadyMade ? 'Item' : 'Accessory') },
+      { header: 'Category', optional: true, cell: l => l.category },
+      { header: 'Art No', optional: true, cell: l => l.artNo },
+      { header: 'Specification', optional: true, cell: l => isReadyMade ? '' : l.quality },
+      { header: 'Color', optional: true, cell: l => l.shade },
+      { header: 'Size', align: 'center', width: '60px', optional: true, cell: l => l.size },
+      invoiced, received, shortage,
+    ];
+    const table = documentTable(columns, grn.lines);
 
-    if (isFabric) {
-      tableHeadHtml = `
-        <tr>
-          <th style="width: 32px; text-align: center;">#</th>
-          <th style="text-align: left;">Fabric Category</th>
-          <th style="text-align: left;">Brand</th>
-          <th style="text-align: left;">Quality</th>
-          <th style="text-align: left;">Shade</th>
-          <th style="width: 85px; text-align: right;">Invoiced (m)</th>
-          <th style="width: 90px; text-align: right;">Received (m)</th>
-          <th style="width: 55px; text-align: center;">Rolls</th>
-          <th style="width: 80px; text-align: right;">Shortage</th>
-        </tr>
-      `;
-
-      tableBodyHtml = grn.lines.map((l: any, idx: number) => `
-        <tr>
-          <td style="text-align: center;">${idx + 1}</td>
-          <td><strong>${escapeHtml(l.category || 'Fabric')}</strong></td>
-          <td>${escapeHtml(l.brand || '—')}</td>
-          <td>${escapeHtml(l.quality || '—')}</td>
-          <td>${escapeHtml(l.shade || '—')}</td>
-          <td style="text-align: right;">${(l.invoicedQty || l.receivedQty).toFixed(1)}</td>
-          <td style="text-align: right; font-weight: bold;">${l.receivedQty.toFixed(1)}</td>
-          <td style="text-align: center;">${l.rollsCount || 1}</td>
-          <td style="text-align: right;">${l.shortageQty > 0.01 ? l.shortageQty.toFixed(1) : '0.0'}</td>
-        </tr>
-      `).join('');
-
-      tableFootHtml = `
-        <tr style="font-weight: bold; background: #f9f9f9; border-top: 2px solid #000; border-bottom: 2px solid #000;">
-          <td colspan="5" style="text-align: right; padding: 8px;">TOTAL (METERS):</td>
-          <td style="text-align: right; padding: 8px;">${totalInvoiced.toFixed(1)}</td>
-          <td style="text-align: right; padding: 8px;">${totalReceived.toFixed(1)}</td>
-          <td style="text-align: center; padding: 8px;">${totalRolls}</td>
-          <td style="text-align: right; padding: 8px;">${totalShortage.toFixed(1)}</td>
-        </tr>
-      `;
-    } else if (isReadyMade) {
-      tableHeadHtml = `
-        <tr>
-          <th style="width: 32px; text-align: center;">#</th>
-          <th style="text-align: left;">Item Name</th>
-          <th style="text-align: left;">Category</th>
-          <th style="text-align: left;">Art No</th>
-          <th style="text-align: left;">Color</th>
-          <th style="text-align: center; width: 60px;">Size</th>
-          <th style="width: 85px; text-align: right;">Invoiced (Pcs)</th>
-          <th style="width: 90px; text-align: right;">Received (Pcs)</th>
-          <th style="width: 80px; text-align: right;">Shortage</th>
-        </tr>
-      `;
-
-      tableBodyHtml = grn.lines.map((l: any, idx: number) => `
-        <tr>
-          <td style="text-align: center;">${idx + 1}</td>
-          <td><strong>${escapeHtml(l.name || l.brand || 'Item')}</strong></td>
-          <td>${escapeHtml(l.category || '—')}</td>
-          <td>${escapeHtml(l.artNo || '—')}</td>
-          <td>${escapeHtml(l.shade || '—')}</td>
-          <td style="text-align: center;">${escapeHtml(l.size || '—')}</td>
-          <td style="text-align: right;">${Math.round(l.invoicedQty || l.receivedQty)}</td>
-          <td style="text-align: right; font-weight: bold;">${Math.round(l.receivedQty)}</td>
-          <td style="text-align: right;">${l.shortageQty > 0 ? Math.round(l.shortageQty) : '0'}</td>
-        </tr>
-      `).join('');
-
-      tableFootHtml = `
-        <tr style="font-weight: bold; background: #f9f9f9; border-top: 2px solid #000; border-bottom: 2px solid #000;">
-          <td colspan="6" style="text-align: right; padding: 8px;">TOTAL (PIECES):</td>
-          <td style="text-align: right; padding: 8px;">${Math.round(totalInvoiced)}</td>
-          <td style="text-align: right; padding: 8px;">${Math.round(totalReceived)}</td>
-          <td style="text-align: right; padding: 8px;">${Math.round(totalShortage)}</td>
-        </tr>
-      `;
-    } else {
-      tableHeadHtml = `
-        <tr>
-          <th style="width: 32px; text-align: center;">#</th>
-          <th style="text-align: left;">Item Name</th>
-          <th style="text-align: left;">Specification</th>
-          <th style="text-align: left;">Color</th>
-          <th style="text-align: center; width: 60px;">Size</th>
-          <th style="width: 85px; text-align: right;">Invoiced</th>
-          <th style="width: 90px; text-align: right;">Received</th>
-          <th style="width: 80px; text-align: right;">Shortage</th>
-        </tr>
-      `;
-
-      tableBodyHtml = grn.lines.map((l: any, idx: number) => `
-        <tr>
-          <td style="text-align: center;">${idx + 1}</td>
-          <td><strong>${escapeHtml(l.name || l.brand || 'Accessory')}</strong></td>
-          <td>${escapeHtml(l.quality || '—')}</td>
-          <td>${escapeHtml(l.shade || '—')}</td>
-          <td style="text-align: center;">${escapeHtml(l.size || '—')}</td>
-          <td style="text-align: right;">${l.invoicedQty || l.receivedQty}</td>
-          <td style="text-align: right; font-weight: bold;">${l.receivedQty}</td>
-          <td style="text-align: right;">${l.shortageQty > 0 ? l.shortageQty : '0'}</td>
-        </tr>
-      `).join('');
-
-      tableFootHtml = `
-        <tr style="font-weight: bold; background: #f9f9f9; border-top: 2px solid #000; border-bottom: 2px solid #000;">
-          <td colspan="5" style="text-align: right; padding: 8px;">TOTAL UNITS:</td>
-          <td style="text-align: right; padding: 8px;">${totalInvoiced}</td>
-          <td style="text-align: right; padding: 8px;">${totalReceived}</td>
-          <td style="text-align: right; padding: 8px;">${totalShortage}</td>
-        </tr>
-      `;
+    // Header details; anything not entered is left off the document
+    const deliveryStatus = isPartialGrn
+      ? '<span style="color: #b45309;">Partial (Balance remains open on PO)</span>'
+      : '<span style="color: #166534;">Complete / Full Delivery</span>';
+    const metaCells = [
+      ['Supplier', `<strong>${escapeHtml(grn.supplierName)}</strong> ${grn.supplier?.code ? `(${escapeHtml(grn.supplier.code)})` : ''}`],
+      ['Receipt Date', `<strong>${formatDate(grn.createdAt)}</strong>`],
+      ...filledMeta([['Supplier Invoice', grn.invoiceRef]]).map(([k, v]) => [k, `<strong>${escapeHtml(v)}</strong>`]),
+      ['Delivery Status', `<strong>${deliveryStatus}</strong>`],
+      ...filledMeta([['Created By', grn.receivedBy?.name]]).map(([k, v]) => [k, `<strong>${escapeHtml(v)}</strong>`]),
+      ...filledMeta([['Remarks', grn.remarks]]).map(([k, v]) => [k, `<em>${escapeHtml(v)}</em>`]),
+    ];
+    let metaRowsHtml = '';
+    for (let i = 0; i < metaCells.length; i += 2) {
+      metaRowsHtml += `<tr>${metaCells.slice(i, i + 2).map(([label, html]) => `<td class="meta-label">${label}:</td><td>${html}</td>`).join('')}</tr>`;
     }
 
     const html = `<!DOCTYPE html>
@@ -707,33 +653,18 @@ router.get('/:id/print', requireAuth, requirePermission('inv.grn', 'ops.entry_ga
       </div>
 
       <table class="meta-table">
-        <tr>
-          <td class="meta-label">Supplier:</td>
-          <td><strong>${escapeHtml(grn.supplierName)}</strong> ${grn.supplier?.code ? `(${escapeHtml(grn.supplier.code)})` : ''}</td>
-          <td class="meta-label">Receipt Date:</td>
-          <td><strong>${formatDate(grn.createdAt)}</strong></td>
-        </tr>
-        <tr>
-          <td class="meta-label">Supplier Invoice:</td>
-          <td><strong>${escapeHtml(grn.invoiceRef || '—')}</strong></td>
-          <td class="meta-label">Delivery Status:</td>
-          <td><strong>${isPartialGrn ? '<span style="color: #b45309;">Partial (Balance remains open on PO)</span>' : '<span style="color: #166534;">Complete / Full Delivery</span>'}</strong></td>
-        </tr>
-        <tr>
-          <td class="meta-label">Created By:</td>
-          <td colspan="3"><strong>${escapeHtml(grn.receivedBy?.name || '—')}</strong>${grn.remarks ? ` &nbsp;•&nbsp; <em>${escapeHtml(grn.remarks)}</em>` : ''}</td>
-        </tr>
+        ${metaRowsHtml}
       </table>
 
       <table class="data-table">
         <thead>
-          ${tableHeadHtml}
+          ${table.head}
         </thead>
         <tbody>
-          ${tableBodyHtml}
+          ${table.body}
         </tbody>
         <tfoot>
-          ${tableFootHtml}
+          ${table.foot}
         </tfoot>
       </table>
     </div>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import api from '../../../utils/api';
+import { unitLabel, uomOf } from '../../../utils/units';
 import { ArrowRightLeft, Search, MapPin, CheckCircle2, ShieldAlert } from 'lucide-react';
 import '../../../styles/components.css';
 
@@ -99,12 +100,7 @@ export default function StockRelocationPage() {
     }
   };
 
-  const formatUnit = (i: StockItem) => {
-    if (i.uom) return i.uom.toLowerCase();
-    if (i.itemType === 'FABRIC') return 'm';
-    if (i.itemType === 'READY_MADE') return 'pcs';
-    return 'units';
-  };
+  const formatUnit = (i: StockItem) => unitLabel(uomOf(i));
 
   const unit = item ? formatUnit(item) : '';
 

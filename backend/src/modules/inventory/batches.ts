@@ -3,6 +3,7 @@ import prisma from '../../lib/prisma';
 import { generateSmartBatchCodePrefix } from '../../utils/batch-code';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 import { autoLearnAttributes } from '../master-data/attributes';
+import { allowsDecimals, fabricUnitFor, unitLabel } from '../../utils/units';
 import { recordAllocationReceipt } from '../purchasing/allocations';
 
 const router = Router();
@@ -218,6 +219,7 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
     category,
     brand,
     quality,
+    qualityName,
     shade,
     size,
     name,
@@ -245,13 +247,36 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
   const meterVal = parseFloat(quantity);
   const resolvedBrand = (brand || 'ITEM').trim();
   const resolvedQuality = (quality || '').trim();
+  const resolvedQualityName = itemType === 'ACCESSORY' || itemType === 'READY_MADE' ? null : (qualityName ? String(qualityName).trim() || null : null);
   const resolvedShade = (shade || '').trim();
   const resolvedType = itemType || 'FABRIC';
+
+  // Fabric is measured in its fabric type's unit (meters, or kg for e.g. Knits), never what the screen sends
+  let resolvedUom: string = uom || (resolvedType === 'FABRIC' ? 'METERS' : 'PCS');
+  let resolvedCategory: string | null = category ? String(category).trim() : null;
+  if (resolvedType === 'FABRIC') {
+    const fabricUnit = await fabricUnitFor(prisma, resolvedCategory);
+    if (!fabricUnit) {
+      res.status(400).json({ error: `Fabric type "${resolvedCategory ?? ''}" is not in the master catalogue.` });
+      return;
+    }
+    resolvedUom = fabricUnit;
+    resolvedCategory = resolvedCategory!.toUpperCase();
+  }
+  if (!Number.isFinite(meterVal) || meterVal <= 0) {
+    res.status(400).json({ error: 'quantity must be a number above 0' });
+    return;
+  }
+  if (!allowsDecimals(resolvedUom) && !Number.isInteger(meterVal)) {
+    res.status(400).json({ error: `Quantity in ${unitLabel(resolvedUom)} must be a whole number` });
+    return;
+  }
 
   // Learn typed values into the master attribute catalog once the batch is saved
   const learnAttributes = () => autoLearnAttributes([
     { type: 'BRAND', value: resolvedType === 'ACCESSORY' ? null : brand },
-    { type: 'QUALITY', value: quality, category },
+    { type: 'QUALITY', value: quality, category: resolvedCategory },
+    { type: 'QUALITY_NAME', value: resolvedQualityName, category: resolvedCategory },
     { type: 'FABRIC_TYPE', value: resolvedType === 'READY_MADE' ? category : null },
     { type: 'SHADE', value: shade },
     { type: 'ITEM_NAME', value: name, category: resolvedType },
@@ -266,7 +291,7 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
         itemType: resolvedType,
         name,
         size,
-        category,
+        category: resolvedCategory ?? undefined,
       });
       const latestBatch = await tx.itemBatch.findFirst({
         where: { batchCode: { startsWith: prefix } },
@@ -297,12 +322,13 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
           itemType: resolvedType,
           brand: resolvedBrand,
           quality: resolvedQuality || null,
+          qualityName: resolvedQualityName,
           shade: resolvedShade || null,
-          category: category || null,
+          category: resolvedCategory,
           size: size || null,
           name: name || null,
           artNo: artNo || null,
-          uom: uom || (resolvedType === 'FABRIC' ? 'METERS' : 'PCS'),
+          uom: resolvedUom,
           quantity: meterVal,
           poLineId,
           supplierBundle: supplierBundle ? String(supplierBundle).trim() : null,
@@ -345,7 +371,7 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
         itemType: resolvedType,
         name,
         size,
-        category,
+        category: resolvedCategory ?? undefined,
       });
       const latestBatch = await tx.itemBatch.findFirst({
         where: { batchCode: { startsWith: prefix } },
@@ -372,12 +398,13 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
           itemType: resolvedType,
           brand: resolvedBrand,
           quality: resolvedQuality || null,
+          qualityName: resolvedQualityName,
           shade: resolvedShade || null,
-          category: category || null,
+          category: resolvedCategory,
           size: size || null,
           name: name || null,
           artNo: artNo || null,
-          uom: uom || (resolvedType === 'FABRIC' ? 'METERS' : 'PCS'),
+          uom: resolvedUom,
           quantity: meterVal,
           supplierBundle: supplierBundle ? String(supplierBundle).trim() : null,
           invoiceRef: invoiceRef ? String(invoiceRef).trim() : null,

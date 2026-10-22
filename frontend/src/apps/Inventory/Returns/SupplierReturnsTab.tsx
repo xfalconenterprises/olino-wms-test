@@ -4,6 +4,7 @@ import api from '../../../utils/api';
 import { apiError, openPrintPage } from '../../../utils/printPage';
 import { printTSPL } from '../../../utils/printer';
 import { formatDateTime } from '../../../utils/format';
+import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
 
 interface Scanned {
   id: string; batchCode: string; description: string; uom: string; quantity: number; status: string;
@@ -20,7 +21,6 @@ const SUPPLIER_REASONS: [string, string][] = [
   ['DEFECTIVE', 'Defective / damaged'], ['WRONG_ITEM', 'Wrong item'], ['SHORT_LENGTH', 'Short length'], ['EXCESS', 'Excess quantity'], ['OTHER', 'Other'],
 ];
 const reasonLabel = (r: string) => SUPPLIER_REASONS.find(([k]) => k === r)?.[1] ?? r;
-const unit = (uom: string) => ({ METERS: 'm', PCS: 'pcs', GROSS: 'gross', BOXES: 'boxes', PACKETS: 'packets' } as Record<string, string>)[uom] ?? uom.toLowerCase();
 const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
 
 export default function SupplierReturnsTab() {
@@ -164,7 +164,7 @@ export default function SupplierReturnsTab() {
                         <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{l.batch.locations.join(', ') || 'Unplaced'}</td>
                         <td style={{ textAlign: 'right' }}>{fmt(l.batch.quantity)} {unit(l.batch.uom)}</td>
                         <td>
-                          <input type="number" className="form-input" min="0" max={l.batch.quantity} step={l.batch.uom === 'METERS' ? 'any' : 1}
+                          <input type="number" className="form-input" min="0" max={l.batch.quantity} step={allowsDecimals(l.batch.uom) ? 'any' : 1}
                             value={l.qty} onChange={e => setLines(prev => prev.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))} style={{ height: 36 }} />
                           {partial && <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 2 }}>Cut piece: {fmt(l.batch.quantity - Number(l.qty))} {unit(l.batch.uom)} stays</div>}
                         </td>

@@ -3,13 +3,51 @@ import { companyLogoDataUri, escapeHtml } from './html';
 
 // A4 print layout shared by return documents, matching the delivery challan's look.
 // Every value is escaped here, so callers pass plain text.
+//
+// Documents never print a field that was not entered: an empty value leaves its cell blank,
+// a column nobody filled in is left off, and an empty header detail is not shown.
 
-export interface PrintColumn { header: string; align?: 'left' | 'right' | 'center'; width?: string }
+/** Header details worth printing: label/value pairs whose value was entered. */
+export function filledMeta<T extends [string, string | null | undefined]>(pairs: T[]): [string, string][] {
+  return pairs.filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '') as [string, string][];
+}
+
+export interface TableColumn<T> {
+  header: string;
+  cell: (row: T, index: number) => string | number | null | undefined;  // plain text, escaped here
+  align?: 'left' | 'right' | 'center';
+  width?: string;
+  bold?: boolean;
+  optional?: boolean;   // left off when no row has a value
+  total?: string;       // footer value (plain text)
+}
+
+/**
+ * Head, body and footer rows of a document table. Optional columns that no row filled in are
+ * dropped; the footer label spans the columns before the first total.
+ */
+export function documentTable<T>(columns: TableColumn<T>[], rows: T[], totalLabel = 'TOTAL'): { head: string; body: string; foot: string } {
+  const text = (v: unknown) => (v === null || v === undefined ? '' : String(v).trim());
+  const shown = columns.filter(c => !c.optional || rows.some((r, i) => text(c.cell(r, i)) !== ''));
+  const align = (c: TableColumn<T>) => `text-align: ${c.align ?? 'left'};`;
+
+  const head = `<tr>${shown.map(c => `<th style="${align(c)}${c.width ? ` width: ${c.width};` : ''}">${escapeHtml(c.header)}</th>`).join('')}</tr>`;
+  const body = rows.map((r, i) => `<tr>${shown.map(c =>
+    `<td style="${align(c)}${c.bold ? ' font-weight: bold;' : ''}">${escapeHtml(text(c.cell(r, i)))}</td>`).join('')}</tr>`).join('');
+
+  const first = shown.findIndex(c => c.total !== undefined);
+  const foot = first < 0 ? '' : `<tr style="font-weight: bold; background: #f9f9f9; border-top: 2px solid #000; border-bottom: 2px solid #000;">${
+    first > 0 ? `<td colspan="${first}" style="text-align: right; padding: 8px;">${escapeHtml(totalLabel)}:</td>` : ''}${
+    shown.slice(first).map(c => `<td style="${align(c)} padding: 8px;">${escapeHtml(c.total ?? '')}</td>`).join('')}</tr>`;
+  return { head, body, foot };
+}
+
+export interface PrintColumn { header: string; align?: 'left' | 'right' | 'center'; width?: string; optional?: boolean }
 
 export interface PrintDocument {
   title: string;                    // e.g. "Return to Supplier"
   number: string;                   // e.g. "SR-26-0001", also printed as a barcode
-  meta: [string, string][];         // label/value pairs, shown two per row
+  meta: [string, string | null | undefined][];  // label/value pairs, two per row; empty ones are left off
   columns: PrintColumn[];
   rows: string[][];
   totalLabel?: string;
@@ -28,23 +66,19 @@ export async function renderPrintDocument(doc: PrintDocument): Promise<string> {
     console.error('Barcode generation failed for', doc.number, err);
   }
 
+  const meta = filledMeta(doc.meta);
   const metaRows: string[] = [];
-  for (let i = 0; i < doc.meta.length; i += 2) {
-    const cells = doc.meta.slice(i, i + 2)
-      .map(([label, value]) => `<td class="meta-label">${escapeHtml(label)}:</td><td><strong>${escapeHtml(value || '—')}</strong></td>`)
+  for (let i = 0; i < meta.length; i += 2) {
+    const cells = meta.slice(i, i + 2)
+      .map(([label, value]) => `<td class="meta-label">${escapeHtml(label)}:</td><td><strong>${escapeHtml(value)}</strong></td>`)
       .join('');
     metaRows.push(`<tr>${cells}</tr>`);
   }
 
-  const head = doc.columns
-    .map(c => `<th style="text-align:${c.align ?? 'left'};${c.width ? `width:${c.width};` : ''}">${escapeHtml(c.header)}</th>`)
-    .join('');
-  const body = doc.rows
-    .map(row => `<tr>${row.map((cell, i) => `<td style="text-align:${doc.columns[i]?.align ?? 'left'}">${escapeHtml(cell)}</td>`).join('')}</tr>`)
-    .join('');
-  const total = doc.totalValue
-    ? `<tfoot><tr class="total"><td colspan="${doc.columns.length - 1}" style="text-align:right">${escapeHtml(doc.totalLabel ?? 'TOTAL')}:</td><td style="text-align:right">${escapeHtml(doc.totalValue)}</td></tr></tfoot>`
-    : '';
+  const last = doc.columns.length - 1;
+  const table = documentTable<string[]>(doc.columns.map((c, i) => ({
+    ...c, cell: row => row[i], total: doc.totalValue && i === last ? doc.totalValue : undefined,
+  })), doc.rows, doc.totalLabel);
   const signs = doc.signatures
     .map(s => `<td class="sign-cell"><div class="sign-line"></div><div class="sign-title">${escapeHtml(s)}</div><div class="sign-sub">Signature &amp; Date</div></td>`)
     .join('');
@@ -72,7 +106,6 @@ export async function renderPrintDocument(doc: PrintDocument): Promise<string> {
   table.data-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 11px; }
   table.data-table th, table.data-table td { border: 1px solid #000; padding: 6px 8px; }
   table.data-table th { font-size: 10.5px; }
-  tr.total td { font-weight: bold; background: #f9f9f9; border-top: 2px solid #000; }
   .note { font-size: 10.5px; margin-bottom: 10px; }
   .bottom-section { margin-top: auto; page-break-inside: avoid; }
   .sign-table { width: 100%; margin: 30px 0 16px; border-collapse: collapse; }
@@ -96,7 +129,7 @@ export async function renderPrintDocument(doc: PrintDocument): Promise<string> {
         </div>
       </div>
       <table class="meta-table">${metaRows.join('')}</table>
-      <table class="data-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${total}</table>
+      <table class="data-table"><thead>${table.head}</thead><tbody>${table.body}</tbody>${table.foot ? `<tfoot>${table.foot}</tfoot>` : ''}</table>
       ${doc.note ? `<div class="note">${escapeHtml(doc.note)}</div>` : ''}
     </div>
     <div class="bottom-section">

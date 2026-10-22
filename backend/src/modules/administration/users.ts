@@ -1,9 +1,21 @@
 import { Router, Request, Response } from 'express';
 import argon2 from 'argon2';
 import prisma from '../../lib/prisma';
-import { requireAuth, requirePermission, userHasPermission, type UserModule } from '../../middleware/auth';
+import { requireAuth, requirePermission, userHasPermission, hasCostAccess, COST_PRICE_PERMISSION, type AuthUser, type UserModule } from '../../middleware/auth';
 
 const router = Router();
+
+/**
+ * Confidential cost price access is handed out only by someone who already has it. The first
+ * grant (when nobody has it yet) can be made by a full-access administrator.
+ */
+async function costAccessRefusal(actor: AuthUser, before: string[], after: string[]): Promise<string | null> {
+  if (before.includes(COST_PRICE_PERMISSION) === after.includes(COST_PRICE_PERMISSION)) return null;
+  if (hasCostAccess(actor)) return null;
+  const holders = await prisma.user.count({ where: { isActive: true, permissions: { has: COST_PRICE_PERMISSION } } });
+  if (holders === 0 && actor.permissions.includes('*')) return null;
+  return 'Only a user who already has Confidential Cost Prices access can give or remove it.';
+}
 
 router.use(requireAuth);
 
@@ -51,6 +63,9 @@ router.post('/', requirePermission('admin.users'), async (req: Request, res: Res
     res.status(400).json({ error: 'Name, username, password, and at least one module are required' });
     return;
   }
+
+  const costRefusal = await costAccessRefusal(req.user!, [], Array.isArray(permissions) ? permissions : []);
+  if (costRefusal) { res.status(403).json({ error: costRefusal }); return; }
 
   const existingUsername = await prisma.user.findUnique({ where: { username } });
   if (existingUsername) {
@@ -146,6 +161,14 @@ router.patch('/:id', requirePermission('admin.users'), async (req: Request, res:
     modules: Array.isArray(modules) && modules.length > 0 ? modules : targetUser.modules,
     permissions: Array.isArray(permissions) ? permissions : targetUser.permissions,
   };
+  const costRefusal = await costAccessRefusal(req.user!, targetUser.permissions, after.permissions);
+  if (costRefusal) { res.status(403).json({ error: costRefusal }); return; }
+  // Resetting a cost-access holder's password or PIN would let someone sign in as them
+  if ((password || pin) && hasCostAccess(targetUser) && !hasCostAccess(req.user!) && req.user!.userId !== id) {
+    res.status(403).json({ error: 'Only a user with Confidential Cost Prices access can reset the password or PIN of a user who has it.' });
+    return;
+  }
+
   const losesUserManagement = canManageUsers(targetUser) && (isActive === false || !canManageUsers(after));
 
   if (losesUserManagement) {

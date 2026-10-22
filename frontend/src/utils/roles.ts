@@ -59,6 +59,8 @@ export const PERMISSION_GROUPS: {
       { key: 'ops.dock_queue', label: 'Inbound Dock Queue',     description: 'View unassigned rolls waiting at receiving dock', app: 'WAREHOUSE', path: '/batches' },
       { key: 'ops.exit_gate',  label: 'Stock Out (Exit Gate)',  description: 'Scan and dispatch goods out of warehouse', app: 'WAREHOUSE', path: '/exit-gate' },
       { key: 'ops.release_earmark', label: 'Release Reserved Stock', description: 'Dispatch stock reserved for one client to another, with a reason', app: 'WAREHOUSE', path: '/exit-gate' },
+      { key: 'ops.stock_count',    label: 'Stock Count',            description: 'Open counts and scan shelves (approving needs Stock Adjustments)', app: 'WAREHOUSE', path: '/stock-counts' },
+      { key: 'ops.returns',        label: 'Returns',                description: 'Customer returns against challans and returns to suppliers', app: 'WAREHOUSE', path: '/returns' },
       { key: 'ops.printer',    label: 'Printer Settings',       description: 'Configure thermal label barcode printers', app: 'WAREHOUSE', path: '/settings/printer' },
     ],
   },
@@ -76,8 +78,6 @@ export const PERMISSION_GROUPS: {
       { key: 'inv.adjustments',        label: 'Stock Adjustments',           description: 'Perform manual quantity adjustments & count corrections', app: 'INVENTORY', path: '/inventory/adjustments' },
       { key: 'inv.relocations',        label: 'Stock Relocations',           description: 'Transfer items between warehouse bays and shelves', app: 'INVENTORY', path: '/inventory/relocations' },
       { key: 'inv.aging',              label: 'Stock Aging Analysis',        description: 'Track slow-moving stock and shelf dwell time', app: 'INVENTORY', path: '/inventory/aging' },
-      { key: 'inv.stock_count',        label: 'Stock Count',                 description: 'Open counts and scan shelves (approving needs Stock Adjustments)', app: 'INVENTORY', path: '/inventory/stock-counts' },
-      { key: 'inv.returns',            label: 'Returns',                     description: 'Customer returns against challans and returns to suppliers', app: 'INVENTORY', path: '/inventory/returns' },
     ],
   },
   {
@@ -96,6 +96,14 @@ export const PERMISSION_GROUPS: {
     ],
   },
 ];
+
+// Confidential cost prices: granted only by name. Full access ('*') and module fallbacks do not
+// include it, and only a user who already has it can give it to someone (checked on the server).
+export const COST_PRICE_PERMISSION = 'secure.cost_prices';
+
+export function hasCostAccess(user: WmsUser | null | undefined): boolean {
+  return Boolean(user?.permissions?.includes(COST_PRICE_PERMISSION));
+}
 
 // Flat list of all permission keys
 export const ALL_PERMISSION_KEYS = PERMISSION_GROUPS.flatMap(g => g.permissions.map(p => p.key));
@@ -118,7 +126,7 @@ export const ROLE_PRESETS: RolePreset[] = [
     permissions: [
       'ops.entry_gate', 'ops.put_away', 'ops.dock_queue', 'ops.exit_gate', 'ops.printer',
       'inv.dashboard', 'inv.audit_log', 'inv.grn', 'inv.delivery_challans', 'inv.suppliers',
-      'inv.adjustments', 'inv.relocations', 'inv.aging', 'inv.stock_count', 'inv.returns', 'ops.release_earmark'
+      'inv.adjustments', 'inv.relocations', 'inv.aging', 'ops.stock_count', 'ops.returns', 'ops.release_earmark'
     ],
   },
   {
@@ -146,8 +154,8 @@ export const ROLE_PRESETS: RolePreset[] = [
     id: 'INVENTORY_AUDITOR',
     name: 'Inventory Auditor / Quality Lead',
     description: 'Monitor stock balance, item passports, stock adjustments, and aging dwell time',
-    modules: ['INVENTORY'],
-    permissions: ['inv.dashboard', 'inv.audit_log', 'inv.adjustments', 'inv.aging', 'inv.relocations', 'inv.stock_count'],
+    modules: ['WAREHOUSE', 'INVENTORY'],
+    permissions: ['inv.dashboard', 'inv.audit_log', 'inv.adjustments', 'inv.aging', 'inv.relocations', 'ops.stock_count'],
   },
   {
     id: 'PURCHASE_OFFICER',
@@ -171,6 +179,7 @@ export function hasModuleAccess(user: WmsUser | null | undefined, module: UserMo
 // Check if user has permission for a specific granular tab
 export function hasPermission(user: WmsUser | null | undefined, permissionKey: string): boolean {
   if (!user) return false;
+  if (permissionKey === COST_PRICE_PERMISSION) return hasCostAccess(user);
   
   // Wildcard super-user bypass
   if (user.permissions && user.permissions.includes('*')) {
@@ -202,6 +211,8 @@ export const canAccessApp = {
     hasPermission(user, 'ops.put_away') || 
     hasPermission(user, 'ops.dock_queue') || 
     hasPermission(user, 'ops.exit_gate') ||
+    hasPermission(user, 'ops.stock_count') ||
+    hasPermission(user, 'ops.returns') ||
     hasPermission(user, 'ops.printer')
   ),
   INVENTORY: (user: WmsUser | null) => hasModuleAccess(user, 'INVENTORY') && (
@@ -212,11 +223,9 @@ export const canAccessApp = {
     hasPermission(user, 'inv.suppliers') ||
     hasPermission(user, 'inv.adjustments') ||
     hasPermission(user, 'inv.relocations') ||
-    hasPermission(user, 'inv.aging') ||
-    hasPermission(user, 'inv.stock_count') ||
-    hasPermission(user, 'inv.returns')
+    hasPermission(user, 'inv.aging')
   ),
-  ADMINISTRATION: (user: WmsUser | null) => hasModuleAccess(user, 'ADMINISTRATION') && (
+  ADMINISTRATION: (user: WmsUser | null) => hasCostAccess(user) || hasModuleAccess(user, 'ADMINISTRATION') && (
     hasPermission(user, 'admin.dashboard') || 
     hasPermission(user, 'admin.clients') || 
     hasPermission(user, 'admin.suppliers') || 

@@ -43,8 +43,9 @@ import LocationsPage from './apps/Administration/Locations/LocationsPage';
 import ReportsPage from './apps/Administration/Reports/ReportsPage';
 import UsersPage from './apps/Administration/Users/UsersPage';
 import PrinterSettingsPage from './apps/Administration/Settings/PrinterSettingsPage';
+import CostPricesPage from './apps/Administration/CostPrices/CostPricesPage';
 
-import { hasPermission, getDefaultRoute, type UserModule } from './utils/roles';
+import { hasPermission, getDefaultRoute, COST_PRICE_PERMISSION, type UserModule } from './utils/roles';
 import ErrorBoundary from './components/Common/ErrorBoundary';
 
 function ProtectedRoute({ 
@@ -105,9 +106,12 @@ function AppRoutes() {
       <Route path="/inventory/adjustments" element={<ProtectedRoute permission="inv.adjustments"><StockAdjustmentsPage /></ProtectedRoute>} />
       <Route path="/inventory/relocations" element={<ProtectedRoute permission="inv.relocations"><StockRelocationPage /></ProtectedRoute>} />
       <Route path="/inventory/aging" element={<ProtectedRoute permission="inv.aging"><StockAgingPage /></ProtectedRoute>} />
-      <Route path="/inventory/stock-counts" element={<ProtectedRoute permission="inv.stock_count"><StockCountsPage /></ProtectedRoute>} />
-      <Route path="/inventory/stock-counts/:id" element={<ProtectedRoute permission="inv.stock_count"><StockCountPage /></ProtectedRoute>} />
-      <Route path="/inventory/returns" element={<ProtectedRoute permission="inv.returns"><ReturnsPage /></ProtectedRoute>} />
+      {/* Stock Count and Returns are warehouse operations; the old addresses still work */}
+      <Route path="/stock-counts" element={<ProtectedRoute permission="ops.stock_count"><StockCountsPage /></ProtectedRoute>} />
+      <Route path="/stock-counts/:id" element={<ProtectedRoute permission="ops.stock_count"><StockCountPage /></ProtectedRoute>} />
+      <Route path="/returns" element={<ProtectedRoute permission="ops.returns"><ReturnsPage /></ProtectedRoute>} />
+      <Route path="/inventory/stock-counts" element={<Navigate to="/stock-counts" replace />} />
+      <Route path="/inventory/returns" element={<Navigate to="/returns" replace />} />
       
       {/* ── 4. Administration / Management ── */}
       <Route path="/dashboard" element={<ProtectedRoute permission="admin.dashboard"><DashboardPage /></ProtectedRoute>} />
@@ -117,6 +121,7 @@ function AppRoutes() {
       <Route path="/locations" element={<ProtectedRoute permission="admin.locations"><LocationsPage /></ProtectedRoute>} />
       <Route path="/reports" element={<ProtectedRoute permission="admin.reports"><ReportsPage /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute permission="admin.users"><UsersPage /></ProtectedRoute>} />
+      <Route path="/cost-prices" element={<ProtectedRoute permission={COST_PRICE_PERMISSION}><CostPricesPage /></ProtectedRoute>} />
       <Route path="/settings/printer" element={<ProtectedRoute permission="ops.printer"><PrinterSettingsPage /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />

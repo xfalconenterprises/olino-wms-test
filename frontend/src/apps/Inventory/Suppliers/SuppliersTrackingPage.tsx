@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import api from '../../../utils/api';
 import { formatDate } from '../../../utils/format';
+import { formatQty, formatTotals, unitLabel } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface SupplierTrackingItem {
@@ -43,6 +44,7 @@ interface SupplierTrackingItem {
   discrepanciesCount: number;
   inStockBatches: number;
   inStockMeters: number;
+  inStockKg?: number;
   inStockUnits: number;
   createdAt: string;
   updatedAt: string;
@@ -115,6 +117,7 @@ interface SupplierPOLine {
   category: string | null;
   brand: string | null;
   quality: string | null;
+  qualityName?: string | null;
   shade: string | null;
   size: string | null;
   name: string | null;
@@ -369,6 +372,7 @@ export default function SuppliersTrackingPage() {
       'Open POs',
       'Warehouse Batches in Stock',
       'Fabric in Stock (Meters)',
+      'Fabric in Stock (Kg)',
       'Units in Stock',
       'Inbound Discrepancies',
       'Status'
@@ -386,6 +390,7 @@ export default function SuppliersTrackingPage() {
       s.openPOs,
       s.inStockBatches,
       s.inStockMeters,
+      s.inStockKg || 0,
       s.inStockUnits,
       s.discrepanciesCount,
       s.isActive ? 'Active' : 'Inactive'
@@ -541,7 +546,7 @@ export default function SuppliersTrackingPage() {
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--color-text-main)' }}>
                         <MapPin size={14} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
-                        <span>{s.city || 'N/A'}{s.state ? `, ${s.state}` : ''}</span>
+                        <span>{[s.city, s.state].filter(Boolean).join(', ')}</span>
                       </div>
                     </td>
                     <td>
@@ -572,8 +577,8 @@ export default function SuppliersTrackingPage() {
                       )}
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 800, fontSize: 14, color: s.inStockMeters > 0 ? '#16a34a' : 'var(--color-text-muted)' }}>
-                        {s.inStockMeters > 0 ? `${s.inStockMeters.toLocaleString()} M` : '0 M'}
+                      <div style={{ fontWeight: 800, fontSize: 14, color: s.inStockMeters > 0 || (s.inStockKg || 0) > 0 ? '#16a34a' : 'var(--color-text-muted)' }}>
+                        {formatTotals([{ uom: 'METERS', quantity: s.inStockMeters }, ...((s.inStockKg || 0) > 0 ? [{ uom: 'KG', quantity: s.inStockKg! }] : [])])}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
                         {s.inStockBatches} rolls · {s.inStockUnits} garments
@@ -984,7 +989,7 @@ export default function SuppliersTrackingPage() {
                                     </div>
 
                                     <div style={{ fontSize: 13, color: '#334155', fontWeight: 600, marginTop: 4 }}>
-                                      {batch.brand || 'Unbranded'} · {batch.quality || '-'} {batch.shade && `(Shade: ${batch.shade})`} {batch.size && `Size: ${batch.size}`}
+                                      {[batch.brand, batch.quality, batch.qualityName, batch.shade && `Shade: ${batch.shade}`, batch.size && `Size: ${batch.size}`].filter(Boolean).join(' · ')}
                                     </div>
 
                                     {/* Location & PO Traceability */}
@@ -1018,7 +1023,7 @@ export default function SuppliersTrackingPage() {
 
                                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
                                     <div style={{ fontWeight: 800, fontSize: 16, color: batch.quantity > 0 ? '#16a34a' : '#64748b' }}>
-                                      {batch.quantity} {batch.uom || (isFabric ? 'METERS' : 'PCS')}
+                                      {formatQty(batch.quantity, batch.uom || (isFabric ? 'METERS' : 'PCS'))}
                                     </div>
                                     <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
                                       Current Shelf Qty
@@ -1118,15 +1123,15 @@ export default function SuppliersTrackingPage() {
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                               <div>
                                                 <div style={{ fontWeight: 700, fontSize: 13, color: '#1e293b' }}>
-                                                  {line.brand || 'Fabric'} · {line.quality || '-'} {line.shade && `(Shade: ${line.shade})`}
+                                                  {[line.brand || line.name, line.quality, line.qualityName, line.shade && `Shade: ${line.shade}`].filter(Boolean).join(' · ')}
                                                 </div>
                                                 <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>
-                                                  Type: {line.itemType} {line.category && `· Category: ${line.category}`} {line.size && `· Size: ${line.size}`}
+                                                  {[`Type: ${line.itemType}`, line.category && `Category: ${line.category}`, line.size && `Size: ${line.size}`].filter(Boolean).join(' · ')}
                                                 </div>
                                               </div>
                                               <div style={{ textAlign: 'right' }}>
                                                 <div style={{ fontWeight: 700, fontSize: 13, color: linePct >= 100 ? '#16a34a' : '#d97706' }}>
-                                                  {line.receivedQty} / {line.orderedQty} {line.uom} ({linePct}%)
+                                                  {line.receivedQty} / {line.orderedQty} {unitLabel(line.uom)} ({linePct}%)
                                                 </div>
                                               </div>
                                             </div>
@@ -1142,7 +1147,7 @@ export default function SuppliersTrackingPage() {
                                                     const loc = b.batchLocations?.[0]?.location?.code || 'Dock';
                                                     return (
                                                       <span key={b.id} style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', padding: '2px 6px', borderRadius: 4, fontSize: 11 }}>
-                                                        <strong>{b.batchCode}</strong>: {b.quantity}m <span style={{ color: 'var(--color-brand)' }}>({loc})</span>
+                                                        <strong>{b.batchCode}</strong>: {formatQty(b.quantity, line.uom)} <span style={{ color: 'var(--color-brand)' }}>({loc})</span>
                                                       </span>
                                                     );
                                                   })}

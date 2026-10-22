@@ -23,11 +23,12 @@ import {
   Printer,
   FileCheck,
   ClipboardCheck,
-  Undo2
+  Undo2,
+  LockKeyhole
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useSession } from '../../hooks/useSession';
-import { hasPermission, canAccessApp, MODULE_LABELS, type UserModule, type AppName } from '../../utils/roles';
+import { hasPermission, canAccessApp, COST_PRICE_PERMISSION, MODULE_LABELS, type UserModule, type AppName } from '../../utils/roles';
 import '../../styles/layout.css';
 
 type NavItem = {
@@ -49,6 +50,8 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Put Away',        path: '/put-away',            icon: MapPin,       permission: 'ops.put_away',   app: 'WAREHOUSE' },
   { label: 'Inbound Dock Queue', path: '/batches',          icon: Layers,       permission: 'ops.dock_queue', app: 'WAREHOUSE', section: 'Floor Inventory' },
   { label: 'Stock Out',       path: '/exit-gate',           icon: LogOut,       permission: 'ops.exit_gate',  app: 'WAREHOUSE', section: 'Outbound' },
+  { label: 'Returns',         path: '/returns',             icon: Undo2,        permission: 'ops.returns',    app: 'WAREHOUSE' },
+  { label: 'Stock Count',     path: '/stock-counts',        icon: ClipboardCheck, permission: 'ops.stock_count', app: 'WAREHOUSE', section: 'Stock Control' },
   { label: 'Printer Settings', path: '/settings/printer',   icon: Printer,      permission: 'ops.printer',    app: 'WAREHOUSE', section: 'Hardware' },
 
   // ─── 3. Inventory Module (Supervisory Control) ───────────────────────────
@@ -60,8 +63,6 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Adjustments',        path: '/inventory/adjustments',        icon: SlidersHorizontal, permission: 'inv.adjustments',       app: 'INVENTORY', section: 'Stock Supervision' },
   { label: 'Relocations',        path: '/inventory/relocations',        icon: MapPin,            permission: 'inv.relocations',       app: 'INVENTORY' },
   { label: 'Stock Aging',        path: '/inventory/aging',              icon: Clock,             permission: 'inv.aging',             app: 'INVENTORY' },
-  { label: 'Stock Count',        path: '/inventory/stock-counts',       icon: ClipboardCheck,    permission: 'inv.stock_count',       app: 'INVENTORY' },
-  { label: 'Returns',            path: '/inventory/returns',            icon: Undo2,             permission: 'inv.returns',           app: 'INVENTORY' },
 
   // ─── 4. Administration Module (System Masters) ───────────────────────────
   { label: 'Dashboard',          path: '/dashboard',           icon: LayoutDashboard, permission: 'admin.dashboard', app: 'ADMINISTRATION' },
@@ -71,6 +72,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Locations Setup',    path: '/locations',           icon: MapPin,          permission: 'admin.locations', app: 'ADMINISTRATION' },
   { label: 'Reports',            path: '/reports',             icon: FileBarChart2,   permission: 'admin.reports',   app: 'ADMINISTRATION', section: 'System & Control' },
   { label: 'Users & Roles',      path: '/users',               icon: Users,           permission: 'admin.users',     app: 'ADMINISTRATION' },
+  { label: 'Cost Prices',        path: '/cost-prices',         icon: LockKeyhole,     permission: COST_PRICE_PERMISSION, app: 'ADMINISTRATION' },
   { label: 'Printer Settings',   path: '/settings/printer',    icon: Printer,         permission: 'admin.dashboard', app: 'ADMINISTRATION' },
 ];
 
@@ -116,7 +118,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     currentApp = 'WAREHOUSE';
   } else if (currentPath.startsWith('/inventory')) {
     currentApp = 'INVENTORY';
-  } else if (currentPath.startsWith('/dashboard') || currentPath.startsWith('/reports') || currentPath.startsWith('/users') || currentPath.startsWith('/locations') || currentPath.startsWith('/suppliers') || currentPath.startsWith('/clients') || currentPath.startsWith('/items')) {
+  } else if (currentPath.startsWith('/dashboard') || currentPath.startsWith('/reports') || currentPath.startsWith('/users') || currentPath.startsWith('/locations') || currentPath.startsWith('/suppliers') || currentPath.startsWith('/clients') || currentPath.startsWith('/items') || currentPath.startsWith('/cost-prices')) {
     currentApp = 'ADMINISTRATION';
   } else if (currentPath.startsWith('/settings')) {
     const hasWarehouse = canAccessApp.WAREHOUSE(user);

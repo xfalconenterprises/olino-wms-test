@@ -14,7 +14,8 @@ router.get('/summary', requirePermission('inv.dashboard', 'admin.dashboard'), as
         SELECT
           COUNT(*)::int AS "totalBatches",
           COUNT(*) FILTER (WHERE "itemType" = 'FABRIC')::int AS "fabricLumpCount",
-          COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'FABRIC'), 0)::float AS "fabricMeters",
+          COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'FABRIC' AND uom <> 'KG'), 0)::float AS "fabricMeters",
+          COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'FABRIC' AND uom = 'KG'), 0)::float AS "fabricKg",
           COUNT(*) FILTER (WHERE "itemType" = 'FABRIC' AND status = 'IN_STOCK')::int AS "fabricFullRolls",
           COUNT(*) FILTER (WHERE "itemType" = 'FABRIC' AND status = 'PARTIALLY_USED')::int AS "fabricPartialRolls",
           COUNT(*) FILTER (WHERE "itemType" = 'READY_MADE')::int AS "readyMadePackCount",
@@ -22,14 +23,16 @@ router.get('/summary', requirePermission('inv.dashboard', 'admin.dashboard'), as
           COUNT(*) FILTER (WHERE "itemType" = 'ACCESSORY')::int AS "accessoryItemCount",
           COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'ACCESSORY'), 0)::float AS "accessoryUnits",
           COUNT(*) FILTER (WHERE status = 'QC_HOLD')::int AS "qcHoldCount",
-          COALESCE(SUM(quantity) FILTER (WHERE status = 'QC_HOLD'), 0)::float AS "qcHoldMeters"
+          COALESCE(SUM(quantity) FILTER (WHERE status = 'QC_HOLD' AND "itemType" = 'FABRIC' AND uom <> 'KG'), 0)::float AS "qcHoldMeters",
+          COALESCE(SUM(quantity) FILTER (WHERE status = 'QC_HOLD' AND "itemType" = 'FABRIC' AND uom = 'KG'), 0)::float AS "qcHoldKg"
         FROM item_batches
         WHERE status IN ('IN_STOCK', 'PARTIALLY_USED', 'QC_HOLD') AND quantity > 0;
       `,
       prisma.$queryRaw<any[]>`
         SELECT
           COUNT(*)::int AS "unassignedCount",
-          COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'FABRIC'), 0)::float AS "unassignedFabricMeters",
+          COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'FABRIC' AND uom <> 'KG'), 0)::float AS "unassignedFabricMeters",
+          COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'FABRIC' AND uom = 'KG'), 0)::float AS "unassignedFabricKg",
           COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'READY_MADE'), 0)::float AS "unassignedReadyMadePcs",
           COALESCE(SUM(quantity) FILTER (WHERE "itemType" = 'ACCESSORY'), 0)::float AS "unassignedAccessoryUnits"
         FROM item_batches b
@@ -58,6 +61,7 @@ router.get('/summary', requirePermission('inv.dashboard', 'admin.dashboard'), as
       totalBatches: s.totalBatches || 0,
       fabric: {
         totalMeters: parseFloat(Number(s.fabricMeters || 0).toFixed(1)),
+        totalKg: parseFloat(Number(s.fabricKg || 0).toFixed(2)),
         lumpCount: s.fabricLumpCount || 0,
         fullRolls: s.fabricFullRolls || 0,
         partialRolls: s.fabricPartialRolls || 0,
@@ -73,10 +77,12 @@ router.get('/summary', requirePermission('inv.dashboard', 'admin.dashboard'), as
       qcHold: {
         count: s.qcHoldCount || 0,
         meters: parseFloat(Number(s.qcHoldMeters || 0).toFixed(1)),
+        kg: parseFloat(Number(s.qcHoldKg || 0).toFixed(2)),
       },
       dockQueue: {
         unassignedCount: d.unassignedCount || 0,
         unassignedFabricMeters: parseFloat(Number(d.unassignedFabricMeters || 0).toFixed(1)),
+        unassignedFabricKg: parseFloat(Number(d.unassignedFabricKg || 0).toFixed(2)),
         unassignedReadyMadePcs: Math.round(Number(d.unassignedReadyMadePcs || 0)),
         unassignedAccessoryUnits: Math.round(Number(d.unassignedAccessoryUnits || 0)),
       },
@@ -163,8 +169,9 @@ router.get('/skus', requirePermission('inv.dashboard'), async (req: Request, res
     const rows = await prisma.$queryRaw<any[]>`
       SELECT
         b."itemType",
-        COALESCE(b.brand, '—') AS brand,
+        COALESCE(b.brand, '') AS brand,
         b.quality,
+        b.quality_name AS "qualityName",
         b.shade,
         b.category,
         b.size,
@@ -183,8 +190,9 @@ router.get('/skus', requirePermission('inv.dashboard'), async (req: Request, res
       ${whereClause}
       GROUP BY
         b."itemType",
-        COALESCE(b.brand, '—'),
+        COALESCE(b.brand, ''),
         b.quality,
+        b.quality_name,
         b.shade,
         b.category,
         b.size,
@@ -195,12 +203,13 @@ router.get('/skus', requirePermission('inv.dashboard'), async (req: Request, res
     `;
 
     const formatted = rows.map(r => {
-      const key = `${r.itemType}_${r.brand || ''}_${r.quality || ''}_${r.shade || ''}_${r.category || ''}_${r.size || ''}_${r.name || ''}_${r.artNo || ''}`;
+      const key = `${r.itemType}_${r.brand || ''}_${r.quality || ''}_${r.qualityName || ''}_${r.shade || ''}_${r.category || ''}_${r.size || ''}_${r.name || ''}_${r.artNo || ''}_${r.uom}`;
       return {
         id: key,
         itemType: r.itemType,
         brand: r.brand,
         quality: r.quality,
+        qualityName: r.qualityName,
         shade: r.shade,
         size: r.size,
         category: r.category,
@@ -226,7 +235,7 @@ router.get('/skus', requirePermission('inv.dashboard'), async (req: Request, res
 
 // ─── GET /api/inventory/skus/batches — On-demand Child Batches for a specific SKU ───
 router.get('/skus/batches', requirePermission('inv.dashboard'), async (req: Request, res: Response) => {
-  const { itemType, brand, quality, shade, size, category, name, artNo, client } = req.query;
+  const { itemType, brand, quality, qualityName, shade, size, category, name, artNo, uom, client } = req.query;
 
   try {
     const where: any = {
@@ -235,11 +244,15 @@ router.get('/skus/batches', requirePermission('inv.dashboard'), async (req: Requ
     };
 
     if (itemType) where.itemType = String(itemType);
-    if (brand && brand !== '—') where.brand = String(brand);
+    if (brand) where.brand = String(brand);
 
     if (quality !== undefined) {
       where.quality = quality ? String(quality) : null;
     }
+    if (qualityName !== undefined) {
+      where.qualityName = qualityName ? String(qualityName) : null;
+    }
+    if (uom) where.uom = String(uom);
     if (shade !== undefined) {
       where.shade = shade ? String(shade) : null;
     }
@@ -308,6 +321,7 @@ router.get('/skus/batches', requirePermission('inv.dashboard'), async (req: Requ
       itemType: b.itemType,
       brand: b.brand,
       quality: b.quality,
+      qualityName: b.qualityName,
       shade: b.shade,
       size: b.size,
       category: b.category,
@@ -439,7 +453,7 @@ router.get('/batches', requirePermission('inv.dashboard'), async (req: Request, 
     });
 
     const formattedBatches = batches.map(b => {
-      const brand = b.brand || b.poLine?.brand || '—';
+      const brand = b.brand || b.poLine?.brand || '';
       const quality = b.quality || b.poLine?.quality || '';
       const shade = b.shade || b.poLine?.shade || '';
       const size = b.size || b.poLine?.size || null;

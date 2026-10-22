@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import prisma from '../../lib/prisma';
 import { formatDate } from '../../utils/format';
+import { labelUnit } from '../../utils/units';
+import { costCodeForBatch } from '../administration/cost-prices';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 
 const router = Router();
@@ -450,6 +452,17 @@ function tsplText(value: string): string {
   return value.replace(/["\r\n\\]/g, ' ').trim();
 }
 
+/**
+ * Most characters of one detail (brand, quality, shade…) printed on a roll label. Longer values
+ * are cut so they never run into the quantity; screens and documents keep the full text.
+ */
+export const LABEL_FIELD_MAX = 24;
+
+export function labelField(value: string | null | undefined): string {
+  const text = String(value ?? '').trim();
+  return text.length > LABEL_FIELD_MAX ? text.slice(0, LABEL_FIELD_MAX).trimEnd() : text;
+}
+
 // Media settings taken from the printer's registry entry
 function tsplMediaHeader(device?: Pick<PrinterDevice, 'gapMm' | 'direction'>): string {
   const gap = Number(device?.gapMm) > 0 ? Number(device?.gapMm) : 3;
@@ -462,18 +475,13 @@ export function build100x50Tspl(batch: any, copies = 1, dpi = 203, device?: Pick
   const itemType = batch.itemType || 'FABRIC';
 
   // Format short UOM: "M" for fabric/meters, "PCS", "PAIRS", etc.
-  const rawUom = (batch.uom || '').toUpperCase().trim();
-  let uomShort = 'M';
-  if (isFabric || rawUom === 'METERS' || rawUom === 'METER' || rawUom === 'M') {
-    uomShort = 'M';
-  } else if (rawUom === 'PCS' || rawUom === 'PIECES' || rawUom === 'PIECE' || itemType === 'READY_MADE') {
-    uomShort = 'PCS';
-  } else if (rawUom) {
-    uomShort = rawUom;
-  }
+  // The roll's own unit: M for meters, KG for fabric weighed in kilograms (e.g. Knits), PCS, …
+  const uomShort = labelUnit(batch.uom, itemType);
 
   const brand = tsplText(batch.brand || '');
-  const quality = tsplText(batch.quality || batch.category || '');
+  // Accessories use their category as the spec when none was entered; fabric prints only what was entered
+  const quality = tsplText(batch.quality || (isFabric ? '' : batch.category) || '');
+  const qualityName = tsplText(batch.qualityName || '');
   const shade = tsplText(batch.shade || '');
   const artNo = tsplText(batch.artNo || '');
   const size = tsplText(batch.size || '');
@@ -496,29 +504,36 @@ export function build100x50Tspl(batch: any, copies = 1, dpi = 203, device?: Pick
   cmd += `BAR ${s(40)},${s(56)},${s(720)},${dpi === 300 ? 3 : 2}\n`;
 
   // Zone 2: Middle Section
-  // Left: Item Specs (Full quality/brand/shade without truncating)
-  const font = "2";
-  if (isFabric) {
-    cmd += `TEXT ${s(40)},${s(72)},"${font}",0,${mul},${mul},"BRAND : ${(brand || 'N/A').substring(0, 30)}"\n`;
-    cmd += `TEXT ${s(40)},${s(108)},"${font}",0,${mul},${mul},"QUAL  : ${(quality || 'N/A').substring(0, 30)}"\n`;
-    cmd += `TEXT ${s(40)},${s(144)},"${font}",0,${mul},${mul},"SHADE : ${(shade || 'N/A').substring(0, 30)}"\n`;
-  } else if (itemType === 'READY_MADE') {
-    cmd += `TEXT ${s(40)},${s(72)},"${font}",0,${mul},${mul},"ITEM  : ${(name || 'N/A').substring(0, 30)}"\n`;
-    cmd += `TEXT ${s(40)},${s(108)},"${font}",0,${mul},${mul},"ART   : ${(artNo || 'N/A').substring(0, 30)}"\n`;
-    cmd += `TEXT ${s(40)},${s(144)},"${font}",0,${mul},${mul},"SIZE  : ${(size || 'N/A').substring(0, 30)}"\n`;
-  } else {
-    cmd += `TEXT ${s(40)},${s(72)},"${font}",0,${mul},${mul},"ITEM  : ${(name || 'N/A').substring(0, 30)}"\n`;
-    cmd += `TEXT ${s(40)},${s(108)},"${font}",0,${mul},${mul},"SPEC  : ${(quality || 'N/A').substring(0, 30)}"\n`;
-    cmd += `TEXT ${s(40)},${s(144)},"${font}",0,${mul},${mul},"SIZE  : ${(size || 'N/A').substring(0, 30)}"\n`;
-  }
+  // Left: Item Specs. Only the details that were entered are printed, one per line from the
+  // top (four lines fit above the divider). "LABEL : " + LABEL_FIELD_MAX characters ends before
+  // the quantity column at dot 435 (203 DPI: font 2, 12 dots a character; 300 DPI: font 3, 16).
+  const specFont = dpi === 300 ? '3' : '2';
+  const specs: [string, string][] = isFabric
+    ? [['BRAND ', brand], ['QUAL  ', quality], ['Q.NAME', qualityName], ['SHADE ', shade]]
+    : itemType === 'READY_MADE'
+      ? [['ITEM  ', name], ['ART   ', artNo], ['SIZE  ', size], ['SHADE ', shade]]
+      : [['ITEM  ', name], ['SPEC  ', quality], ['SIZE  ', size], ['SHADE ', shade]];
+  specs.filter(([, value]) => value).slice(0, 4).forEach(([label, value], i) => {
+    cmd += `TEXT ${s(40)},${s(72 + i * 36)},"${specFont}",0,1,1,"${label}: ${labelField(value)}"\n`;
+  });
 
-  // Center-Right: Roll Quantity (Bold & Prominent)
+  // Center-Right: Roll Quantity (Bold & Prominent), in the largest font that ends before the QR code
   const isRemainder = Boolean(batch.isRemainder || batch.status === 'PARTIALLY_USED');
   const qtyLabel = isRemainder ? "REMAINDER" : "ROLL QTY";
   const numQty = typeof batch.quantity === 'number' ? batch.quantity : parseFloat(batch.quantity);
   const formattedQty = !isNaN(numQty) ? (Number.isInteger(numQty) ? String(numQty) : numQty.toFixed(2).replace(/\.?0+$/, '')) : batch.quantity;
+  const qtyText = `${formattedQty} ${uomShort}`;
+  const qtyRoom = s(592) - s(435);
+  const qtyFonts: [string, number][] = dpi === 300 ? [['5', 32], ['4', 24], ['3', 16]] : [['4', 24], ['3', 16], ['2', 12]];
+  const [qtyFont] = qtyFonts.find(([, width]) => qtyText.length * width <= qtyRoom) ?? qtyFonts[qtyFonts.length - 1];
   cmd += `TEXT ${s(435)},${s(80)},"1",0,${mul},${mul},"${qtyLabel}"\n`;
-  cmd += `TEXT ${s(435)},${s(104)},"4",0,${mul},${mul},"${formattedQty} ${uomShort}"\n`;
+  cmd += `TEXT ${s(435)},${s(104)},"${qtyFont}",0,1,1,"${qtyText}"\n`;
+
+  // Secret cost code, small under the quantity (letters only, meaningless without the code word)
+  const costCode = tsplText(batch.costCode || '');
+  if (costCode) {
+    cmd += `TEXT ${s(435)},${s(150)},"${specFont}",0,1,1,"${costCode}"\n`;
+  }
 
   // Far Right: Crisp 2D QR Code
   const qrCell = dpi === 300 ? 7 : 5;
@@ -856,6 +871,7 @@ router.post('/print-batch/:batchCode', async (req: Request, res: Response) => {
     if (isRemainder !== undefined) {
       (batch as any).isRemainder = Boolean(isRemainder);
     }
+    (batch as any).costCode = await costCodeForBatch(batch);
 
     const config = getPrinterConfig();
     const targetDevice = getPrinterDevice(printerId, config);
