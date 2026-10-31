@@ -22,9 +22,11 @@ import {
   Shirt,
   Package,
   Users,
-  FileCheck
+  FileCheck,
+  FileClock,
+  Trash2
 } from 'lucide-react';
-import { formatDate } from '../../../utils/format';
+import { formatDate, formatDateTime } from '../../../utils/format';
 import { fabricCategoryLabel, formatTotals, unitLabel } from '../../../utils/units';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
@@ -116,10 +118,25 @@ const STATUS_BADGE: Record<string, string> = {
 
 type ItemSortField = string;
 
+interface PoDraftSummary {
+  id: string;
+  poType: string;
+  supplierName: string | null;
+  lineCount: number;
+  updatedAt: string;
+}
+
+const DRAFT_TYPE_NAMES: Record<string, string> = {
+  FABRIC: 'Fabric Rolls',
+  READY_MADE: 'Ready-Made Garments',
+  ACCESSORY: 'Accessories',
+};
+
 export default function PurchaseOrdersPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
+  const [drafts, setDrafts] = useState<PoDraftSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<'ORDERS' | 'ITEMS'>('ORDERS');
   const [search, setSearch] = useState('');
@@ -141,6 +158,22 @@ export default function PurchaseOrdersPage() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // A person's own unfinished POs; the server sends nobody else's
+  const canCreate = hasPermission(user, 'po.create');
+  useEffect(() => {
+    if (canCreate) api.get('/api/po-drafts').then(r => setDrafts(r.data || [])).catch(() => {});
+  }, [canCreate]);
+
+  const deleteDraft = async (draft: PoDraftSummary) => {
+    if (!window.confirm('Delete this draft? This cannot be undone.')) return;
+    try {
+      await api.delete(`/api/po-drafts/${draft.id}`);
+      setDrafts(list => list.filter(d => d.id !== draft.id));
+    } catch {
+      alert('The draft could not be deleted.');
+    }
+  };
 
   const handlePrint = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -458,6 +491,34 @@ export default function PurchaseOrdersPage() {
           )}
         </div>
       </div>
+
+      {/* ─── My Drafts ─────────────────────────────────────────────────────── */}
+      {drafts.length > 0 && (
+        <div className="card" style={{ padding: '14px 18px', marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 700, marginBottom: 10 }}>
+            <FileClock size={16} color="var(--color-brand)" /> My Drafts ({drafts.length})
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {drafts.map(d => (
+              <div key={d.id} className="po-draft" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: 'var(--radius)' }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>{d.supplierName || DRAFT_TYPE_NAMES[d.poType] || 'Purchase Order'}</div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                    {d.supplierName && DRAFT_TYPE_NAMES[d.poType] ? `${DRAFT_TYPE_NAMES[d.poType]} · ` : ''}
+                    {d.lineCount} {d.lineCount === 1 ? 'item' : 'items'} · Saved {formatDateTime(d.updatedAt)}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <Link to={`/purchase-orders/new?draft=${d.id}`} className="btn btn-primary btn-sm">Continue</Link>
+                  <button type="button" className="btn btn-ghost btn-icon" onClick={() => deleteDraft(d)} title="Delete draft" aria-label="Delete draft">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ─── View Mode Switcher (Orders vs Items) ─────────────────────────── */}
       <div style={{

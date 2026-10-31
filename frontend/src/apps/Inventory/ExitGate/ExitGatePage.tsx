@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import { 
@@ -668,9 +669,8 @@ export default function ExitGatePage() {
                                     <Printer size={12} /> Remainder Label ({remQty} {lineUnit})
                                   </button>
                                   <a
-                                    href={`/api/labels/preview/${encodeURIComponent(line.batch.batchCode)}?quantity=${remQty}&isRemainder=true`}
-                                    target="_blank"
-                                    rel="noreferrer"
+                                    role="button"
+                                    onClick={() => openPrintPage(`/api/labels/preview/${encodeURIComponent(line.batch.batchCode)}?quantity=${remQty}&isRemainder=true`, 'label').catch(() => alert('Could not open the label preview.'))}
                                     className="btn btn-ghost btn-sm"
                                     title={`Preview & standard print remainder label (${remQty} ${lineUnit})`}
                                     style={{

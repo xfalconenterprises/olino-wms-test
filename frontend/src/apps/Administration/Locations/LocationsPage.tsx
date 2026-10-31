@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
+import { apiErrorMessage, downloadFromApi } from '../../../utils/download';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import { unitLabel, uomOf } from '../../../utils/units';
 import { MapPin, Plus, Trash2, Layers, Grid, Search, Package, X, Download, Pencil, LayoutGrid } from 'lucide-react';
 import '../../../styles/components.css';
@@ -65,34 +68,13 @@ type Modal =
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
-async function apiErrorMessage(err: any, fallback: string): Promise<string> {
-  const data = err?.response?.data;
-  if (data instanceof Blob) {
-    try { return JSON.parse(await data.text()).error || fallback; } catch { return fallback; }
-  }
-  return data?.error || err?.message || fallback;
-}
-
-// Downloads an authenticated API file using the name the server suggests
-async function downloadFromApi(url: string, fallbackName: string) {
-  const res = await api.get(url, { responseType: 'blob' });
-  const disposition: string = res.headers['content-disposition'] || '';
-  const name = /filename="([^"]+)"/.exec(disposition)?.[1] || fallbackName;
-  const href = URL.createObjectURL(res.data);
-  const a = document.createElement('a');
-  a.href = href;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(href), 1000);
-}
-
 const stockCount = (rack: Rack) =>
   rack.bays.reduce((sum, b) => sum + b.locations.filter(l => l._count.batchLocations > 0).length, 0);
 const positionCount = (rack: Rack) => rack.bays.reduce((sum, b) => sum + b.locations.length, 0);
 
 export default function LocationsPage() {
+  const { user } = useAuth();
+  const canExport = hasPermission(user, 'export.locations');
   const navigate = useNavigate();
   const [tab, setTab] = useState<'racks' | 'floor'>('racks');
   const [racks, setRacks] = useState<Rack[]>([]);
@@ -260,7 +242,7 @@ export default function LocationsPage() {
     return `${range(rack.name, modal.bay.number, modal.bay.number)}  (${perBay} locations)`;
   })();
 
-  const exportButton = (rack?: Rack) => (
+  const exportButton = (rack?: Rack) => canExport && (
     <button className="btn btn-primary btn-sm" onClick={() => exportLocations(rack)} disabled={!!exporting}
       title="ZIP for the label designer: location list, SVG + PNG barcodes and instructions"
       style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -542,12 +524,16 @@ export default function LocationsPage() {
               <div style={{ fontFamily: 'monospace', fontWeight: 700, marginTop: 6 }}>{selectedSlot.code}</div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24 }}>
-              <button className="btn btn-sm btn-secondary" onClick={() => downloadBarcode(selectedSlot.code, 'svg')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Download size={14} /> SVG
-              </button>
-              <button className="btn btn-sm btn-secondary" onClick={() => downloadBarcode(selectedSlot.code, 'png')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Download size={14} /> PNG
-              </button>
+              {canExport && (
+                <>
+                  <button className="btn btn-sm btn-secondary" onClick={() => downloadBarcode(selectedSlot.code, 'svg')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Download size={14} /> SVG
+                  </button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => downloadBarcode(selectedSlot.code, 'png')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Download size={14} /> PNG
+                  </button>
+                </>
+              )}
               <button className="btn btn-sm btn-primary" onClick={() => navigate(`/put-away?location=${encodeURIComponent(selectedSlot.code)}`)} style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
                 <MapPin size={14} /> Put Away Here
               </button>

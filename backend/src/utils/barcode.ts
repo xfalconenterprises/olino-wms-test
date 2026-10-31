@@ -1,7 +1,7 @@
 import bwipjs from 'bwip-js';
 import { crc32 } from 'node:zlib';
 
-// Location barcodes handed to label designers. Code 128 with a narrow bar (X) of 0.375 mm,
+// Barcodes handed to label designers (rack locations, employee badges). Code 128 with a narrow bar (X) of 0.375 mm,
 // exactly 3 dots on a 203 dpi printer, and a 10-bar quiet zone on each side built in.
 // Designers may change the height freely but should keep the width at 100%.
 export const BARCODE_X_MM = 0.375;

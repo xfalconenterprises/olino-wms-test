@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { 
   LogIn, 
   CheckCircle2, 
@@ -35,10 +36,13 @@ import {
 
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
-import { formatDate, formatDateTime } from '../../../utils/format';
+import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
+import DateField from '../../../components/Common/DateField';
 import { fabricCategoryLabel, fabricUnit, formatTotals, formatUnitTotals, unitLabel, unitName, useFabricCategories } from '../../../utils/units';
 import { ITEM_TYPE_LABEL, lumpPayload, remainingQty, type ImportLine, type InwardItemType } from '../../../utils/directInwardImport';
 import DirectInwardImport from './DirectInwardImport';
+import ChoiceCard from '../../../components/Common/ChoiceCard';
+import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type GateDiscrepancy } from './DiscrepancyModal';
 import { QuickAddClientModal, QuickAddSupplierModal } from '../../../components/Common/QuickAddModals';
 import '../../../styles/components.css';
 
@@ -135,34 +139,6 @@ interface ReceivedRoll {
   } | null;
 }
 
-interface InboundDiscrepancyItem {
-  id: string;
-  supplierId: string;
-  invoiceRef: string;
-  bundleNumber: string;
-  itemType?: string | null;
-  category?: string | null;
-  brand?: string | null;
-  quality?: string | null;
-  shade?: string | null;
-  size?: string | null;
-  name?: string | null;
-  artNo?: string | null;
-  issueType: string;
-  expectedQty?: number | null;
-  receivedQty?: number | null;
-  notes?: string | null;
-  reportedBy?: { name?: string; username?: string };
-  createdAt: string;
-}
-
-const ISSUE_TYPE_LABELS: Record<string, string> = {
-  MISSING_FROM_BUNDLE: 'Item Not Available in Bundle (Missing / Short)',
-  WRONG_ITEM_PACKED: 'Wrong Item / Shade / Size in Bundle',
-  SHORT_QUANTITY: 'Physical Quantity Less Than Invoice',
-  DAMAGED_DEFECTIVE: 'Damaged or Defective in Bundle',
-};
-
 type SkuDetails = { brand: string | null; quality: string | null; qualityName?: string | null; shade: string | null; size: string | null; name: string | null; artNo: string | null; category: string | null };
 
 // One-line item description with only the details that were entered,
@@ -196,37 +172,6 @@ interface DirectInwardDraftData {
   sessionBatches: any[]; // saved as ids; the server returns the current batch rows
 }
 
-// Large option button for the Direct Inward steps
-function ChoiceCard({ icon, title, subtitle, badge, onClick }: {
-  icon: React.ReactNode; title: string; subtitle: string; badge?: string; onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        flex: '1 1 220px', textAlign: 'left', cursor: 'pointer', padding: '18px 20px', borderRadius: 'var(--radius-lg)',
-        border: '1.5px solid var(--color-border)', background: '#fff', display: 'flex', alignItems: 'flex-start', gap: 14,
-        position: 'relative', transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
-      }}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--color-brand)'; e.currentTarget.style.boxShadow = '0 4px 14px rgba(0,0,0,0.06)'; }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--color-border)'; e.currentTarget.style.boxShadow = 'none'; }}
-    >
-      <span style={{ width: 42, height: 42, borderRadius: 10, background: 'var(--color-brand-faded)', color: 'var(--color-brand)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        {icon}
-      </span>
-      <span>
-        <span style={{ display: 'block', fontSize: 15, fontWeight: 700, color: '#0f172a' }}>{title}</span>
-        <span style={{ display: 'block', fontSize: 12.5, color: 'var(--color-text-muted)', marginTop: 3 }}>{subtitle}</span>
-      </span>
-      {badge && (
-        <span style={{ position: 'absolute', top: 10, right: 12, fontSize: 11, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: 10 }}>
-          {badge}
-        </span>
-      )}
-    </button>
-  );
-}
 type InwardStep = 'ITEMS_LIST' | 'RECEIVE_PANEL';
 
 export default function EntryGatePage() {
@@ -292,25 +237,8 @@ export default function EntryGatePage() {
   const [feedViewMode, setFeedViewMode] = useState<'BY_BUNDLE' | 'FLAT'>('BY_BUNDLE');
 
   // Discrepancies Registry
-  const [discrepancies, setDiscrepancies] = useState<InboundDiscrepancyItem[]>([]);
+  const [discrepancies, setDiscrepancies] = useState<GateDiscrepancy[]>([]);
   const [showDiscrepancyModal, setShowDiscrepancyModal] = useState(false);
-  const [discrepancySubmitting, setDiscrepancySubmitting] = useState(false);
-  const [discrepancyForm, setDiscrepancyForm] = useState({
-    bundleNumber: '',
-    itemKey: '',
-    itemType: 'FABRIC',
-    brand: '',
-    quality: '',
-    shade: '',
-    category: '',
-    name: '',
-    artNo: '',
-    size: '',
-    issueType: 'MISSING_FROM_BUNDLE',
-    expectedQty: '',
-    receivedQty: '0',
-    notes: ''
-  });
 
   // PO Scanner Tab State
   const [scanInput, setScanInput] = useState('');
@@ -329,7 +257,7 @@ export default function EntryGatePage() {
   const [quickSupplierInitialName, setQuickSupplierInitialName] = useState('');
 
   const [directInvoiceRef, setDirectInvoiceRef] = useState('');
-  const [directInvoiceDate, setDirectInvoiceDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [directInvoiceDate, setDirectInvoiceDate] = useState(() => istDateKey());
 
   const [directClientInput, setDirectClientInput] = useState('');
   const [directSelectedClient, setDirectSelectedClient] = useState<any | null>(null);
@@ -528,7 +456,7 @@ export default function EntryGatePage() {
     }
     loadPendingItems(selectedSupplierId);
     loadSessionRolls(selectedSupplierId, invoiceRef);
-    loadDiscrepancies(selectedSupplierId, invoiceRef);
+    loadDiscrepancies(selectedSupplierId);
   }, [selectedSupplierId]);
 
   const selectedSupplier = useMemo(() => {
@@ -771,12 +699,10 @@ export default function EntryGatePage() {
     }
   };
 
-  const loadDiscrepancies = async (supplierId?: string, invoice?: string) => {
+  const loadDiscrepancies = async (supplierId?: string) => {
+    if (!supplierId) { setDiscrepancies([]); return; }
     try {
-      const params: any = {};
-      if (supplierId) params.supplierId = supplierId;
-      if (invoice) params.invoiceRef = invoice.trim();
-      const res = await api.get('/api/purchase-orders/supplier-inbound/discrepancies', { params });
+      const res = await api.get('/api/purchase-orders/supplier-inbound/discrepancies', { params: { supplierId, open: '1' } });
       setDiscrepancies(res.data || []);
     } catch (err) {
       console.error('Failed to load discrepancies:', err);
@@ -981,8 +907,8 @@ export default function EntryGatePage() {
         matchedPoNumber: matchedPo ? matchedPo.poNumber : (unlinked ? 'Direct Unlinked Stock' : undefined),
       });
 
-      // Auto-print the roll label when enabled in Printer Settings
-      await autoPrintReceivedLabel(batchCode);
+      // Auto-print the roll label when enabled in Printer Settings (without waiting for the printer)
+      void autoPrintReceivedLabel(batchCode, setInwardError);
 
       // Reset roll entry form fields while PRESERVING active bundle number
       setRollQty('');
@@ -1015,72 +941,18 @@ export default function EntryGatePage() {
     }
   };
 
-  // Open discrepancy modal
   const handleOpenDiscrepancyModal = () => {
-    setDiscrepancyForm({
-      bundleNumber: activeBundleNo.trim(),
-      itemKey: selectedItem?.sku.id || '',
-      itemType: selectedItem?.sku.itemType || 'FABRIC',
-      brand: selectedItem?.sku.brand || '',
-      quality: selectedItem?.sku.quality || '',
-      shade: selectedItem?.sku.shade || '',
-      category: selectedItem?.sku.category || '',
-      name: selectedItem?.sku.name || '',
-      artNo: selectedItem?.sku.artNo || '',
-      size: selectedItem?.sku.size || '',
-      issueType: 'MISSING_FROM_BUNDLE',
-      expectedQty: selectedPoOrder ? String(selectedPoOrder.remainingQty) : (selectedItem ? String(selectedItem.totalRemainingQty) : ''),
-      receivedQty: '0',
-      notes: ''
-    });
+    if (!selectedSupplierId || !selectedItem) return;
     setShowDiscrepancyModal(true);
-  };
-
-  // Submit discrepancy report
-  const handleSaveDiscrepancy = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedSupplierId) {
-      alert('Please select a supplier first.');
-      return;
-    }
-
-    setDiscrepancySubmitting(true);
-    try {
-      await api.post('/api/purchase-orders/supplier-inbound/discrepancies', {
-        supplierId: selectedSupplierId,
-        invoiceRef: invoiceRef.trim() || 'INBOUND',
-        bundleNumber: discrepancyForm.bundleNumber.trim() || 'Unbundled',
-        itemType: discrepancyForm.itemType,
-        brand: discrepancyForm.brand || undefined,
-        quality: discrepancyForm.quality || undefined,
-        shade: discrepancyForm.shade || undefined,
-        category: discrepancyForm.category || undefined,
-        name: discrepancyForm.name || undefined,
-        artNo: discrepancyForm.artNo || undefined,
-        size: discrepancyForm.size || undefined,
-        issueType: discrepancyForm.issueType,
-        expectedQty: discrepancyForm.expectedQty ? parseFloat(discrepancyForm.expectedQty) : undefined,
-        receivedQty: discrepancyForm.receivedQty ? parseFloat(discrepancyForm.receivedQty) : 0,
-        notes: discrepancyForm.notes.trim() || undefined,
-      });
-
-      setShowDiscrepancyModal(false);
-      loadDiscrepancies(selectedSupplierId, invoiceRef);
-      alert('Discrepancy recorded. It will be included on the GRN shortage records.');
-    } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to record discrepancy');
-    } finally {
-      setDiscrepancySubmitting(false);
-    }
   };
 
   const handleDeleteDiscrepancy = async (id: string) => {
     if (!window.confirm('Delete this discrepancy record?')) return;
     try {
       await api.delete(`/api/purchase-orders/supplier-inbound/discrepancies/${id}`);
-      loadDiscrepancies(selectedSupplierId, invoiceRef);
-    } catch (err) {
-      console.error(err);
+      loadDiscrepancies(selectedSupplierId);
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to remove the discrepancy');
     }
   };
 
@@ -1103,8 +975,8 @@ export default function EntryGatePage() {
       bundleNumber: payload.supplierBundle,
       matchedPoNumber: 'Direct Inward',
     });
-    // Auto-print the label when enabled in Printer Settings
-    await autoPrintReceivedLabel(batch.batchCode);
+    // Auto-print the label when enabled in Printer Settings (without waiting for the printer)
+    void autoPrintReceivedLabel(batch.batchCode, setDirectItemError);
     return batch;
   };
 
@@ -1115,7 +987,7 @@ export default function EntryGatePage() {
       await saveDirectBatch({ ...lumpPayload(line, quantity, bundle), ...directCommonFields() });
     } catch (err: any) {
       console.error('Direct Inward import lump error:', err);
-      throw new Error(err.response?.data?.error || 'Failed to inward this lump');
+      throw new Error(err.response?.data?.error || 'Failed to inward this lump', { cause: err });
     }
   };
 
@@ -1370,8 +1242,9 @@ export default function EntryGatePage() {
     }
   };
 
+  // The preview needs the login, so it is fetched and written into a new window
   const previewLabel = (batchCode: string) => {
-    window.open(`/api/labels/preview/${batchCode}`, '_blank');
+    openPrintPage(`/api/labels/preview/${encodeURIComponent(batchCode)}`, 'label').catch(() => alert('Could not open the label preview.'));
   };
 
   // Session and pending quantities per unit (meters and kg are never added)
@@ -1973,8 +1846,8 @@ export default function EntryGatePage() {
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {discrepancies.map(d => (
                     <span key={d.id} style={{ fontSize: 11, background: '#fef3c7', padding: '2px 8px', borderRadius: 4, border: '1px solid #fde68a', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      {d.bundleNumber ? <strong>{d.bundleNumber}: </strong> : null}
-                      {d.name || [d.brand, d.shade].filter(Boolean).join(' ') || 'Item'}
+                      <strong>{d.bundleNumber}:</strong>
+                      {discrepancyItemText(d) || 'Item'} · {DISCREPANCY_TYPE_LABELS[d.issueType] ?? d.issueType} · short {discrepancyShortText(d)}
                       <button onClick={() => handleDeleteDiscrepancy(d.id)} style={{ border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: '#991b1b' }}>
                         <X size={12} />
                       </button>
@@ -2201,51 +2074,6 @@ export default function EntryGatePage() {
                STEP A: ORDERED ITEMS LIST WITH EASY COLUMN FILTERING
                ───────────────────────────────────────────────────────────────────────── */
             <div className="card" style={{ padding: 20 }}>
-              {/* Active Delivery Session Banner (if rolls have been inwarded) */}
-              {sessionRolls.length > 0 && (
-                <div style={{
-                  background: isPartialReceiving ? '#fffbeb' : '#f0fdf4',
-                  border: isPartialReceiving ? '1.5px solid #fcd34d' : '1.5px solid #86efac',
-                  borderRadius: 'var(--radius)',
-                  padding: '12px 18px',
-                  marginBottom: 16,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  flexWrap: 'wrap',
-                  gap: 12
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <FileCheck size={20} color={isPartialReceiving ? '#b45309' : '#16a34a'} />
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 13.5, color: '#0f172a' }}>
-                        Current Delivery Session: {sessionRolls.length} rolls ({sessionQtyText}) Inwarded
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                        {isPartialReceiving ? (
-                          <span style={{ color: '#b45309', fontWeight: 600 }}>
-                            Partial Delivery — {pendingQtyText} pending on open PO(s). You can finalize this partial GRN now and do the rest later.
-                          </span>
-                        ) : (
-                          <span style={{ color: '#059669', fontWeight: 600 }}>
-                            Full Delivery — All ordered PO items 100% fulfilled in this session.
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => setShowGrnModal(true)}
-                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, padding: '7px 16px' }}
-                  >
-                    <Printer size={15} /> {isPartialReceiving ? 'Finalize Partial GRN & Print' : 'Finalize GRN & Print'}
-                  </button>
-                </div>
-              )}
-              
               {/* Classification Navigation & Tabs */}
               <div style={{
                 display: 'flex',
@@ -2311,16 +2139,28 @@ export default function EntryGatePage() {
                   </div>
                 </div>
 
-                {hasActiveFilters && (
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-ghost"
-                    onClick={resetFilters}
-                    style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-muted)' }}
-                  >
-                    <RotateCcw size={13} /> Reset Filters
-                  </button>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={resetFilters}
+                      style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-muted)' }}
+                    >
+                      <RotateCcw size={13} /> Reset Filters
+                    </button>
+                  )}
+                  {sessionRolls.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => setShowGrnModal(true)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, height: 36, padding: '0 16px', fontSize: 13 }}
+                    >
+                      <Printer size={15} /> {isPartialReceiving ? 'Finalize Partial GRN & Print' : 'Finalize GRN & Print'}
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Column Filters Bar */}
@@ -2679,10 +2519,7 @@ export default function EntryGatePage() {
                       className="form-input"
                       placeholder="Enter bundle number"
                       value={activeBundleNo}
-                      onChange={e => {
-                        setActiveBundleNo(e.target.value);
-                        setDiscrepancyForm(prev => ({ ...prev, bundleNumber: e.target.value }));
-                      }}
+                      onChange={e => setActiveBundleNo(e.target.value)}
                       style={{ height: 42, fontSize: 14 }}
                     />
                     <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
@@ -3447,13 +3284,7 @@ export default function EntryGatePage() {
                 <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
                   Invoice Date
                 </label>
-                <input
-                  type="date"
-                  className="form-input"
-                  value={directInvoiceDate}
-                  onChange={e => setDirectInvoiceDate(e.target.value)}
-                  style={{ height: 40, fontSize: 13.5 }}
-                />
+                <DateField label="Invoice Date" value={directInvoiceDate} onChange={setDirectInvoiceDate} />
               </div>
 
               {/* Client (PO Implementation Pattern, do NOT mention optional) */}
@@ -4635,169 +4466,15 @@ export default function EntryGatePage() {
       {/* ─────────────────────────────────────────────────────────────────────────────
           BUNDLE DISCREPANCY REPORTING MODAL
           ───────────────────────────────────────────────────────────────────────────── */}
-      {showDiscrepancyModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(15, 23, 42, 0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-          padding: 20
-        }}>
-          <div style={{
-            background: '#fff',
-            borderRadius: 'var(--radius-lg)',
-            width: '100%',
-            maxWidth: 540,
-            boxShadow: 'var(--shadow-xl)',
-            overflow: 'hidden'
-          }}>
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fffbeb' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <AlertTriangle size={20} color="#b45309" />
-                <div>
-                  <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: '#92400e' }}>
-                    Bundle Packing Discrepancy
-                  </h2>
-                  <div style={{ fontSize: 11.5, color: '#b45309' }}>
-                    Report when a lump or item on invoice is not available in this bundle
-                  </div>
-                </div>
-              </div>
-              <button className="btn btn-ghost" onClick={() => setShowDiscrepancyModal(false)} style={{ padding: 4 }}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveDiscrepancy} style={{ padding: 20 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-                <div>
-                  <label className="form-label">Invoice Number</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={invoiceRef}
-                    onChange={e => setInvoiceRef(e.target.value)}
-                    placeholder="Invoice Number"
-                  />
-                </div>
-                <div>
-                  <label className="form-label">Bundle Number</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={discrepancyForm.bundleNumber}
-                    onChange={e => setDiscrepancyForm({ ...discrepancyForm, bundleNumber: e.target.value })}
-                    placeholder="Enter bundle number"
-                  />
-                </div>
-              </div>
-
-              <div style={{ marginBottom: 14 }}>
-                <label className="form-label">Affected Item</label>
-                <select
-                  className="form-select"
-                  value={discrepancyForm.itemKey}
-                  onChange={e => {
-                    const found = supplierData?.pendingItems.find(x => x.sku.id === e.target.value);
-                    setDiscrepancyForm(prev => ({
-                      ...prev,
-                      itemKey: e.target.value,
-                      itemType: found?.sku.itemType || 'FABRIC',
-                      brand: found?.sku.brand || '',
-                      quality: found?.sku.quality || '',
-                      shade: found?.sku.shade || '',
-                      category: found?.sku.category || '',
-                      name: found?.sku.name || '',
-                      artNo: found?.sku.artNo || '',
-                      size: found?.sku.size || '',
-                      expectedQty: found ? String(found.totalRemainingQty) : prev.expectedQty
-                    }));
-                  }}
-                >
-                  <option value="">Select affected item...</option>
-                  {supplierData?.pendingItems.map(p => (
-                    <option key={p.sku.id} value={p.sku.id}>
-                      {`[${p.sku.itemType === 'FABRIC' ? 'Fabric' : p.sku.itemType === 'READY_MADE' ? 'Ready-Made' : 'Accessory'}] ${skuTitle(p.sku, p.sku.itemType)}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ marginBottom: 14 }}>
-                <label className="form-label">Discrepancy Issue Type <span className="required">*</span></label>
-                <select
-                  className="form-select"
-                  value={discrepancyForm.issueType}
-                  onChange={e => setDiscrepancyForm({ ...discrepancyForm, issueType: e.target.value })}
-                  required
-                >
-                  <option value="MISSING_FROM_BUNDLE">Lump / Set / Item NOT Available in Bundle (Missing)</option>
-                  <option value="WRONG_ITEM_PACKED">Wrong Item / Shade / Size Packed in Bundle</option>
-                  <option value="SHORT_QUANTITY">Physical Quantity Less than Invoice (Shortage)</option>
-                  <option value="DAMAGED_DEFECTIVE">Damaged, Defective, Stained Goods in Bundle</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-                <div>
-                  <label className="form-label">Expected Qty on Invoice</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    className="form-input"
-                    placeholder="Claimed Qty"
-                    value={discrepancyForm.expectedQty}
-                    onChange={e => setDiscrepancyForm({ ...discrepancyForm, expectedQty: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <label className="form-label">Actual Qty Found in Bundle</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    className="form-input"
-                    placeholder="0"
-                    value={discrepancyForm.receivedQty}
-                    onChange={e => setDiscrepancyForm({ ...discrepancyForm, receivedQty: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              {discrepancyForm.expectedQty && (
-                <div style={{ marginBottom: 14, background: '#fef3c7', padding: '8px 12px', borderRadius: 6, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
-                  Calculated Shortage: {(parseFloat(discrepancyForm.expectedQty) - (parseFloat(discrepancyForm.receivedQty) || 0)).toFixed(1)} {unitName(selectedItem?.sku.uom || (itemTypeFilter === 'FABRIC' ? 'METERS' : 'PCS'))}
-                </div>
-              )}
-
-              <div style={{ marginBottom: 20 }}>
-                <label className="form-label">Notes / Observation</label>
-                <textarea
-                  className="form-input"
-                  rows={2}
-                  placeholder="Observation notes"
-                  value={discrepancyForm.notes}
-                  onChange={e => setDiscrepancyForm({ ...discrepancyForm, notes: e.target.value })}
-                />
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowDiscrepancyModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={discrepancySubmitting} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#b45309', borderColor: '#b45309' }}>
-                  {discrepancySubmitting ? <span className="spinner" /> : <AlertTriangle size={15} />}
-                  Record Discrepancy Notice
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {showDiscrepancyModal && selectedSupplierId && selectedItem && (
+        <DiscrepancyModal
+          supplierId={selectedSupplierId}
+          invoiceRef={invoiceRef}
+          item={{ ...selectedItem.sku, poLineId: selectedPoOrder?.lineId ?? null }}
+          defaultBundle={activeBundleNo}
+          onClose={() => setShowDiscrepancyModal(false)}
+          onSaved={() => { setShowDiscrepancyModal(false); loadDiscrepancies(selectedSupplierId); }}
+        />
       )}
 
       {/* ─────────────────────────────────────────────────────────────────────────────
@@ -5009,8 +4686,20 @@ export default function EntryGatePage() {
                     </div>
                   </div>
 
-                  {/* Gate Remarks */}
+                  {/* Supplier invoice and gate remarks for the GRN header */}
                   <div style={{ marginBottom: 16, background: '#f8fafc', padding: '12px 14px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+                    <label style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 4 }}>
+                      Supplier Invoice No. <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(Optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="e.g. INV-98124"
+                      value={invoiceRef}
+                      maxLength={60}
+                      onChange={e => setInvoiceRef(e.target.value)}
+                      style={{ height: 34, fontSize: 13, marginBottom: 10 }}
+                    />
                     <label style={{ display: 'block', fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 4 }}>
                       Gate Remarks
                     </label>
@@ -5044,23 +4733,21 @@ export default function EntryGatePage() {
                         </thead>
                         <tbody>
                           {discrepancies.map(d => {
-                            const claimed = d.expectedQty ?? 0;
                             const found = d.receivedQty ?? 0;
-                            const shortage = Math.max(0, claimed - found);
-                            const uom = unitLabel((d.itemType || itemTypeFilter) === 'FABRIC' ? fabricUnit(fabricCategories, d.category) : 'PCS');
+                            const uom = unitLabel(d.uom || ((d.itemType || itemTypeFilter) === 'FABRIC' ? fabricUnit(fabricCategories, d.category) : 'PCS'));
                             return (
                               <tr key={d.id} style={{ borderBottom: '1px solid #fde68a' }}>
                                 <td style={{ padding: '6px 10px', fontWeight: 700 }}>{d.bundleNumber || 'Unbundled'}</td>
                                 <td style={{ padding: '6px 10px' }}>
-                                  <div style={{ fontWeight: 600 }}>{d.name || [d.brand, d.shade].filter(Boolean).join(' ') || 'General Item'}</div>
-                                  {d.artNo && <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>Art: {d.artNo} {d.size ? `• Size: ${d.size}` : ''}</div>}
+                                  <div style={{ fontWeight: 600 }}>{discrepancyItemText(d) || 'Item'}</div>
+                                  {d.po?.poNumber && <div style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>{d.po.poNumber}</div>}
                                 </td>
                                 <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600 }}>{d.expectedQty ? `${d.expectedQty} ${uom}` : ''}</td>
                                 <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600 }}>{found} {uom}</td>
                                 <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>
-                                  {d.expectedQty != null ? `${shortage.toFixed(1)} ${uom}` : 'Missing'}
+                                  {discrepancyShortText(d)}
                                 </td>
-                                <td style={{ padding: '6px 10px', color: '#b45309', fontWeight: 600 }}>{ISSUE_TYPE_LABELS[d.issueType] || d.issueType}</td>
+                                <td style={{ padding: '6px 10px', color: '#b45309', fontWeight: 600 }}>{DISCREPANCY_TYPE_LABELS[d.issueType] ?? d.issueType}</td>
                                 <td style={{ padding: '6px 10px', color: '#64748b' }}>{d.notes}</td>
                               </tr>
                             );

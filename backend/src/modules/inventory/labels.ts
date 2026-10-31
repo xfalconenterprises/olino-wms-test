@@ -4,14 +4,16 @@ import QRCode from 'qrcode';
 import { formatDate } from '../../utils/format';
 import { escapeHtml } from '../../utils/html';
 import { costCodeForBatch } from '../administration/cost-prices';
-import { labelField } from './printer';
+import { LABEL_PERMISSIONS, labelField } from './printer';
+import { requireAuth, requirePermission } from '../../middleware/auth';
 import { labelUnit } from '../../utils/units';
 import prisma from '../../lib/prisma';
 
 const router = Router();
 
-// Labels are public — barcode/QR images are opened via window.open() in the browser
-// and cannot carry Authorization headers. Batch codes are not sensitive data.
+// Label previews show item details and the cost code, so they need a login and a label-printing
+// permission. The browser loads them through openPrintPage, which sends the login.
+router.use(requireAuth, requirePermission(...LABEL_PERMISSIONS));
 
 // GET /api/labels/preview/:batchCode
 // Returns visual 100mm x 50mm HTML sticker preview with company logo, 1D barcode, QR, and specs

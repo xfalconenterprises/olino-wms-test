@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import api from '../../../utils/api';
-import { ArrowRightLeft, ArrowDownToLine, ArrowUpFromLine, Scissors, Search, RefreshCw, MapPin } from 'lucide-react';
-import { formatDateTime } from '../../../utils/format';
+import { ArrowRightLeft, ArrowDownToLine, ArrowUpFromLine, Scissors, Search, RefreshCw, MapPin, X } from 'lucide-react';
+import { formatDateTime, istDayEndISO, istDayStartISO } from '../../../utils/format';
+import DateField from '../../../components/Common/DateField';
 import { unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
@@ -46,7 +47,8 @@ export default function AuditLogPage() {
   const [txs, setTxs] = useState<Tx[]>([]);
   const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState('');
-  const [dateFilter, setDateFilter] = useState<'ALL' | 'TODAY' | 'YESTERDAY' | 'WEEK'>('ALL');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [search, setSearch] = useState('');
 
   const load = () => {
@@ -56,19 +58,8 @@ export default function AuditLogPage() {
       params.type = typeFilter;
     }
 
-    const now = new Date();
-    if (dateFilter === 'TODAY') {
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      params.from = todayStart.toISOString();
-    } else if (dateFilter === 'YESTERDAY') {
-      const yStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-      const yEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      params.from = yStart.toISOString();
-      params.to = yEnd.toISOString();
-    } else if (dateFilter === 'WEEK') {
-      const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
-      params.from = weekStart.toISOString();
-    }
+    if (startDate) params.from = istDayStartISO(startDate);
+    if (endDate) params.to = istDayEndISO(endDate);
 
     api.get('/api/transactions', { params })
       .then(r => setTxs(r.data))
@@ -76,7 +67,7 @@ export default function AuditLogPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [typeFilter, dateFilter]);
+  useEffect(() => { load(); }, [typeFilter, startDate, endDate]);
 
   const filteredTxs = txs.filter(tx => {
     if (typeFilter === 'PUT_AWAY' && (!isPutAway(tx) || tx.type !== 'INTERNAL_TRANSFER')) return false;
@@ -107,32 +98,6 @@ export default function AuditLogPage() {
         </div>
       </div>
 
-      {/* Date Filter Tabs */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 0 }}>
-        {[
-          { key: 'ALL', label: 'All History' },
-          { key: 'TODAY', label: 'Today' },
-          { key: 'YESTERDAY', label: 'Yesterday' },
-          { key: 'WEEK', label: 'Last 7 Days' },
-        ].map(tab => (
-          <button
-            key={tab.key}
-            className="btn btn-ghost"
-            onClick={() => setDateFilter(tab.key as any)}
-            style={{
-              borderBottom: dateFilter === tab.key ? '2px solid var(--color-brand)' : '2px solid transparent',
-              borderRadius: 0,
-              color: dateFilter === tab.key ? 'var(--color-brand)' : 'var(--color-text-muted)',
-              fontWeight: dateFilter === tab.key ? 600 : 400,
-              padding: '8px 16px',
-              fontSize: 13
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
       {/* Filters Toolbar */}
       <div className="toolbar" style={{ marginBottom: 16 }}>
         <div style={{ position: 'relative', width: 320 }}>
@@ -160,6 +125,17 @@ export default function AuditLogPage() {
           <option value="STOCK_OUT">Stock Out (Dispatches)</option>
           <option value="PARTIAL_CUT">Partial Cut</option>
         </select>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <DateField compact short="From" label="From date" value={startDate} onChange={setStartDate} max={endDate || undefined} />
+          <DateField compact short="To" label="To date" value={endDate} onChange={setEndDate} min={startDate || undefined} />
+          {(startDate || endDate) && (
+            <button type="button" className="btn btn-ghost btn-icon" onClick={() => { setStartDate(''); setEndDate(''); }}
+              title="Clear date filter" aria-label="Clear date filter">
+              <X size={15} />
+            </button>
+          )}
+        </div>
 
         <button className="btn btn-secondary" onClick={load} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <RefreshCw size={14} /> Refresh

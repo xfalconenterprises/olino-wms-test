@@ -24,8 +24,14 @@ import {
   Repeat2
 } from 'lucide-react';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { formatDateTime, formatDate } from '../../../utils/format';
-import { exportToExcel } from '../../../utils/exportExcel';
+import DateField from '../../../components/Common/DateField';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
+import ExportColumnsModal from './ExportColumnsModal';
+import type { ExportChoice } from './ExportColumnsModal';
+import { ROLL_EXPORT_COLUMNS, SKU_EXPORT_COLUMNS } from './inventoryExport';
 import { fabricCategoryLabel, unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
@@ -66,6 +72,8 @@ interface AggregatedSKU {
   locations?: string[];
   batches?: SKUChildBatch[];
 }
+
+const exportTypeOf = (row: any) => row.itemType || 'FABRIC';
 
 interface BatchRecord {
   id: string;
@@ -187,6 +195,9 @@ export default function InventoryDashboardPage() {
   const [endDate, setEndDate] = useState('');
   const [status, setStatus] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const { user } = useAuth();
+  const [exportData, setExportData] = useState<{ view: string; filters: Record<string, string>; rows: any[]; lastChoice: ExportChoice | null } | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
   const [brand, setBrand] = useState('');
   const [quality, setQuality] = useState('');
   const [shade, setShade] = useState('');
@@ -259,26 +270,31 @@ export default function InventoryDashboardPage() {
     fetchData();
   }, [viewMode, categoryTab, debouncedSearch, status, debouncedBrand, debouncedQuality, debouncedShade, debouncedLocationCode, selectedClientFilter, startDate, endDate]);
 
+  const filterParams = () => {
+    const params = new URLSearchParams();
+    if (debouncedSearch) params.append('search', debouncedSearch);
+    if (startDate) params.append('startDate', startDate);
+    if (endDate) params.append('endDate', endDate);
+
+    // Category tab handling
+    if (categoryTab !== 'ALL') {
+      params.append('itemType', categoryTab);
+    }
+
+    if (status && viewMode === 'GRANULAR') params.append('status', status);
+    if (debouncedBrand) params.append('brand', debouncedBrand);
+    if (debouncedQuality) params.append('quality', debouncedQuality);
+    if (debouncedShade) params.append('shade', debouncedShade);
+    if (debouncedLocationCode && viewMode === 'GRANULAR') params.append('location', debouncedLocationCode);
+    if (selectedClientFilter) params.append('client', selectedClientFilter);
+    return params;
+  };
+
   const fetchData = async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams();
-      if (debouncedSearch) params.append('search', debouncedSearch);
-      if (startDate) params.append('startDate', startDate);
-      if (endDate) params.append('endDate', endDate);
-
-      // Category tab handling
-      if (categoryTab !== 'ALL') {
-        params.append('itemType', categoryTab);
-      }
-
-      if (status && viewMode === 'GRANULAR') params.append('status', status);
-      if (debouncedBrand) params.append('brand', debouncedBrand);
-      if (debouncedQuality) params.append('quality', debouncedQuality);
-      if (debouncedShade) params.append('shade', debouncedShade);
-      if (debouncedLocationCode && viewMode === 'GRANULAR') params.append('location', debouncedLocationCode);
-      if (selectedClientFilter) params.append('client', selectedClientFilter);
+      const params = filterParams();
 
       if (viewMode === 'AGGREGATED') {
         const res = await api.get(`/api/inventory/skus?${params.toString()}`);
@@ -448,9 +464,8 @@ export default function InventoryDashboardPage() {
   const getBatchUnit = (b: BatchRecord) => unitLabel(uomOf({ uom: b.uom, itemType: getBatchItemType(b) }));
 
   // Sorting
-  const sortedBatches = useMemo(() => {
-    const list = [...batches];
-    list.sort((a, b) => {
+  const sortBatches = (rolls: BatchRecord[]) =>
+    [...rolls].sort((a, b) => {
       let cmp = 0;
       if (sortField === 'code') {
         cmp = a.batchCode.localeCompare(b.batchCode);
@@ -465,8 +480,8 @@ export default function InventoryDashboardPage() {
       }
       return sortAsc ? cmp : -cmp;
     });
-    return list;
-  }, [batches, sortField, sortAsc]);
+
+  const sortedBatches = useMemo(() => sortBatches(batches), [batches, sortField, sortAsc]);
 
   const handleSort = (field: 'code' | 'quantity' | 'date' | 'location') => {
     if (sortField === field) {
@@ -477,86 +492,37 @@ export default function InventoryDashboardPage() {
     }
   };
 
-  // Export to Excel / CSV
-  const handleExport = () => {
-    if (viewMode === 'AGGREGATED') {
-      const headers = [
-        'Item Type',
-        'Brand',
-        'Quality',
-        'Shade / Color',
-        'Category',
-        'Size',
-        'Article No',
-        'Total Quantity',
-        'UOM',
-        'Quality Name',
-        'Active Lumps/Batches',
-        'Full Rolls/Packs',
-        'Partial Rolls',
-        'Warehouse Locations'
-      ];
-      const rows = skus.map(s => [
-        s.itemType,
-        s.brand,
-        s.quality || '',
-        s.shade || '',
-        s.category || '',
-        s.size || '',
-        s.artNo || '',
-        s.totalQuantity,
-        s.uom,
-        s.qualityName || '',
-        s.activeBatches,
-        s.fullRollsCount || 0,
-        s.partialRollsCount || 0,
-        (s.locations || []).join('; ')
-      ]);
-      exportToExcel('Olino_SKU_Inventory_Rollup', headers, rows);
-    } else {
-      const headers = [
-        'Batch / Barcode',
-        'Item Type',
-        'Brand',
-        'Quality',
-        'Shade / Color',
-        'Category',
-        'Size',
-        'Item Name',
-        'Article No',
-        'Quantity',
-        'UOM',
-        'Status',
-        'Physical Shelf Location',
-        'Supplier Bundle',
-        'Invoice Ref',
-        'PO Number',
-        'Supplier Name',
-        'Received Date'
-      ];
-      const rows = sortedBatches.map(b => [
-        b.batchCode,
-        getBatchItemType(b),
-        getBatchBrand(b),
-        getBatchQuality(b),
-        getBatchShade(b),
-        getBatchCategory(b),
-        getBatchSize(b),
-        getBatchName(b),
-        getBatchArtNo(b),
-        b.quantity,
-        getBatchUnit(b),
-        b.status,
-        b.batchLocations?.[0]?.location?.code || 'Unassigned',
-        b.supplierBundle || '',
-        b.invoiceRef || '',
-        b.poLine?.po?.poNumber || '',
-        b.poLine?.po?.supplierName || '',
-        formatDate(b.createdAt)
-      ]);
-      exportToExcel('Olino_Granular_Inventory_Tracking', headers, rows);
+  // Export to Excel: the server sends every row the filters match
+  const handleExport = async () => {
+    setExportBusy(true);
+    try {
+      const view = viewMode === 'AGGREGATED' ? 'ROLLUP' : 'GRANULAR';
+      const params = filterParams();
+      const { data } = await api.get(`/api/inventory/export?view=${view}&${params.toString()}`);
+      setExportData({
+        view,
+        filters: Object.fromEntries(params),
+        lastChoice: data.lastChoice,
+        rows: view === 'GRANULAR' ? sortBatches(data.rows) : data.rows,
+      });
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'The stock could not be loaded for export.');
+    } finally {
+      setExportBusy(false);
     }
   };
+
+  const exportNote = [
+    startDate && `From ${formatDate(startDate)}`,
+    endDate && `To ${formatDate(endDate)}`,
+    search,
+    viewMode === 'GRANULAR' && status,
+    brand,
+    quality,
+    shade,
+    viewMode === 'GRANULAR' && locationCode,
+    selectedClientFilter,
+  ].filter(Boolean).join(' · ');
 
   const skuRollupColSpan = categoryTab === 'FABRIC' ? 7 : 9;
 
@@ -645,7 +611,7 @@ export default function InventoryDashboardPage() {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Fabric Stock</span>
+              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Fabric</span>
               <Layers size={18} color="#0284c7" />
             </div>
             <div style={{ fontSize: 24, fontWeight: 800, color: '#0369a1', marginTop: 4 }}>
@@ -671,7 +637,7 @@ export default function InventoryDashboardPage() {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Ready-Made Goods</span>
+              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Readymade</span>
               <Package size={18} color="#16a34a" />
             </div>
             <div style={{ fontSize: 24, fontWeight: 800, color: '#15803d', marginTop: 4 }}>
@@ -694,7 +660,7 @@ export default function InventoryDashboardPage() {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Accessories &amp; Trims</span>
+              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Accessories</span>
               <Package size={18} color="#8b5cf6" />
             </div>
             <div style={{ fontSize: 24, fontWeight: 800, color: '#6d28d9', marginTop: 4 }}>
@@ -705,6 +671,20 @@ export default function InventoryDashboardPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {exportData && (
+        <ExportColumnsModal
+          view={exportData.view}
+          filters={exportData.filters}
+          lastChoice={exportData.lastChoice}
+          heading={viewMode === 'AGGREGATED' ? 'SKU Rollup' : 'Granular'}
+          note={exportNote}
+          columns={viewMode === 'AGGREGATED' ? SKU_EXPORT_COLUMNS : ROLL_EXPORT_COLUMNS}
+          rows={exportData.rows}
+          typeOf={exportTypeOf}
+          onClose={() => setExportData(null)}
+        />
       )}
 
       {/* ─── Search, Tabs & Action Toolbar ─────────────────────────────────── */}
@@ -719,7 +699,7 @@ export default function InventoryDashboardPage() {
         <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
           
           {/* Search Input */}
-          <div style={{ flex: 1, minWidth: 280, position: 'relative' }}>
+          <div style={{ flex: 1, minWidth: 180, position: 'relative' }}>
             <Search size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
             <input 
               type="text" 
@@ -731,99 +711,28 @@ export default function InventoryDashboardPage() {
             />
           </div>
 
-          {/* Category Tabs */}
-          <div style={{ display: 'flex', background: '#f1f5f9', padding: 3, borderRadius: 6, gap: 2 }}>
-            {[
-              { key: 'ALL', label: 'All Stock' },
-              { key: 'FABRIC', label: 'Fabric Rolls' },
-              { key: 'READY_MADE', label: 'Ready-Made' },
-              { key: 'ACCESSORY', label: 'Accessories' },
-            ].map(tab => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setCategoryTab(tab.key as any)}
-                style={{
-                  border: 'none',
-                  background: categoryTab === tab.key ? '#ffffff' : 'transparent',
-                  color: categoryTab === tab.key ? 'var(--color-brand)' : 'var(--color-text-muted)',
-                  fontWeight: categoryTab === tab.key ? 700 : 500,
-                  fontSize: 12.5,
-                  padding: '6px 12px',
-                  borderRadius: 4,
-                  cursor: 'pointer',
-                  boxShadow: categoryTab === tab.key ? '0 1px 3px rgba(0,0,0,0.06)' : 'none',
-                  transition: 'all 0.15s ease',
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+          {/* Stock Type */}
+          <select
+            className="form-select"
+            aria-label="Stock type"
+            value={categoryTab}
+            onChange={e => setCategoryTab(e.target.value as any)}
+            style={{ width: 150, height: 40, fontSize: 13, fontWeight: 600 }}
+          >
+            <option value="ALL">All Stock</option>
+            <option value="FABRIC">Fabric Rolls</option>
+            <option value="READY_MADE">Ready-Made</option>
+            <option value="ACCESSORY">Accessories</option>
+          </select>
 
           {/* Calendar Date Filter */}
-          <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            background: '#ffffff', 
-            border: (startDate || endDate) ? '1px solid var(--color-brand)' : '1px solid var(--color-border)', 
-            borderRadius: 'var(--radius-md)', 
-            padding: '2px 10px', 
-            height: 40,
-            gap: 6,
-            boxShadow: 'var(--shadow-xs)'
-          }}>
-            <Calendar size={15} color={(startDate || endDate) ? 'var(--color-brand)' : 'var(--color-text-muted)'} />
-            <input 
-              type="date" 
-              value={startDate} 
-              onChange={e => setStartDate(e.target.value)} 
-              title="From Inward Date"
-              style={{ 
-                border: 'none', 
-                outline: 'none', 
-                fontSize: 12.5, 
-                color: 'var(--color-text-main)', 
-                background: 'transparent',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                width: 125
-              }}
-            />
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>&ndash;</span>
-            <input 
-              type="date" 
-              value={endDate} 
-              onChange={e => setEndDate(e.target.value)} 
-              title="To Inward Date"
-              style={{ 
-                border: 'none', 
-                outline: 'none', 
-                fontSize: 12.5, 
-                color: 'var(--color-text-main)', 
-                background: 'transparent',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                width: 125
-              }}
-            />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <DateField compact short="From" label="From inward date" value={startDate} onChange={setStartDate} max={endDate || undefined} />
+            <DateField compact short="To" label="To inward date" value={endDate} onChange={setEndDate} min={startDate || undefined} />
             {(startDate || endDate) && (
-              <button 
-                type="button"
-                onClick={() => { setStartDate(''); setEndDate(''); }}
-                title="Clear date filter"
-                style={{ 
-                  border: 'none', 
-                  background: 'none', 
-                  cursor: 'pointer', 
-                  padding: '2px 4px', 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  color: 'var(--color-text-muted)',
-                  borderRadius: 4
-                }}
-              >
-                <X size={14} />
+              <button type="button" className="btn btn-ghost btn-icon" onClick={() => { setStartDate(''); setEndDate(''); }}
+                title="Clear date filter" aria-label="Clear date filter">
+                <X size={15} />
               </button>
             )}
           </div>
@@ -839,14 +748,17 @@ export default function InventoryDashboardPage() {
               <SlidersHorizontal size={15} /> Advanced Filters
             </button>
 
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={handleExport}
-              style={{ height: 40, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
-            >
-              <Download size={15} /> Export Excel
-            </button>
+            {hasPermission(user, 'export.stock') && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleExport}
+                disabled={exportBusy}
+                style={{ height: 40, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+              >
+                <Download size={15} /> {exportBusy ? 'Preparing...' : 'Export Excel'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -896,66 +808,6 @@ export default function InventoryDashboardPage() {
                   <option key={c.id} value={c.name}>{c.name}</option>
                 ))}
               </select>
-            </div>
-
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>Date Presets</label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button 
-                  type="button" 
-                  className="btn btn-secondary btn-sm" 
-                  style={{ fontSize: 12, height: 36, padding: '0 10px' }}
-                  onClick={() => {
-                    const today = new Date().toISOString().split('T')[0];
-                    setStartDate(today);
-                    setEndDate(today);
-                  }}
-                >
-                  Today
-                </button>
-                <button 
-                  type="button" 
-                  className="btn btn-secondary btn-sm" 
-                  style={{ fontSize: 12, height: 36, padding: '0 10px' }}
-                  onClick={() => {
-                    const now = new Date();
-                    const d = new Date();
-                    d.setDate(now.getDate() - 7);
-                    setStartDate(d.toISOString().split('T')[0]);
-                    setEndDate(now.toISOString().split('T')[0]);
-                  }}
-                >
-                  Last 7 Days
-                </button>
-                <button 
-                  type="button" 
-                  className="btn btn-secondary btn-sm" 
-                  style={{ fontSize: 12, height: 36, padding: '0 10px' }}
-                  onClick={() => {
-                    const now = new Date();
-                    const d = new Date();
-                    d.setDate(now.getDate() - 30);
-                    setStartDate(d.toISOString().split('T')[0]);
-                    setEndDate(now.toISOString().split('T')[0]);
-                  }}
-                >
-                  Last 30 Days
-                </button>
-                <button 
-                  type="button" 
-                  className="btn btn-secondary btn-sm" 
-                  style={{ fontSize: 12, height: 36, padding: '0 10px' }}
-                  onClick={() => {
-                    const now = new Date();
-                    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-                    const lastDay = now.toISOString().split('T')[0];
-                    setStartDate(firstDay);
-                    setEndDate(lastDay);
-                  }}
-                >
-                  This Month
-                </button>
-              </div>
             </div>
 
             <div>
@@ -1577,9 +1429,8 @@ export default function InventoryDashboardPage() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <a 
-                    href={`/api/labels/preview/${selectedBatch.batchCode}`} 
-                    target="_blank" 
-                    rel="noreferrer" 
+                    role="button"
+                    onClick={() => openPrintPage(`/api/labels/preview/${encodeURIComponent(selectedBatch.batchCode)}`, 'label').catch(() => alert('Could not open the label preview.'))}
                     className="btn btn-secondary btn-sm"
                     style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                     title="Print TSC Barcode Label"

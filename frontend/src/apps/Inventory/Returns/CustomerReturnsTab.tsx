@@ -3,6 +3,7 @@ import { Search, Printer, CheckCircle2 } from 'lucide-react';
 import api from '../../../utils/api';
 import { apiError, openPrintPage } from '../../../utils/printPage';
 import { autoPrintReceivedLabel, printTSPL } from '../../../utils/printer';
+import TouchChoice from './TouchChoice';
 import { formatDate, formatDateTime } from '../../../utils/format';
 import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
 
@@ -23,6 +24,7 @@ export const CUSTOMER_REASONS: [string, string][] = [
 ];
 const reasonLabel = (r: string) => CUSTOMER_REASONS.find(([k]) => k === r)?.[1] ?? r;
 const fmt = (n: number) => String(Math.round(n * 1000) / 1000);
+const CONDITIONS = [['GOOD', 'Good'], ['DAMAGED', 'Damaged']] as const;
 
 export default function CustomerReturnsTab() {
   const [dcInput, setDcInput] = useState('');
@@ -72,8 +74,11 @@ export default function CustomerReturnsTab() {
       setSaved(data);
       setLookup(null); setDcInput('');
       loadList();
-      // New labels for the returned goods (follows "Auto print on receipt")
-      for (const l of data.lines) await autoPrintReceivedLabel(l.batch.batchCode);
+      // New labels for the returned goods (follows "Auto print on receipt"), one after another
+      // and without holding up the screen; the worker can reprint from the buttons above
+      void (async () => {
+        for (const l of data.lines) await autoPrintReceivedLabel(l.batch.batchCode, setError);
+      })();
     } catch (err) {
       setError(apiError(err, 'Could not save the return'));
     } finally {
@@ -92,7 +97,7 @@ export default function CustomerReturnsTab() {
         <div className="alert alert-success" style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <strong style={{ display: 'flex', alignItems: 'center', gap: 6 }}><CheckCircle2 size={16} /> Return {saved.returnNumber} saved</strong>
-            <button className="btn btn-secondary btn-sm" onClick={() => printReceipt(saved.id)} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button className="btn btn-secondary" onClick={() => printReceipt(saved.id)} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <Printer size={14} /> Print receipt
             </button>
           </div>
@@ -100,7 +105,7 @@ export default function CustomerReturnsTab() {
             New labels — stick them on the returned goods:
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
               {saved.lines.map(l => (
-                <button key={l.batch.batchCode} className="btn btn-secondary btn-sm" onClick={() => printLabel(l.batch.batchCode)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'monospace' }}>
+                <button key={l.batch.batchCode} className="btn btn-secondary" onClick={() => printLabel(l.batch.batchCode)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'monospace' }}>
                   <Printer size={13} /> {l.batch.batchCode} · {fmt(l.quantity)} {unit(l.batch.uom)} · {l.condition === 'GOOD' ? 'to put-away' : 'QC hold'}
                 </button>
               ))}
@@ -114,8 +119,8 @@ export default function CustomerReturnsTab() {
         <div className="card-body">
           <form onSubmit={find} style={{ display: 'flex', gap: 8, marginBottom: lookup ? 16 : 0, flexWrap: 'wrap' }}>
             <input className="form-input" value={dcInput} onChange={e => setDcInput(e.target.value)} placeholder="Scan or type the delivery challan number, e.g. DC-2026-0012"
-              style={{ flex: '1 1 320px', height: 42, fontFamily: 'monospace' }} autoFocus />
-            <button className="btn btn-primary" type="submit" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Search size={16} /> Find challan</button>
+              style={{ flex: '1 1 320px', minHeight: 48, fontFamily: 'monospace' }} autoFocus />
+            <button className="btn btn-primary" type="submit" style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 48 }}><Search size={18} /> Find challan</button>
           </form>
 
           {lookup && (
@@ -127,63 +132,55 @@ export default function CustomerReturnsTab() {
                 {lookup.dc.destination && <span>To <strong>{lookup.dc.destination}</strong></span>}
               </div>
 
-              <div style={{ overflowX: 'auto' }}>
-                <table className="table" style={{ width: '100%', fontSize: 13 }}>
-                  <thead>
-                    <tr>
-                      <th>Shipped as</th><th>Item</th><th style={{ textAlign: 'right' }}>Shipped</th><th style={{ textAlign: 'right' }}>Already returned</th>
-                      <th style={{ width: 130 }}>Returning now</th><th style={{ width: 130 }}>Condition</th><th>Note</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lookup.lines.map(l => {
-                      const row = rows[l.dcLineId];
-                      const none = l.returnable <= 0;
-                      return (
-                        <tr key={l.dcLineId} style={{ opacity: none ? 0.55 : 1 }}>
-                          <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{l.cutReference || l.batchCode}</td>
-                          <td>{l.description}</td>
-                          <td style={{ textAlign: 'right' }}>{fmt(l.shipped)} {unit(l.uom)}</td>
-                          <td style={{ textAlign: 'right' }}>{l.returned > 0 ? `${fmt(l.returned)} ${unit(l.uom)}` : '—'}</td>
-                          <td>
-                            {none ? <span style={{ fontSize: 12 }}>All returned</span> : (
-                              <input type="number" className="form-input" min="0" max={l.returnable} step={allowsDecimals(l.uom) ? 'any' : 1}
-                                value={row?.qty ?? ''} onChange={e => setRow(l.dcLineId, { qty: e.target.value })}
-                                placeholder={`max ${fmt(l.returnable)}`} style={{ height: 36 }} />
-                            )}
-                          </td>
-                          <td>
-                            {!none && (
-                              <select className="form-select" value={row?.condition ?? 'GOOD'} onChange={e => setRow(l.dcLineId, { condition: e.target.value as RowInput['condition'] })} style={{ height: 36 }}>
-                                <option value="GOOD">Good</option>
-                                <option value="DAMAGED">Damaged</option>
-                              </select>
-                            )}
-                          </td>
-                          <td>{!none && <input className="form-input" value={row?.notes ?? ''} onChange={e => setRow(l.dcLineId, { notes: e.target.value })} style={{ height: 36 }} />}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {lookup.lines.map(l => {
+                  const row = rows[l.dcLineId];
+                  const none = l.returnable <= 0;
+                  return (
+                    <div key={l.dcLineId} style={{ border: '1px solid var(--color-border)', borderRadius: 'var(--radius)', padding: 14, opacity: none ? 0.55 : 1 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 14.5 }}>{l.description}</div>
+                          <div style={{ fontFamily: 'monospace', fontSize: 12.5, color: 'var(--color-text-muted)', marginTop: 2 }}>{l.cutReference || l.batchCode}</div>
+                        </div>
+                        <div style={{ fontSize: 13, textAlign: 'right' }}>
+                          Shipped <strong>{fmt(l.shipped)} {unit(l.uom)}</strong>
+                          {l.returned > 0 && <div style={{ color: 'var(--color-text-muted)' }}>Already returned {fmt(l.returned)} {unit(l.uom)}</div>}
+                        </div>
+                      </div>
+                      {none ? <div style={{ fontSize: 13, marginTop: 8 }}>All returned</div> : (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12, marginTop: 12 }}>
+                          <div>
+                            <label className="form-label">Returning now ({unit(l.uom)})</label>
+                            <input type="number" className="form-input" min="0" max={l.returnable} step={allowsDecimals(l.uom) ? 'any' : 1} inputMode={allowsDecimals(l.uom) ? 'decimal' : 'numeric'}
+                              value={row?.qty ?? ''} onChange={e => setRow(l.dcLineId, { qty: e.target.value })} placeholder={`Up to ${fmt(l.returnable)}`} style={{ minHeight: 48 }} />
+                          </div>
+                          <div>
+                            <label className="form-label">Condition</label>
+                            <TouchChoice label="Condition" options={CONDITIONS} value={row?.condition ?? 'GOOD'} onChange={condition => setRow(l.dcLineId, { condition })} />
+                          </div>
+                          <div>
+                            <label className="form-label">Note</label>
+                            <input className="form-input" value={row?.notes ?? ''} onChange={e => setRow(l.dcLineId, { notes: e.target.value })} style={{ minHeight: 48 }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
-              <div className="form-row" style={{ gap: 12, marginTop: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                <div className="form-group" style={{ flex: '1 1 200px' }}>
-                  <label className="form-label">Reason <span className="required">*</span></label>
-                  <select className="form-select" value={reason} onChange={e => setReason(e.target.value)}>
-                    <option value="">Choose…</option>
-                    {CUSTOMER_REASONS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                  </select>
-                </div>
-                <div className="form-group" style={{ flex: '2 1 280px' }}>
-                  <label className="form-label">Remarks</label>
-                  <input className="form-input" value={remarks} onChange={e => setRemarks(e.target.value)} />
-                </div>
-                <button className="btn btn-primary" onClick={save} disabled={saving} style={{ height: 42, fontWeight: 700 }}>
-                  {saving ? <span className="spinner" /> : 'Receive return & print labels'}
-                </button>
+              <div style={{ marginTop: 14 }}>
+                <label className="form-label">Reason <span className="required">*</span></label>
+                <TouchChoice label="Reason" options={CUSTOMER_REASONS} value={reason} onChange={setReason} />
               </div>
+              <div className="form-group" style={{ marginTop: 12 }}>
+                <label className="form-label">Remarks</label>
+                <input className="form-input" value={remarks} onChange={e => setRemarks(e.target.value)} style={{ minHeight: 48 }} />
+              </div>
+              <button className="btn btn-primary" onClick={save} disabled={saving} style={{ width: '100%', minHeight: 54, fontWeight: 700, fontSize: 15, marginTop: 14, justifyContent: 'center' }}>
+                {saving ? <span className="spinner" /> : 'Receive return & print labels'}
+              </button>
               <p style={{ fontSize: 12.5, color: 'var(--color-text-muted)', margin: '10px 0 0' }}>
                 Each returned piece gets a new label. Good goods go to the put-away queue; damaged goods are held for inspection (QC hold).
               </p>
@@ -195,7 +192,7 @@ export default function CustomerReturnsTab() {
       <div className="card">
         <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <h2 className="card-title">Recent customer returns</h2>
-          <input className="form-input" value={search} onChange={e => { setSearch(e.target.value); loadList(e.target.value); }} placeholder="Search return, customer or challan" style={{ width: 260, height: 36 }} />
+          <input className="form-input" value={search} onChange={e => { setSearch(e.target.value); loadList(e.target.value); }} placeholder="Search return, customer or challan" style={{ width: 280 }} />
         </div>
         {list.length === 0 ? (
           <div style={{ padding: 28, textAlign: 'center', color: 'var(--color-text-muted)' }}>No customer returns yet.</div>
@@ -213,7 +210,7 @@ export default function CustomerReturnsTab() {
                     <td>{reasonLabel(r.reason)}</td>
                     <td>{r.lines.length}{r.lines.some(l => l.condition === 'DAMAGED') && <span className="badge badge-warning" style={{ marginLeft: 6 }}>damaged</span>}</td>
                     <td>{r.createdBy.name}</td>
-                    <td><button className="btn btn-ghost btn-sm" onClick={() => printReceipt(r.id)} title="Print receipt" style={{ padding: 4 }}><Printer size={14} /></button></td>
+                    <td><button className="btn btn-ghost btn-sm" onClick={() => printReceipt(r.id)} title="Print receipt" aria-label="Print receipt" style={{ minWidth: 44, minHeight: 44 }}><Printer size={18} /></button></td>
                   </tr>
                 ))}
               </tbody>

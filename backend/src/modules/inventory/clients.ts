@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 
@@ -130,7 +131,7 @@ router.get('/', requirePermission('admin.clients', 'po.create', 'ops.entry_gate'
     res.json(formatted);
   } catch (err: any) {
     console.error('Failed to get clients:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
@@ -247,7 +248,7 @@ router.get('/:id', requirePermission('admin.clients'), async (req: Request, res:
     });
   } catch (err: any) {
     console.error('Failed to get client details:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
@@ -278,7 +279,7 @@ router.post('/', requirePermission('admin.clients', 'po.create', 'ops.entry_gate
     res.status(201).json(createdRows[0]);
   } catch (err: any) {
     console.error('Failed to create client:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
@@ -333,7 +334,7 @@ router.put('/:id', requirePermission('admin.clients'), async (req: Request, res:
     res.json(updatedRows[0]);
   } catch (err: any) {
     console.error('Failed to update client:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 

@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import { formatDate } from '../../utils/format';
+import { userMessage } from '../../utils/errors';
 import type { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
@@ -141,12 +143,7 @@ router.get('/hierarchy', requirePermission('admin.locations'), async (_req: Requ
 router.get('/floor', requirePermission('admin.locations'), async (_req: Request, res: Response) => {
   const spots = await prisma.location.findMany({
     where: { type: 'FLOOR', isActive: true },
-    include: {
-      _count: { select: { batchLocations: true } },
-      batchLocations: {
-        include: { batch: true },
-      },
-    },
+    include: { _count: { select: { batchLocations: true } } },
     orderBy: { code: 'asc' },
   });
   res.json(spots);
@@ -311,7 +308,7 @@ Rules so the labels scan reliably
 
 // GET /api/locations/export?rackId=… — ZIP for label designers: location list, barcodes, instructions.
 // Without rackId: every active rack position plus floor spots.
-router.get('/export', requirePermission('admin.locations'), async (req: Request, res: Response) => {
+router.get('/export', requirePermission('export.locations'), async (req: Request, res: Response) => {
   const rackId = typeof req.query.rackId === 'string' && req.query.rackId ? req.query.rackId : null;
 
   const racks = await prisma.rack.findMany({
@@ -346,7 +343,7 @@ router.get('/export', requirePermission('admin.locations'), async (req: Request,
   ])].map(csvLine).join('\r\n') + '\r\n';
 
   const scope = rackId ? `rack-${racks[0].name}` : 'all';
-  const baseName = `olino-locations-${scope}-${new Date().toISOString().slice(0, 10)}`;
+  const baseName = `olino-locations-${scope}-${formatDate(new Date())}`;
 
   try {
     const entries: ZipEntry[] = [
@@ -502,7 +499,7 @@ router.post('/assign', requirePermission('ops.put_away', 'ops.dock_queue'), asyn
 
     res.status(201).json({ success: true, ...result });
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Failed to assign location' });
+    res.status(400).json({ error: userMessage(err, 'Failed to assign location') });
   }
 });
 

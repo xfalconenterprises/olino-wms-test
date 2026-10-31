@@ -64,3 +64,21 @@ export function formatTime(dateInput?: string | Date | null): string {
   const period = parts.dayPeriod ? ` ${parts.dayPeriod.toUpperCase()}` : '';
   return `${parts.hour}:${parts.minute}${period}`;
 }
+
+/** The calendar day in IST as YYYY-MM-DD (today when no date is given). */
+export function istDateKey(date: Date = new Date()): string {
+  const parts = getIstParts(date)!;
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/** The first moment of a YYYY-MM-DD day in IST, wherever the server runs; null if not a date. */
+export function istDayStart(day: unknown): Date | null {
+  const d = new Date(`${String(day).slice(0, 10)}T00:00:00.000+05:30`);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** The last moment of a YYYY-MM-DD day in IST; null if not a date. */
+export function istDayEnd(day: unknown): Date | null {
+  const d = new Date(`${String(day).slice(0, 10)}T23:59:59.999+05:30`);
+  return isNaN(d.getTime()) ? null : d;
+}

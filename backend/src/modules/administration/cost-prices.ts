@@ -3,7 +3,7 @@ import argon2 from 'argon2';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { requireAuth, requireCostAccess, requireCostUnlock, signCostUnlockToken, COST_UNLOCK_MINUTES } from '../../middleware/auth';
-import { decodeCost, encodeCost, normaliseCostCodeConfig, type CostCodeConfig } from '../../utils/cost-code';
+import { costLetters, decodeCost, encodeCost, normaliseCostCodeConfig, type CostCodeConfig } from '../../utils/cost-code';
 import { itemDescription } from '../inventory/returns';
 
 // Confidential cost prices. Costs are entered on PO lines (write-only there) and can only be read
@@ -43,7 +43,7 @@ export function poLineLabel(line: Parameters<typeof itemDescription>[0]): string
 
 async function loadConfig(): Promise<CostCodeConfig | null> {
   const row = await prisma.costCodeSettings.findUnique({ where: { id: 1 } });
-  return row ? { codeWord: row.codeWord, repeatLetter: row.repeatLetter, prefix: row.prefix, suffix: row.suffix } : null;
+  return row ? { codeWord: row.codeWord } : null;
 }
 
 /**
@@ -51,7 +51,7 @@ async function loadConfig(): Promise<CostCodeConfig | null> {
  * A roll received against a PO line takes that line's cost; a roll created by a customer return
  * takes the cost of the roll it was shipped from.
  */
-export async function costCodeForBatch(batch: { id: string; poLineId: string | null }): Promise<string> {
+export async function costCodeForBatch(batch: { id: string; poLineId: string | null; batchCode: string }): Promise<string> {
   const config = await loadConfig();
   if (!config) return '';
   let current: { id: string; poLineId: string | null } | null = batch;
@@ -64,7 +64,8 @@ export async function costCodeForBatch(batch: { id: string; poLineId: string | n
   }
   if (!current?.poLineId) return '';
   const cost = await prisma.poLineCost.findUnique({ where: { poLineId: current.poLineId } });
-  return cost ? encodeCost(Number(cost.costPrice), config) : '';
+  // Decoys are chosen for the roll being labelled, so each roll's code looks different
+  return cost ? encodeCost(Number(cost.costPrice), config, batch.batchCode) : '';
 }
 
 // ─── Unlock ─────────────────────────────────────────────────────────────────
@@ -72,15 +73,17 @@ export async function costCodeForBatch(batch: { id: string; poLineId: string | n
 const failedUnlocks = new Map<string, { count: number; lockedUntil: number }>();
 const MAX_UNLOCK_ATTEMPTS = 5;
 
-router.post('/unlock', async (req: Request, res: Response) => {
-  const userId = req.user!.userId;
+/**
+ * Checks a user's own password before a confidential action, and refuses after too many wrong
+ * tries. Returns the refusal, or null when the password is right.
+ */
+export async function ownPasswordRefusal(userId: string, username: string, password: unknown): Promise<{ status: number; error: string } | null> {
   const record = failedUnlocks.get(userId);
   if (record && Date.now() < record.lockedUntil) {
-    res.status(429).json({ error: `Too many wrong passwords. Try again in ${Math.ceil((record.lockedUntil - Date.now()) / 60000)} minute(s).` });
-    return;
+    return { status: 429, error: `Too many wrong passwords. Try again in ${Math.ceil((record.lockedUntil - Date.now()) / 60000)} minute(s).` };
   }
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
-  const valid = Boolean(user && req.body?.password && await argon2.verify(user.passwordHash, String(req.body.password)));
+  const valid = Boolean(user && password && await argon2.verify(user.passwordHash, String(password)));
   if (!valid) {
     const cur = record ?? { count: 0, lockedUntil: 0 };
     cur.count++;
@@ -89,11 +92,17 @@ router.post('/unlock', async (req: Request, res: Response) => {
       cur.count = 0;
     }
     failedUnlocks.set(userId, cur);
-    console.warn(`[COST] Failed unlock for '${req.user!.username}'`);
-    res.status(403).json({ error: 'Incorrect password.' });
-    return;
+    console.warn(`[COST] Wrong password from '${username}'`);
+    return { status: 403, error: 'Incorrect password.' };
   }
   failedUnlocks.delete(userId);
+  return null;
+}
+
+router.post('/unlock', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const refusal = await ownPasswordRefusal(userId, req.user!.username, req.body?.password);
+  if (refusal) { res.status(refusal.status).json({ error: refusal.error }); return; }
   res.json({ ...signCostUnlockToken(userId), minutes: COST_UNLOCK_MINUTES });
 });
 
@@ -104,8 +113,8 @@ router.use(requireCostUnlock);
 router.get('/settings', async (_req: Request, res: Response) => {
   const row = await prisma.costCodeSettings.findUnique({ where: { id: 1 } });
   res.json(row
-    ? { codeWord: row.codeWord, repeatLetter: row.repeatLetter ?? '', prefix: row.prefix ?? '', suffix: row.suffix ?? '', updatedAt: row.updatedAt }
-    : { codeWord: '', repeatLetter: '', prefix: '', suffix: '', updatedAt: null });
+    ? { codeWord: row.codeWord, updatedAt: row.updatedAt }
+    : { codeWord: '', updatedAt: null });
 });
 
 router.put('/settings', async (req: Request, res: Response) => {
@@ -119,7 +128,7 @@ router.put('/settings', async (req: Request, res: Response) => {
     });
     await logCostChange(tx, { lineLabel: 'Secret code settings changed', source: 'CODE_SETTINGS' }, req.user!);
   });
-  res.json({ ...config, repeatLetter: config.repeatLetter ?? '', prefix: config.prefix ?? '', suffix: config.suffix ?? '' });
+  res.json(config);
 });
 
 // Codes for sample prices with the given (unsaved) settings, or the saved ones
@@ -129,7 +138,12 @@ router.post('/preview', async (req: Request, res: Response) => {
   if (typeof config === 'string') { res.status(400).json({ error: config }); return; }
   const prices = (Array.isArray(req.body?.prices) ? req.body.prices : [req.body?.price]).slice(0, 20).map(Number);
   if (prices.length === 0 || prices.some((p: number) => !Number.isFinite(p) || p < 0)) { res.status(400).json({ error: 'Enter a price.' }); return; }
-  res.json({ codes: prices.map((p: number) => ({ price: p, code: encodeCost(p, config) })) });
+  // The cost letters, and how three different rolls of that cost could look on their labels
+  res.json({ codes: prices.map((p: number) => ({
+    price: p,
+    code: costLetters(p, config),
+    examples: [1, 2, 3].map(n => encodeCost(p, config, `example-${p}-${n}`)),
+  })) });
 });
 
 // Reads a code from a label back into rupees
@@ -202,7 +216,7 @@ router.get('/lines', async (req: Request, res: Response) => {
         itemType: l.itemType, description: poLineLabel(l), uom: l.uom,
         orderedQty: l.orderedQty, receivedQty: l.receivedQty, inStockQty: qty,
         costPrice: cost,
-        code: cost !== null && config ? encodeCost(cost, config) : '',
+        code: cost !== null && config ? costLetters(cost, config) : '',
         stockValue: cost !== null ? Math.round(cost * qty * 100) / 100 : null,
         updatedAt: l.cost?.updatedAt ?? null,
       };
@@ -235,7 +249,7 @@ router.put('/lines/:lineId', async (req: Request, res: Response) => {
     });
   }
   const config = await loadConfig();
-  res.json({ id: line.id, costPrice: newPrice, code: newPrice !== null && config ? encodeCost(newPrice, config) : '' });
+  res.json({ id: line.id, costPrice: newPrice, code: newPrice !== null && config ? costLetters(newPrice, config) : '' });
 });
 
 // ─── Change log ─────────────────────────────────────────────────────────────

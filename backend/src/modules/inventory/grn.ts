@@ -1,11 +1,22 @@
 import { Router, Request, Response } from 'express';
+import { withReceivedQuantity } from '../../utils/received';
+import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 import bwipjs from 'bwip-js';
-import { formatDate } from '../../utils/format';
+import { formatDate, istDateKey, istDayEnd, istDayStart } from '../../utils/format';
 import { allowsDecimals, fabricCategoryLabel, totalsByUnit, unitLabel } from '../../utils/units';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
 import { documentTable, filledMeta, TableColumn } from '../../utils/print-document';
+import { itemDescription } from './returns';
+
+const DISCREPANCY_LABEL: Record<string, string> = {
+  MISSING_FROM_BUNDLE: 'Missing from bundle',
+  SHORT_QUANTITY: 'Short quantity',
+  WRONG_ITEM_PACKED: 'Wrong item packed',
+  DAMAGED_DEFECTIVE: 'Damaged / defective',
+};
+const discrepancyUom = (d: { uom: string | null; itemType: string | null }) => d.uom || (d.itemType === 'FABRIC' || !d.itemType ? 'METERS' : 'PCS');
 
 const router = Router();
 
@@ -33,10 +44,10 @@ router.get('/', requireAuth, requirePermission('inv.grn', 'ops.entry_gate', 'po.
     if (startDate || endDate) {
       where.createdAt = {};
       if (startDate) {
-        where.createdAt.gte = new Date(String(startDate) + 'T00:00:00.000Z');
+        where.createdAt.gte = istDayStart(startDate) ?? undefined;
       }
       if (endDate) {
-        where.createdAt.lte = new Date(String(endDate) + 'T23:59:59.999Z');
+        where.createdAt.lte = istDayEnd(endDate) ?? undefined;
       }
     }
 
@@ -133,7 +144,7 @@ router.get('/:id', requireAuth, requirePermission('inv.grn', 'ops.entry_gate', '
       return;
     }
 
-    res.json(grn);
+    res.json({ ...grn, batches: await withReceivedQuantity(grn.batches) });
   } catch (err: any) {
     console.error('Failed to get GRN details:', err);
     res.status(500).json({ error: 'Failed to retrieve GRN details' });
@@ -178,7 +189,7 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
     }
 
     // Generate GRN Number: GRN-YY-XXXX (e.g. GRN-26-0001)
-    const yearTwoDigits = String(new Date().getFullYear()).slice(-2);
+    const yearTwoDigits = istDateKey().slice(2, 4);
     const prefix = `GRN-${yearTwoDigits}-`;
 
     const latestGrn = await prisma.goodsReceiptNote.findFirst({
@@ -203,10 +214,10 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
     }
 
     // Fetch batches to compute summary and group lines
-    const batches = await prisma.itemBatch.findMany({
+    const batches = await withReceivedQuantity(await prisma.itemBatch.findMany({
       where: { id: { in: batchIds } },
       include: { poLine: true },
-    });
+    }));
 
     if (batches.length === 0) {
       res.status(400).json({ error: 'None of the provided batch IDs were found' });
@@ -364,7 +375,7 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
       // Link discrepancies to this GRN if provided
       if (Array.isArray(discrepancyIds) && discrepancyIds.length > 0) {
         await tx.inboundDiscrepancy.updateMany({
-          where: { id: { in: discrepancyIds } },
+          where: { id: { in: discrepancyIds.map(String) }, grnId: null, ...(createdGrn.supplierId && { supplierId: createdGrn.supplierId }) },
           data: { grnId: createdGrn.id },
         });
       }
@@ -375,7 +386,7 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
     res.status(201).json(grn);
   } catch (err: any) {
     console.error('Failed to create GRN:', err);
-    res.status(500).json({ error: err.message || 'Failed to generate Goods Receipt Note' });
+    res.status(500).json({ error: userMessage(err, 'Failed to generate Goods Receipt Note') });
   }
 });
 
@@ -463,6 +474,17 @@ router.get('/:id/print', requireAuth, requirePermission('inv.grn', 'ops.entry_ga
       invoiced, received, shortage,
     ];
     const table = documentTable(columns, grn.lines);
+
+    // Discrepancies reported at the gate for this delivery (shortage claims against the supplier)
+    const gateIssues = grn.discrepancies.length === 0 ? null : documentTable<any>([
+      { header: 'Bundle', cell: d => d.bundleNumber, width: '70px' },
+      { header: 'Item', cell: d => itemDescription({ ...d, itemType: d.itemType || 'FABRIC', uom: d.uom || 'METERS' }) || d.name || d.brand },
+      { header: 'Issue', cell: d => DISCREPANCY_LABEL[d.issueType] ?? d.issueType },
+      { header: 'Expected', align: 'right', width: '80px', cell: d => d.expectedQty != null ? qty(d.expectedQty, discrepancyUom(d)) : '' },
+      { header: 'Received', align: 'right', width: '80px', cell: d => qty(d.receivedQty ?? 0, discrepancyUom(d)) },
+      { header: 'Short', align: 'right', width: '80px', bold: true, cell: d => d.expectedQty != null ? qty(Math.max(0, d.expectedQty - (d.receivedQty ?? 0)), discrepancyUom(d)) : '' },
+      { header: 'Notes', optional: true, cell: d => d.notes },
+    ], grn.discrepancies);
 
     // Header details; anything not entered is left off the document
     const deliveryStatus = isPartialGrn
@@ -667,6 +689,12 @@ router.get('/:id/print', requireAuth, requirePermission('inv.grn', 'ops.entry_ga
           ${table.foot}
         </tfoot>
       </table>
+      ${gateIssues ? `
+      <div style="font-weight: bold; font-size: 11.5px; margin: 6px 0 6px;">Discrepancies reported at the gate</div>
+      <table class="data-table">
+        <thead>${gateIssues.head}</thead>
+        <tbody>${gateIssues.body}</tbody>
+      </table>` : ''}
     </div>
 
     <div class="bottom-section">

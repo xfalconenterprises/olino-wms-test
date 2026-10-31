@@ -4,15 +4,13 @@ import {
   Users, 
   Plus, 
   X, 
-  Printer, 
   ScanLine, 
   KeyRound, 
   ShieldCheck, 
   CheckSquare, 
   Square, 
-  RefreshCw, 
   AlertCircle,
-  FileText,
+  Download,
   Search,
   Check,
   Edit2,
@@ -32,21 +30,23 @@ import type { UserModule } from '../../../utils/roles';
 import { 
   MODULE_LABELS, 
   PERMISSION_GROUPS, 
+  EXPORT_PERMISSIONS, 
   ROLE_PRESETS,
   ALL_PERMISSION_KEYS,
+  hasPermission,
   COST_PRICE_PERMISSION,
   hasCostAccess
 } from '../../../utils/roles';
 import { useAuth } from '../../../hooks/useAuth';
 import { formatDate } from '../../../utils/format';
-import { printTSPL } from '../../../utils/printer';
-import BadgeBarcode from '../../../components/Common/BadgeBarcode';
+import { apiErrorMessage, downloadFromApi } from '../../../utils/download';
 import '../../../styles/components.css';
 
 interface UserItem {
   id: string;
   name: string;
   username: string;
+  phone?: string | null;
   badgeCode?: string | null;
   hasPin: boolean;
   mustResetPassword?: boolean;
@@ -124,14 +124,13 @@ export default function UsersPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [moduleFilter, setModuleFilter] = useState<'ALL' | UserModule>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
-  const [accessFilter, setAccessFilter] = useState<'ALL' | 'WITH_BADGE' | 'STANDARD_ONLY'>('ALL');
 
   // Modal State
   const [modalTab, setModalTab] = useState<ModalTab>('PROFILE');
   const [name, setName] = useState('');
   const [username, setUsername] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
-  const [badgeCode, setBadgeCode] = useState('');
   const [pin, setPin] = useState('');
   const [showPinText, setShowPinText] = useState(false);
   const [modules, setModules] = useState<UserModule[]>([]);
@@ -140,7 +139,15 @@ export default function UsersPage() {
   const [isActive, setIsActive] = useState(true);
   // Confidential cost access is kept apart from the module / tab permissions (and from '*')
   const [costAccess, setCostAccess] = useState(false);
+  const [costPassword, setCostPassword] = useState('');
+  const [costPasswordError, setCostPasswordError] = useState('');
   const { user: me } = useAuth();
+  // Needed on every new account; the first admin was created without one and can add it later
+  const phoneRequired = !editing || Boolean(editing.phone);
+  const phoneProblem = phone
+    ? (/^[6-9]\d{9}$/.test(phone) ? '' : 'Enter a 10-digit mobile number.')
+    : (phoneRequired ? 'Phone Number is required.' : '');
+  const costChanged = costAccess !== Boolean(editing?.permissions?.includes(COST_PRICE_PERMISSION));
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -158,9 +165,9 @@ export default function UsersPage() {
     }
   }, [hasWarehouseSelected, modalTab]);
 
-  // Print Badge Modal State
-  const [printingUser, setPrintingUser] = useState<UserItem | null>(null);
-  const [printingThermal, setPrintingThermal] = useState(false);
+  // Badge barcode downloads (for designing badges in the label software)
+  const [exportingBadges, setExportingBadges] = useState<string | null>(null);
+  const [badgeExportError, setBadgeExportError] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -196,19 +203,15 @@ export default function UsersPage() {
       if (statusFilter === 'ACTIVE' && !u.isActive) return false;
       if (statusFilter === 'INACTIVE' && u.isActive) return false;
 
-      // 4. Warehouse Access Filter
-      if (accessFilter === 'WITH_BADGE' && !u.badgeCode) return false;
-      if (accessFilter === 'STANDARD_ONLY' && u.badgeCode) return false;
-
       return true;
     });
-  }, [users, searchQuery, moduleFilter, statusFilter, accessFilter]);
+  }, [users, searchQuery, moduleFilter, statusFilter]);
 
   // Statistics
   const stats = useMemo(() => {
     const total = users.length;
     const active = users.filter(u => u.isActive).length;
-    const withBadge = users.filter(u => !!u.badgeCode).length;
+    const withBadge = users.filter(u => u.hasPin).length;
     const superAdmins = users.filter(u => u.permissions.includes('*')).length;
     return { total, active, withBadge, superAdmins };
   }, [users]);
@@ -219,14 +222,16 @@ export default function UsersPage() {
     setModalTab('PROFILE');
     setName('');
     setUsername('');
+    setPhone('');
     setPassword('');
-    setBadgeCode('');
     setPin('');
     setShowPinText(false);
     setIsActive(true);
     setModules([]);
     setPermissions([]);
     setCostAccess(false);
+    setCostPassword('');
+    setCostPasswordError('');
     setSelectedPreset('CUSTOM');
     setError('');
     setShowModal(true);
@@ -238,8 +243,8 @@ export default function UsersPage() {
     setModalTab('PROFILE');
     setName(u.name);
     setUsername(u.username);
+    setPhone(u.phone || '');
     setPassword('');
-    setBadgeCode(u.badgeCode || '');
     setPin('');
     setShowPinText(false);
     setIsActive(u.isActive);
@@ -248,6 +253,8 @@ export default function UsersPage() {
     setModules(u.modules || []);
     setPermissions(userPerms);
     setCostAccess((u.permissions || []).includes(COST_PRICE_PERMISSION));
+    setCostPassword('');
+    setCostPasswordError('');
 
     const matchedPreset = ROLE_PRESETS.find(p => {
       if (p.permissions.includes('*') && userPerms.includes('*')) return true;
@@ -326,9 +333,22 @@ export default function UsersPage() {
     }
   };
 
-  const generateRandomBadge = () => {
-    const randomNum = Math.floor(1000 + Math.random() * 9000);
-    setBadgeCode(`EMP-${randomNum}`);
+  // Export ticks are independent of the modules: ticking one never switches a module on
+  const handleExportToggle = (key: string) => {
+    setSelectedPreset('CUSTOM');
+    setPermissions(prev => {
+      const base = prev.includes('*') ? ALL_PERMISSION_KEYS : prev;
+      return base.includes(key) ? base.filter(k => k !== key) : [...base, key];
+    });
+  };
+
+  const handleToggleExports = (allSelected: boolean) => {
+    setSelectedPreset('CUSTOM');
+    const exportKeys = EXPORT_PERMISSIONS.map(p => p.key);
+    setPermissions(prev => {
+      const base = prev.includes('*') ? ALL_PERMISSION_KEYS : prev;
+      return allSelected ? base.filter(k => !exportKeys.includes(k)) : Array.from(new Set([...base, ...exportKeys]));
+    });
   };
 
   // Only someone who has cost access can give or remove it; the very first grant can be made by a
@@ -350,6 +370,10 @@ export default function UsersPage() {
     }
     if (!username.trim()) {
       setError('Username is required.');
+      return;
+    }
+    if (phoneProblem) {
+      setError(phoneProblem);
       return;
     }
     if (!editing && !password) {
@@ -386,6 +410,12 @@ export default function UsersPage() {
       return;
     }
 
+    if (phoneProblem) {
+      setError(phoneProblem);
+      setModalTab('PROFILE');
+      return;
+    }
+
     if (modules.length === 0) {
       setError('Please assign at least one of the 4 core modules.');
       setModalTab('PERMISSIONS');
@@ -398,26 +428,32 @@ export default function UsersPage() {
       return;
     }
 
+    if (costChanged && !costPassword) {
+      setCostPasswordError('Enter your password to confirm.');
+      setModalTab('PERMISSIONS');
+      return;
+    }
+
     const withCostAccess = [...permissions.filter(k => k !== COST_PRICE_PERMISSION), ...(costAccess ? [COST_PRICE_PERMISSION] : [])];
 
     setSubmitting(true);
     try {
-      const finalBadgeCode = hasWarehouseSelected ? (badgeCode.trim().toUpperCase() || null) : null;
       const finalPin = hasWarehouseSelected ? (pin.trim() || undefined) : undefined;
 
       if (editing) {
         const payload: Record<string, unknown> = {
           name: name.trim(),
+          phone,
           modules,
           permissions: withCostAccess,
           isActive,
-          badgeCode: finalBadgeCode,
+          ...(costChanged && { confirmPassword: costPassword }),
         };
         if (password) payload.password = password;
         if (hasWarehouseSelected) {
           if (pin) payload.pin = pin.trim();
         } else {
-          // Clear pin and badge if warehouse access revoked
+          // Clear the PIN if warehouse access is revoked (the Employee ID stays)
           payload.pin = null;
         }
 
@@ -433,19 +469,25 @@ export default function UsersPage() {
         await api.post('/api/users', {
           name: name.trim(),
           username: username.trim(),
+          phone,
           password,
-          badgeCode: finalBadgeCode,
           pin: finalPin,
           modules,
           permissions: withCostAccess,
+          ...(costChanged && { confirmPassword: costPassword }),
         });
       }
 
       setShowModal(false);
       load();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setError(msg || 'Failed to save user.');
+      const data = (err as { response?: { data?: { error?: string; code?: string } } })?.response?.data;
+      if (data?.code === 'CONFIRM_PASSWORD') {
+        setCostPasswordError(data.error || 'Incorrect password.');
+        setModalTab('PERMISSIONS');
+      } else {
+        setError(data?.error || 'Failed to save user.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -456,32 +498,16 @@ export default function UsersPage() {
     load();
   };
 
-  // TSPL direct hardware printer command for Employee Badges
-  const handlePrintThermalBadge = async (u: UserItem) => {
-    if (!u.badgeCode) {
-      alert('This user does not have a Badge Code assigned yet. Edit user to assign a badge ID.');
-      return;
-    }
-
-    setPrintingThermal(true);
+  // One user's Employee ID as a PNG barcode, for designing their badge (same barcode size as the rack labels)
+  const exportBadgeBarcode = async (target: UserItem) => {
+    setExportingBadges(target.id);
+    setBadgeExportError('');
     try {
-      const tsplCommand = `SIZE 75 mm, 50 mm
-DIRECTION 1
-CLS
-TEXT 300,25,"3",0,1,1,2,"OLINO UNIFORMS"
-TEXT 300,55,"2",0,1,1,2,"WAREHOUSE ACCESS BADGE"
-BAR 30,80,540,2
-TEXT 300,105,"4",0,1,1,2,"${u.name.toUpperCase()}"
-TEXT 300,145,"2",0,1,1,2,"ID: ${u.badgeCode} | ${u.username}"
-BARCODE 300,185,"128",75,1,0,2,4,"${u.badgeCode}"
-PRINT 1,1
-`;
-      await printTSPL(tsplCommand);
-      alert(`Employee badge for ${u.name} (${u.badgeCode}) transmitted to thermal printer!`);
-    } catch {
-      alert('Failed to transmit badge to thermal printer. Verify printer network connectivity.');
+      await downloadFromApi(`/api/users/${target.id}/badge-barcode`, `${target.badgeCode}.png`);
+    } catch (e) {
+      setBadgeExportError(await apiErrorMessage(e, 'Barcode download failed'));
     } finally {
-      setPrintingThermal(false);
+      setExportingBadges(null);
     }
   };
 
@@ -497,7 +523,7 @@ PRINT 1,1
             Manage system access across the 4 core modules: <strong>Purchase</strong>, <strong>Warehouse</strong>, <strong>Inventory</strong>, and <strong>Administration</strong>
           </p>
         </div>
-        <div className="page-actions">
+        <div className="page-actions" style={{ display: 'flex', gap: 10 }}>
           <button 
             id="user-add-btn" 
             className="btn btn-primary" 
@@ -508,6 +534,10 @@ PRINT 1,1
           </button>
         </div>
       </div>
+
+      {badgeExportError && (
+        <div className="alert alert-danger" style={{ marginBottom: 16 }}>{badgeExportError}</div>
+      )}
 
       {/* ── Metric KPI Cards ── */}
       <div style={{
@@ -644,21 +674,6 @@ PRINT 1,1
             </select>
           </div>
 
-          {/* Access Filter */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>Login Type:</span>
-            <select
-              className="form-select"
-              value={accessFilter}
-              onChange={e => setAccessFilter(e.target.value as any)}
-              style={{ height: 38, fontSize: 12.5, padding: '0 28px 0 10px' }}
-            >
-              <option value="ALL">All Logins</option>
-              <option value="WITH_BADGE">Warehouse Login (Badge/PIN)</option>
-              <option value="STANDARD_ONLY">Standard Password Only</option>
-            </select>
-          </div>
-
           {/* Status Filter */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>Status:</span>
@@ -696,7 +711,7 @@ PRINT 1,1
             <button 
               type="button" 
               className="btn btn-secondary btn-sm"
-              onClick={() => { setSearchQuery(''); setModuleFilter('ALL'); setStatusFilter('ALL'); setAccessFilter('ALL'); }}
+              onClick={() => { setSearchQuery(''); setModuleFilter('ALL'); setStatusFilter('ALL'); }}
               style={{ marginTop: 8 }}
             >
               Reset Filters
@@ -766,6 +781,7 @@ PRINT 1,1
                           </div>
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
                             <code>@{u.username}</code>
+                            {u.phone && <><span>·</span><span>{u.phone}</span></>}
                             <span>·</span>
                             <span>{formatDate(u.createdAt)}</span>
                           </div>
@@ -795,7 +811,7 @@ PRINT 1,1
                             <button
                               type="button"
                               onClick={() => copyToClipboard(u.badgeCode!, u.id)}
-                              title="Copy Badge Code"
+                              title="Copy Employee ID"
                               style={{ background: 'none', border: 'none', padding: 2, cursor: 'pointer', color: copiedId === u.id ? 'var(--color-success)' : 'var(--color-text-light)' }}
                             >
                               {copiedId === u.id ? <Check size={13} /> : <Copy size={13} />}
@@ -803,7 +819,7 @@ PRINT 1,1
                           </div>
                         ) : (
                           <span className="text-muted text-xs" style={{ fontStyle: 'italic', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <X size={12} /> No Badge Code
+                            <X size={12} /> No Employee ID
                           </span>
                         )}
 
@@ -880,15 +896,16 @@ PRINT 1,1
                     {/* Actions */}
                     <td style={{ textAlign: 'right' }}>
                       <div className="table-actions" style={{ justifyContent: 'flex-end', gap: 6 }}>
-                        {u.badgeCode && (
+                        {u.badgeCode && hasPermission(me, 'export.employee_barcodes') && (
                           <button
                             type="button"
                             className="btn btn-sm btn-secondary"
-                            onClick={() => setPrintingUser(u)}
-                            title="Print Employee Badge Barcode"
+                            onClick={() => exportBadgeBarcode(u)}
+                            disabled={exportingBadges !== null}
+                            title="Download this Employee ID barcode (PNG)"
                             style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 9px', height: 32 }}
                           >
-                            <Printer size={13} /> Badge
+                            {exportingBadges === u.id ? <span className="spinner" /> : <Download size={13} />} Barcode
                           </button>
                         )}
                         <button 
@@ -926,9 +943,9 @@ PRINT 1,1
             className="modal" 
             onClick={e => e.stopPropagation()} 
             style={{ 
-              maxWidth: 820, 
-              width: '92%', 
-              maxHeight: '92vh', 
+              maxWidth: 1000, 
+              width: '94%', 
+              height: 'min(780px, 92vh)', 
               display: 'flex', 
               flexDirection: 'column', 
               borderRadius: 'var(--radius-lg)',
@@ -937,7 +954,7 @@ PRINT 1,1
             }}
           >
             {/* Modal Header */}
-            <div className="modal-header" style={{ padding: '16px 22px', borderBottom: '1px solid var(--color-border)', background: '#fff' }}>
+            <div className="modal-header" style={{ padding: '18px 30px', borderBottom: '1px solid var(--color-border)', background: '#fff' }}>
               <div>
                 <h3 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 17, fontWeight: 700 }}>
                   <Users size={20} color="var(--color-brand)" />
@@ -961,8 +978,8 @@ PRINT 1,1
               display: 'flex',
               background: 'var(--color-bg-subtle)',
               borderBottom: '1px solid var(--color-border)',
-              padding: '0 22px',
-              gap: 4
+              padding: '0 30px',
+              gap: 8
             }}>
               <button
                 type="button"
@@ -982,7 +999,7 @@ PRINT 1,1
                   transition: 'all 0.15s ease'
                 }}
               >
-                <Users size={15} /> 1. Account Profile
+                <Users size={15} /> 1. Profile
               </button>
 
               <button
@@ -1003,7 +1020,7 @@ PRINT 1,1
                   transition: 'all 0.15s ease'
                 }}
               >
-                <ShieldCheck size={15} /> 2. Modules & Tab Permissions
+                <ShieldCheck size={15} /> 2. Modules & Permissions
               </button>
 
               {hasWarehouseSelected && (
@@ -1025,16 +1042,13 @@ PRINT 1,1
                     transition: 'all 0.15s ease'
                   }}
                 >
-                  <ScanLine size={15} /> 3. Warehouse Floor Login (Badge & PIN)
-                  <span style={{ fontSize: 10.5, background: '#F0FDF4', color: '#15803D', border: '1px solid #BBF7D0', padding: '1px 7px', borderRadius: 'var(--radius-sm)', fontWeight: 700 }}>
-                    Warehouse Enabled
-                  </span>
+                  <ScanLine size={15} /> 3. Warehouse PIN
                 </button>
               )}
             </div>
 
             <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-              <div className="modal-body" style={{ flex: 1, overflowY: 'auto', padding: '22px' }}>
+              <div className="modal-body" style={{ flex: 1, overflowY: 'auto', padding: '26px 30px' }}>
                 {error && (
                   <div className="alert alert-danger" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, fontSize: 13 }}>
                     <AlertCircle size={16} />
@@ -1080,25 +1094,40 @@ PRINT 1,1
                       </div>
                     </div>
 
-                    <div className="form-group" style={{ marginBottom: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                        <label className="form-label" style={{ fontSize: 13, marginBottom: 0 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label" style={{ fontSize: 13 }}>
+                          Phone Number {phoneRequired && <span className="required">*</span>}
+                        </label>
+                        <input
+                          id="user-phone"
+                          type="tel"
+                          inputMode="numeric"
+                          className="form-input"
+                          placeholder="10-digit mobile"
+                          value={phone}
+                          onChange={e => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                          required={phoneRequired}
+                          style={{ height: 40 }}
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label" style={{ fontSize: 13 }}>
                           Password {editing ? <span className="text-muted">(leave blank to keep current)</span> : <span className="required">*</span>}
                         </label>
-                        <span style={{ fontSize: 11, color: 'var(--color-text-light)' }}>
-                          Hashed securely with Argon2
-                        </span>
+                        <input
+                          id="user-password"
+                          type="password"
+                          autoComplete="new-password"
+                          className="form-input"
+                          placeholder={editing ? '••••••••' : 'Minimum 8 characters'}
+                          value={password}
+                          onChange={e => setPassword(e.target.value)}
+                          required={!editing}
+                          style={{ height: 40 }}
+                        />
                       </div>
-                      <input 
-                        id="user-password" 
-                        type="password" 
-                        className="form-input" 
-                        placeholder={editing ? '••••••••  (Unchanged)' : 'Enter strong password (minimum 6 characters)'}
-                        value={password} 
-                        onChange={e => setPassword(e.target.value)} 
-                        required={!editing} 
-                        style={{ height: 40 }}
-                      />
                     </div>
 
                     {editing && (
@@ -1358,6 +1387,83 @@ PRINT 1,1
                       </div>
                     </div>
 
+                    {/* Export permissions: separate from the modules */}
+                    {(() => {
+                      const has = (key: string) => permissions.includes('*') || permissions.includes(key);
+                      const selectedCount = EXPORT_PERMISSIONS.filter(p => has(p.key)).length;
+                      const allSelected = selectedCount === EXPORT_PERMISSIONS.length;
+                      return (
+                        <div style={{ border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '12px 14px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
+                            <div>
+                              <span style={{ fontSize: 13, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                <Download size={14} /> Export Permissions
+                              </span>
+                              <span style={{ fontSize: 11.5, color: 'var(--color-text-muted)', display: 'block', marginTop: 2 }}>
+                                {selectedCount} of {EXPORT_PERMISSIONS.length} allowed. Opening a screen does not allow downloading from it.
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleExports(allSelected)}
+                              style={{
+                                background: '#fff',
+                                border: '1px solid var(--color-border)',
+                                padding: '4px 10px',
+                                borderRadius: 'var(--radius-sm)',
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: 'var(--color-text-main)',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                flexShrink: 0
+                              }}
+                            >
+                              {allSelected ? (
+                                <><CheckSquare size={13} color="var(--color-brand)" /> Deselect All</>
+                              ) : (
+                                <><Square size={13} /> Select All</>
+                              )}
+                            </button>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 8 }}>
+                            {EXPORT_PERMISSIONS.map(perm => {
+                              const isPermitted = has(perm.key);
+                              return (
+                                <label
+                                  key={perm.key}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'flex-start',
+                                    gap: 9,
+                                    cursor: 'pointer',
+                                    padding: '8px 10px',
+                                    borderRadius: 'var(--radius-sm)',
+                                    background: isPermitted ? 'var(--color-brand-light)' : 'var(--color-bg-subtle)',
+                                    border: isPermitted ? '1px solid var(--color-brand)' : '1px solid var(--color-border)',
+                                    transition: 'all 0.1s ease'
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isPermitted}
+                                    onChange={() => handleExportToggle(perm.key)}
+                                    style={{ marginTop: 2, accentColor: 'var(--color-brand)' }}
+                                  />
+                                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                    <span style={{ fontSize: 12, fontWeight: isPermitted ? 700 : 500 }}>{perm.label}</span>
+                                    <span style={{ fontSize: 10.5, color: 'var(--color-text-muted)', lineHeight: 1.25 }}>{perm.description}</span>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* Confidential access: separate from modules, tabs and full access */}
                     <div style={{ border: '1px solid #fcd34d', background: '#fffbeb', borderRadius: 'var(--radius-md)', padding: 14 }}>
                       <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: canGrantCostAccess ? 'pointer' : 'not-allowed', opacity: canGrantCostAccess ? 1 : 0.7 }}>
@@ -1365,7 +1471,7 @@ PRINT 1,1
                           type="checkbox"
                           checked={costAccess}
                           disabled={!canGrantCostAccess}
-                          onChange={e => setCostAccess(e.target.checked)}
+                          onChange={e => { setCostAccess(e.target.checked); setCostPassword(''); setCostPasswordError(''); }}
                           style={{ marginTop: 3, accentColor: '#b45309' }}
                         />
                         <div>
@@ -1378,157 +1484,73 @@ PRINT 1,1
                           </span>
                         </div>
                       </label>
+                      {costChanged && (
+                        <div style={{ marginTop: 10, paddingLeft: 24, maxWidth: 360 }}>
+                          <label className="form-label" htmlFor="cost-confirm-password" style={{ fontSize: 12.5, color: '#92400e' }}>
+                            Your password, to {costAccess ? 'give' : 'remove'} this access
+                          </label>
+                          <input
+                            id="cost-confirm-password"
+                            type="password"
+                            autoComplete="new-password"
+                            className="form-input"
+                            placeholder="Your password"
+                            value={costPassword}
+                            onChange={e => { setCostPassword(e.target.value); setCostPasswordError(''); }}
+                            style={{ height: 40 }}
+                          />
+                          {costPasswordError && <div style={{ fontSize: 12, color: 'var(--color-danger)', marginTop: 4 }}>{costPasswordError}</div>}
+                        </div>
+                      )}
                     </div>
 
-                    {/* Notification Banner when Warehouse Operations is chosen */}
-                    {hasWarehouseSelected && (
-                      <div style={{
-                        background: '#F0FDF4',
-                        border: '1px solid #BBF7D0',
-                        borderRadius: 'var(--radius-md)',
-                        padding: '12px 16px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 12
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <ScanLine size={20} color="#15803D" style={{ flexShrink: 0 }} />
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: '#15803D' }}>Warehouse Operations Enabled</div>
-                            <div style={{ fontSize: 11.5, color: '#166534' }}>
-                              This account can access warehouse operations. Configure their Handheld Terminal Badge & 6-Digit PIN in Step 3.
-                            </div>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setModalTab('WAREHOUSE')}
-                          style={{ borderColor: '#86EFAC', color: '#15803D', background: '#fff', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}
-                        >
-                          <ScanLine size={13} /> Configure Badge & PIN →
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
 
                 {/* ── Step 3: Warehouse Floor Login (Badge & 6-Digit PIN) ── (Only if warehouse operations chosen) */}
                 {hasWarehouseSelected && modalTab === 'WAREHOUSE' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                    <div style={{
-                      background: 'var(--color-bg-subtle)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 'var(--radius-md)',
-                      padding: 14,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 12
-                    }}>
-                      <ScanLine size={24} color="var(--color-brand)" style={{ flexShrink: 0 }} />
-                      <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
-                        Warehouse floor staff can sign in on handheld terminals by scanning their <strong>Badge Barcode</strong> and entering their <strong>6-digit security PIN</strong>.
-                      </div>
+                  <div style={{ maxWidth: 400, margin: '40px auto 0', textAlign: 'center' }}>
+                    <div style={{ width: 56, height: 56, margin: '0 auto 14px', borderRadius: '50%', background: 'var(--color-brand-light)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <KeyRound size={24} color="var(--color-brand)" />
                     </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 18 }}>
-                      {/* Badge ID Input */}
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                          <label className="form-label" style={{ fontSize: 13, marginBottom: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <ScanLine size={15} color="var(--color-brand)" /> Employee Badge Code
-                          </label>
-                          <button
-                            type="button"
-                            onClick={generateRandomBadge}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              padding: 0,
-                              color: 'var(--color-brand)',
-                              fontSize: 11.5,
-                              fontWeight: 600,
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 4
-                            }}
-                          >
-                            <RefreshCw size={12} /> Auto-Generate
-                          </button>
-                        </div>
-                        <input
-                          type="text"
-                          className="form-input"
-                          placeholder="e.g. EMP-1042"
-                          value={badgeCode}
-                          onChange={e => setBadgeCode(e.target.value.toUpperCase())}
-                          style={{ height: 42, letterSpacing: '0.04em', fontWeight: 600 }}
-                        />
-
-                        {/* Live Barcode Preview */}
-                        {badgeCode.trim() ? (
-                          <div style={{ marginTop: 12, padding: '10px 14px', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', background: '#fff', textAlign: 'center' }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
-                              Barcode Preview
-                            </div>
-                            <BadgeBarcode value={badgeCode.trim()} width={220} height={44} showText={false} />
-                            <div style={{ fontSize: 11, fontFamily: 'monospace', fontWeight: 700, marginTop: 4, letterSpacing: '0.1em' }}>
-                              {badgeCode.trim()}
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: 11, color: 'var(--color-text-light)', marginTop: 6 }}>
-                            Leave blank if this user only logs in from desktop with username & password.
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 6-Digit PIN Input */}
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                          <label className="form-label" style={{ fontSize: 13, marginBottom: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <KeyRound size={15} color="var(--color-success)" /> 6-Digit Security PIN
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => setShowPinText(!showPinText)}
-                            style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-text-muted)', cursor: 'pointer' }}
-                            title={showPinText ? 'Hide PIN' : 'Show PIN'}
-                          >
-                            {showPinText ? <EyeOff size={14} /> : <Eye size={14} />}
-                          </button>
-                        </div>
-
-                        <input
-                          type={showPinText ? 'text' : 'password'}
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          maxLength={6}
-                          className="form-input"
-                          placeholder={editing && editing.hasPin ? '•••••• (Configured)' : 'Enter 6 digits'}
-                          value={pin}
-                          onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                          style={{ height: 42, letterSpacing: '0.25em', fontWeight: 700, textAlign: 'center', fontSize: 16 }}
-                        />
-
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
-                          <span style={{ fontSize: 11, color: pin.length === 6 ? 'var(--color-success)' : 'var(--color-text-muted)', fontWeight: 600 }}>
-                            {pin ? `${pin.length} / 6 digits entered` : editing && editing.hasPin ? 'Existing PIN active' : 'Numeric digits only'}
-                          </span>
-                          {editing && editing.hasPin && (
-                            <span className="badge badge-neutral" style={{ fontSize: 10 }}>PIN Active</span>
-                          )}
-                        </div>
-                      </div>
+                    <h4 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Security PIN</h4>
+                    <p style={{ margin: '6px 0 20px', fontSize: 13, color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                      Staff sign in on floor terminals by scanning their Employee ID barcode, then entering this PIN.
+                    </p>
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type={showPinText ? 'text' : 'password'}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={6}
+                        autoComplete="new-password"
+                        aria-label="Security PIN"
+                        className="form-input"
+                        placeholder={editing?.hasPin ? 'Enter new PIN' : 'Enter 6 digits'}
+                        value={pin}
+                        onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                        style={{ height: 50, padding: '0 44px', textAlign: 'center', fontWeight: 600, fontSize: pin ? 20 : 15, letterSpacing: pin ? '0.3em' : 'normal' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPinText(!showPinText)}
+                        aria-label={showPinText ? 'Hide PIN' : 'Show PIN'}
+                        style={{ position: 'absolute', top: 0, right: 0, width: 44, height: '100%', background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}
+                      >
+                        {showPinText ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
                     </div>
+                    {(pin || editing?.hasPin) && (
+                      <div style={{ marginTop: 8, fontSize: 12, color: pin.length === 6 ? 'var(--color-success)' : 'var(--color-text-muted)' }}>
+                        {pin ? `${pin.length} of 6 digits` : 'A PIN is set. Leave blank to keep it.'}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
               {/* Modal Footer with Step-by-Step Navigation */}
-              <div className="modal-footer" style={{ padding: '12px 22px', borderTop: '1px solid var(--color-border)', background: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div className="modal-footer" style={{ padding: '14px 30px', borderTop: '1px solid var(--color-border)', background: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <button 
                   type="button" 
                   className="btn btn-secondary" 
@@ -1568,7 +1590,7 @@ PRINT 1,1
                       onClick={handleProfileNext}
                       style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                     >
-                      Next: Modules & Permissions →
+                      Next: Permissions →
                     </button>
                   )}
 
@@ -1579,7 +1601,7 @@ PRINT 1,1
                       onClick={handlePermissionsNext}
                       style={{ display: 'flex', alignItems: 'center', gap: 6, borderColor: 'var(--color-brand)', color: 'var(--color-brand)', fontWeight: 600 }}
                     >
-                      <ScanLine size={14} /> Next: Warehouse Floor Login →
+                      <ScanLine size={14} /> Next: Warehouse PIN →
                     </button>
                   )}
 
@@ -1606,116 +1628,6 @@ PRINT 1,1
         </div>
       )}
 
-      {/* ── Modal: Print Employee ID Badge (Card Visualizer) ── */}
-      {printingUser && (
-        <div className="modal-overlay" onClick={() => setPrintingUser(null)}>
-          <div 
-            className="modal" 
-            onClick={e => e.stopPropagation()} 
-            style={{ maxWidth: 440, width: '92%', padding: 24, borderRadius: 'var(--radius-lg)' }}
-          >
-            <div className="modal-header" style={{ marginBottom: 16, paddingBottom: 10, borderBottom: '1px solid var(--color-border)' }}>
-              <h3 className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 16 }}>
-                <Printer size={18} color="var(--color-brand)" /> Print Employee ID Badge
-              </h3>
-              <button 
-                type="button" 
-                className="btn btn-ghost btn-icon" 
-                onClick={() => setPrintingUser(null)}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Badge Preview Physical Card */}
-            <div 
-              id="printable-employee-badge"
-              style={{
-                border: '2px solid var(--color-border)',
-                borderRadius: 'var(--radius-lg)',
-                padding: '24px 20px',
-                background: '#fff',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                textAlign: 'center',
-                boxShadow: 'var(--shadow-sm)',
-                marginBottom: 20
-              }}
-            >
-              <img 
-                src="/logo.png" 
-                alt="Olino Uniforms" 
-                style={{ maxHeight: '40px', objectFit: 'contain', marginBottom: 8 }} 
-              />
-              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--color-brand)', textTransform: 'uppercase', marginBottom: 14 }}>
-                Warehouse Terminal Access Pass
-              </div>
-
-              {/* User Avatar Circle */}
-              <div style={{
-                width: 54,
-                height: 54,
-                borderRadius: '50%',
-                background: 'var(--color-brand-light)',
-                color: 'var(--color-brand)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 18,
-                fontWeight: 700,
-                marginBottom: 10
-              }}>
-                {printingUser.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
-              </div>
-
-              <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 2 }}>
-                {printingUser.name}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 14 }}>
-                <code>@{printingUser.username}</code>
-              </div>
-
-              {/* Barcode Visualization */}
-              {printingUser.badgeCode && (
-                <div style={{ padding: '8px 14px', background: '#fff', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', marginBottom: 10 }}>
-                  <BadgeBarcode value={printingUser.badgeCode} width={250} height={48} />
-                </div>
-              )}
-
-              <div style={{ fontSize: 11, color: 'var(--color-text-light)' }}>
-                Scan this barcode gun on warehouse floor terminals to sign in
-              </div>
-            </div>
-
-            {/* Print Action Buttons */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => handlePrintThermalBadge(printingUser)}
-                disabled={printingThermal}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '11px 16px' }}
-              >
-                {printingThermal ? (
-                  <><span className="spinner" /> Transmitting TSPL…</>
-                ) : (
-                  <><Printer size={18} /> Print on Thermal TSC Label Printer</>
-                )}
-              </button>
-
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => window.print()}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 16px' }}
-              >
-                <FileText size={18} /> Print via Browser / Office Card Printer
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

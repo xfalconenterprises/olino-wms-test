@@ -1,11 +1,13 @@
 import { Router, Request, Response } from 'express';
+import { withReceivedQuantity } from '../../utils/received';
+import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 import bwipjs from 'bwip-js';
 import { generateSmartBatchCodePrefix } from '../../utils/batch-code';
 import { autoLearnAttributes } from '../master-data/attributes';
 import { allowsDecimals, fabricCategoryLabel, fabricUnitFor, totalsByUnit, unitLabel, unitName } from '../../utils/units';
-import { formatDate } from '../../utils/format';
+import { formatDate, istDateKey } from '../../utils/format';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
 import { documentTable, filledMeta, TableColumn } from '../../utils/print-document';
 import { recordAllocationReceipt } from './allocations';
@@ -233,7 +235,7 @@ router.get('/supplier-inbound/:supplierId/pending', requirePermission('ops.entry
     });
   } catch (err: any) {
     console.error('Error in supplier-inbound pending:', err);
-    res.status(500).json({ error: err.message || 'Failed to fetch pending items' });
+    res.status(500).json({ error: userMessage(err, 'Failed to fetch pending items') });
   }
 });
 
@@ -524,7 +526,7 @@ router.post('/supplier-inbound/receive-roll', requirePermission('ops.entry_gate'
     });
   } catch (err: any) {
     console.error('Error in receive-roll:', err);
-    res.status(500).json({ error: err.message || 'Failed to receive roll' });
+    res.status(500).json({ error: userMessage(err, 'Failed to receive roll') });
   }
 });
 
@@ -570,103 +572,117 @@ router.get('/supplier-inbound/session-rolls', requirePermission('ops.entry_gate'
       orderBy: { createdAt: 'desc' },
     });
 
-    res.json(batches);
+    res.json(await withReceivedQuantity(batches));
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch session rolls' });
+    res.status(500).json({ error: userMessage(err, 'Failed to fetch session rolls') });
   }
 });
 
 // ─── INBOUND BUNDLE DISCREPANCIES (Shortages, Missing Items, Defective Bundles) ─
+// Reported at the gate while receiving. A discrepancy stays open until the GRN for that delivery
+// is issued; it is then printed on, and locked to, that GRN.
 
-// POST /api/purchase-orders/supplier-inbound/discrepancies — report item missing/short in bundle
+export const DISCREPANCY_TYPES = ['MISSING_FROM_BUNDLE', 'SHORT_QUANTITY', 'WRONG_ITEM_PACKED', 'DAMAGED_DEFECTIVE'] as const;
+
+const DISCREPANCY_INCLUDE = {
+  reportedBy: { select: { id: true, name: true, username: true } },
+  supplier: { select: { id: true, name: true, code: true } },
+  po: { select: { id: true, poNumber: true } },
+} as const;
+
+// POST /api/purchase-orders/supplier-inbound/discrepancies — report an item missing, short, wrong
+// or damaged in a bundle. With poLineId the item, unit and supplier come from that PO line.
 router.post('/supplier-inbound/discrepancies', requirePermission('ops.entry_gate'), async (req: Request, res: Response) => {
-  try {
-    const {
-      supplierId,
-      invoiceRef,
-      bundleNumber,
-      itemType,
-      category,
-      brand,
-      quality,
-      shade,
-      size,
-      name,
-      artNo,
-      issueType,
-      expectedQty,
-      receivedQty = 0,
-      notes
-    } = req.body;
+  const body = req.body ?? {};
+  const text = (v: unknown, max = 100) => (v === undefined || v === null ? '' : String(v).trim().slice(0, max)) || null;
+  const bundleNumber = text(body.bundleNumber, 50);
+  const issueType = String(body.issueType ?? '');
+  if (!bundleNumber) return void res.status(400).json({ error: 'Enter the bundle number.' });
+  if (!(DISCREPANCY_TYPES as readonly string[]).includes(issueType)) return void res.status(400).json({ error: 'Choose the issue type.' });
 
-    if (!supplierId || !invoiceRef || !bundleNumber) {
-      res.status(400).json({ error: 'Supplier ID, Delivery Invoice/Challan Ref, and Bundle Number are required' });
-      return;
+  // The item: from the PO line when known, otherwise as sent (stock-in by supplier without a line)
+  let supplierId = text(body.supplierId);
+  let item: {
+    poId: string | null; poLineId: string | null; itemType: string; category: string | null; brand: string | null; quality: string | null;
+    qualityName: string | null; shade: string | null; size: string | null; name: string | null; artNo: string | null; uom: string;
+  };
+  if (body.poLineId) {
+    const line = await prisma.purchaseOrderLine.findUnique({ where: { id: String(body.poLineId) }, include: { po: true } });
+    if (!line || line.po.isDeleted) return void res.status(404).json({ error: 'PO line not found' });
+    if (!line.po.supplierId) return void res.status(400).json({ error: 'This purchase order is not linked to a supplier.' });
+    if (supplierId && supplierId !== line.po.supplierId) return void res.status(400).json({ error: 'The item belongs to another supplier.' });
+    supplierId = line.po.supplierId;
+    item = {
+      poId: line.poId, poLineId: line.id, itemType: line.itemType, category: line.category, brand: line.brand, quality: line.quality,
+      qualityName: line.qualityName, shade: line.shade, size: line.size, name: line.name, artNo: line.artNo,
+      uom: line.uom || (line.itemType === 'FABRIC' ? 'METERS' : 'PCS'),
+    };
+  } else {
+    if (!supplierId || !(await prisma.supplier.findUnique({ where: { id: supplierId }, select: { id: true } }))) {
+      return void res.status(400).json({ error: 'Choose the supplier.' });
     }
-
-    const record = await prisma.inboundDiscrepancy.create({
-      data: {
-        supplierId,
-        invoiceRef: String(invoiceRef).trim(),
-        bundleNumber: String(bundleNumber).trim(),
-        itemType: itemType || 'FABRIC',
-        category: category || null,
-        brand: brand || null,
-        quality: quality || null,
-        shade: shade || null,
-        size: size || null,
-        name: name || null,
-        artNo: artNo || null,
-        issueType: issueType || 'MISSING_FROM_BUNDLE',
-        expectedQty: expectedQty ? parseFloat(expectedQty) : null,
-        receivedQty: receivedQty ? parseFloat(receivedQty) : 0,
-        notes: notes ? String(notes).trim() : null,
-        reportedById: req.user!.userId
-      },
-      include: {
-        reportedBy: { select: { id: true, name: true, username: true } },
-        supplier: { select: { id: true, name: true, code: true } }
-      }
-    });
-    res.status(201).json(record);
-  } catch (err: any) {
-    console.error('Error in creating discrepancy:', err);
-    res.status(500).json({ error: err.message || 'Failed to record bundle discrepancy' });
+    const itemType = ['FABRIC', 'READY_MADE', 'ACCESSORY'].includes(body.itemType) ? body.itemType : 'FABRIC';
+    const category = text(body.category);
+    const uom = itemType === 'FABRIC'
+      ? (await fabricUnitFor(prisma, category ?? '')) ?? 'METERS'
+      : (text(body.uom, 20)?.toUpperCase() ?? 'PCS');
+    item = {
+      poId: null, poLineId: null, itemType, category, brand: text(body.brand), quality: text(body.quality), qualityName: text(body.qualityName),
+      shade: text(body.shade), size: text(body.size), name: text(body.name), artNo: text(body.artNo), uom,
+    };
   }
+
+  // Quantities in the item's unit: what should have come, and what actually came in good condition
+  const unit = unitName(item.uom).toLowerCase();
+  const expected = Number(body.expectedQty);
+  const received = body.receivedQty === undefined || body.receivedQty === null || body.receivedQty === '' ? 0 : Number(body.receivedQty);
+  if (!Number.isFinite(expected) || expected <= 0) return void res.status(400).json({ error: 'Enter the quantity as per the invoice or bundle tag.' });
+  if (!Number.isFinite(received) || received < 0) return void res.status(400).json({ error: 'Enter the quantity actually received (0 if none).' });
+  if (!allowsDecimals(item.uom) && (!Number.isInteger(expected) || !Number.isInteger(received))) {
+    return void res.status(400).json({ error: `Quantities in ${unit} must be whole numbers.` });
+  }
+  if (issueType === 'MISSING_FROM_BUNDLE' && received !== 0) return void res.status(400).json({ error: 'A missing item has 0 received.' });
+  if (received >= expected) return void res.status(400).json({ error: 'The quantity received must be less than expected; otherwise nothing is short.' });
+
+  const record = await prisma.inboundDiscrepancy.create({
+    data: {
+      supplierId: supplierId!,
+      invoiceRef: text(body.invoiceRef, 60),
+      bundleNumber,
+      ...item,
+      issueType,
+      expectedQty: Math.round(expected * 100) / 100,
+      receivedQty: Math.round(received * 100) / 100,
+      notes: text(body.notes, 500),
+      reportedById: req.user!.userId,
+    },
+    include: DISCREPANCY_INCLUDE,
+  });
+  res.status(201).json(record);
 });
 
-// GET /api/purchase-orders/supplier-inbound/discrepancies — list discrepancies for this delivery
+// GET /api/purchase-orders/supplier-inbound/discrepancies?supplierId=&poId=&invoiceRef=&open=1
+// open=1: only those not yet on a GRN (the ones the next GRN will carry)
 router.get('/supplier-inbound/discrepancies', requirePermission('ops.entry_gate'), async (req: Request, res: Response) => {
-  try {
-    const { supplierId, invoiceRef } = req.query;
+  const { supplierId, poId, invoiceRef, open } = req.query;
+  const where: any = {};
+  if (supplierId) where.supplierId = String(supplierId);
+  if (poId) where.poId = String(poId);
+  if (invoiceRef) where.invoiceRef = String(invoiceRef).trim();
+  if (open === '1' || open === 'true') where.grnId = null;
+  if (!where.supplierId && !where.poId) return void res.status(400).json({ error: 'Choose a supplier or purchase order.' });
 
-    const where: any = {};
-    if (supplierId) where.supplierId = String(supplierId);
-    if (invoiceRef) where.invoiceRef = String(invoiceRef).trim();
-
-    const records = await prisma.inboundDiscrepancy.findMany({
-      where,
-      include: {
-        reportedBy: { select: { id: true, name: true, username: true } },
-        supplier: { select: { id: true, name: true, code: true } }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-    res.json(records);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to fetch discrepancies' });
-  }
+  const records = await prisma.inboundDiscrepancy.findMany({ where, include: DISCREPANCY_INCLUDE, orderBy: { createdAt: 'desc' } });
+  res.json(records);
 });
 
-// DELETE /api/purchase-orders/supplier-inbound/discrepancies/:id — delete a discrepancy
+// DELETE /api/purchase-orders/supplier-inbound/discrepancies/:id — only while not yet on a GRN
 router.delete('/supplier-inbound/discrepancies/:id', requirePermission('ops.entry_gate'), async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    await prisma.inboundDiscrepancy.deleteMany({ where: { id: id as string } });
-    res.json({ success: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to remove discrepancy' });
-  }
+  const record = await prisma.inboundDiscrepancy.findUnique({ where: { id: String(req.params.id) }, include: { grn: { select: { grnNumber: true } } } });
+  if (!record) return void res.status(404).json({ error: 'Discrepancy not found' });
+  if (record.grnId) return void res.status(409).json({ error: `This discrepancy is already on ${record.grn?.grnNumber ?? 'a GRN'} and cannot be removed.` });
+  await prisma.inboundDiscrepancy.delete({ where: { id: record.id } });
+  res.json({ success: true });
 });
 
 // GET /api/purchase-orders/:id — single PO detail (supports UUID id and poNumber)
@@ -737,7 +753,7 @@ router.get('/:id', requirePermission('po.view', 'po.create', 'ops.entry_gate'), 
     });
   } catch (err: any) {
     console.error('Error fetching PO detail:', err);
-    res.status(500).json({ error: err.message || 'Failed to fetch purchase order' });
+    res.status(500).json({ error: userMessage(err, 'Failed to fetch purchase order') });
   }
 });
 
@@ -849,11 +865,22 @@ async function prepareLines(lines: any[]): Promise<Map<any, PreparedLine> | stri
 
 // POST /api/purchase-orders
 router.post('/', requirePermission('po.create'), async (req: Request, res: Response) => {
-  const { supplierId, supplierName, expectedDate, targetClient, notes, lines } = req.body;
+  const { supplierId, supplierName, expectedDate, targetClient, notes, lines, draftId } = req.body;
   if ((!supplierId && !supplierName) || !expectedDate || !lines || lines.length === 0) {
     res.status(400).json({ error: 'supplier, expectedDate, and lines are required' });
     return;
   }
+
+  // Confirming a draft: only its owner can, and costs left blank come from the draft
+  const draft = draftId
+    ? await prisma.poDraft.findFirst({ where: { id: String(draftId), userId: req.user!.userId } })
+    : null;
+  if (draftId && !draft) { res.status(404).json({ error: 'This draft no longer exists.' }); return; }
+  if (draft) {
+    const savedCosts = draft.costs as Record<string, number>;
+    for (const l of lines) l.costPrice = String(l.costPrice ?? '').trim() ? l.costPrice : savedCosts[l.draftKey];
+  }
+
   const prepared = await prepareLines(lines);
   if (typeof prepared === 'string') { res.status(400).json({ error: prepared }); return; }
   const allocations = await resolveLineAllocations(lines, targetClient);
@@ -882,7 +909,7 @@ router.post('/', requirePermission('po.create'), async (req: Request, res: Respo
     }
 
     // Generate PO-YY-XXXX (e.g. PO-26-0001)
-    const yearTwoDigits = String(new Date().getFullYear()).slice(-2);
+    const yearTwoDigits = istDateKey().slice(2, 4);
     const prefix = `PO-${yearTwoDigits}-`;
 
     const latestPo = await tx.purchaseOrder.findFirst({
@@ -942,6 +969,8 @@ router.post('/', requirePermission('po.create'), async (req: Request, res: Respo
         });
       }
     }
+
+    if (draft) await tx.poDraft.delete({ where: { id: draft.id } });
 
     return tx.purchaseOrder.findUnique({
       where: { id: createdPo.id },

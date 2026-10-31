@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
+import { userMessage } from '../../utils/errors';
 import bwipjs from 'bwip-js';
 import { requireAuth, requirePermission, userHasPermission } from '../../middleware/auth';
 import prisma from '../../lib/prisma';
-import { formatDate } from '../../utils/format';
+import { formatDate, istDateKey } from '../../utils/format';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
 import { filledMeta } from '../../utils/print-document';
 import { fabricCategoryLabel, totalsByUnit, unitName } from '../../utils/units';
@@ -102,7 +103,7 @@ router.get('/customers', requireAuth, requirePermission('ops.exit_gate'), async 
       clientId: c.id,
     })));
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
@@ -132,7 +133,7 @@ router.get('/:id', requireAuth, requirePermission('ops.exit_gate'), async (req: 
 
 // Helper to generate sequential DC number with concurrency collision retry
 async function generateNextChallanNumber(): Promise<string> {
-  const yearTwoDigits = String(new Date().getFullYear()).slice(-2);
+  const yearTwoDigits = istDateKey().slice(2, 4);
   const prefix = `DC-${yearTwoDigits}-`;
 
   const latestDc = await prisma.deliveryChallan.findFirst({
@@ -457,7 +458,7 @@ router.post('/:id/dispatch', requireAuth, requirePermission('ops.exit_gate'), as
 
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Dispatch failed' });
+    res.status(400).json({ error: userMessage(err, 'Dispatch failed') });
   }
 });
 

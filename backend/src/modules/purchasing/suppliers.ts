@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 
@@ -286,7 +287,7 @@ router.get('/:id/stock', requirePermission('inv.suppliers'), async (req: Request
     res.json(batches);
   } catch (err: any) {
     console.error('Failed to get supplier stock:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
@@ -390,7 +391,7 @@ router.post('/', requirePermission('admin.suppliers', 'inv.suppliers', 'po.creat
     res.status(201).json(supplier);
   } catch (error: any) {
     console.error('Error creating supplier:', error);
-    res.status(500).json({ error: error.message || 'Failed to create supplier' });
+    res.status(500).json({ error: userMessage(error, 'Failed to create supplier') });
   }
 });
 
@@ -437,7 +438,7 @@ router.put('/:id', requirePermission('admin.suppliers', 'inv.suppliers'), async 
     res.json(updated);
   } catch (error: any) {
     console.error('Error updating supplier:', error);
-    res.status(500).json({ error: error.message || 'Failed to update supplier' });
+    res.status(500).json({ error: userMessage(error, 'Failed to update supplier') });
   }
 });
 

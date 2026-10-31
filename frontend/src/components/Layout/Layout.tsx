@@ -9,6 +9,7 @@ import {
   MapPin, 
   ArrowRightLeft, 
   FileBarChart2, 
+  FileDown, 
   Users, 
   Power, 
   ShoppingCart, 
@@ -71,6 +72,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Master Attributes',  path: '/items',               icon: Layers,          permission: 'admin.items',     app: 'ADMINISTRATION' },
   { label: 'Locations Setup',    path: '/locations',           icon: MapPin,          permission: 'admin.locations', app: 'ADMINISTRATION' },
   { label: 'Reports',            path: '/reports',             icon: FileBarChart2,   permission: 'admin.reports',   app: 'ADMINISTRATION', section: 'System & Control' },
+  { label: 'Export Log',         path: '/export-log',          icon: FileDown,        permission: 'export.log', app: 'ADMINISTRATION' },
   { label: 'Users & Roles',      path: '/users',               icon: Users,           permission: 'admin.users',     app: 'ADMINISTRATION' },
   { label: 'Cost Prices',        path: '/cost-prices',         icon: LockKeyhole,     permission: COST_PRICE_PERMISSION, app: 'ADMINISTRATION' },
   { label: 'Printer Settings',   path: '/settings/printer',    icon: Printer,         permission: 'admin.dashboard', app: 'ADMINISTRATION' },
@@ -118,7 +120,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     currentApp = 'WAREHOUSE';
   } else if (currentPath.startsWith('/inventory')) {
     currentApp = 'INVENTORY';
-  } else if (currentPath.startsWith('/dashboard') || currentPath.startsWith('/reports') || currentPath.startsWith('/users') || currentPath.startsWith('/locations') || currentPath.startsWith('/suppliers') || currentPath.startsWith('/clients') || currentPath.startsWith('/items') || currentPath.startsWith('/cost-prices')) {
+  } else if (currentPath.startsWith('/dashboard') || currentPath.startsWith('/reports') || currentPath.startsWith('/export-log') || currentPath.startsWith('/users') || currentPath.startsWith('/locations') || currentPath.startsWith('/suppliers') || currentPath.startsWith('/clients') || currentPath.startsWith('/items') || currentPath.startsWith('/cost-prices')) {
     currentApp = 'ADMINISTRATION';
   } else if (currentPath.startsWith('/settings')) {
     const hasWarehouse = canAccessApp.WAREHOUSE(user);

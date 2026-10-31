@@ -1,52 +1,72 @@
-import type { ReactNode } from 'react';
+import { Suspense, lazy, type ComponentType, type ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './index.css';
 import './styles/components.css';
 
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import Layout from './components/Layout/Layout';
-import LoginPage from './apps/Core/Login/LoginPage';
-import ModuleSelectorPage from './apps/Core/ModuleSelector/ModuleSelectorPage';
-
-// Purchasing
-import PurchaseOrdersPage from './apps/Purchasing/PurchaseOrders/PurchaseOrdersPage';
-import CreatePOPage from './apps/Purchasing/PurchaseOrders/CreatePOPage';
-import ViewPOPage from './apps/Purchasing/PurchaseOrders/ViewPOPage';
-
-// Warehouse Operations
-import EntryGatePage from './apps/Inventory/EntryGate/EntryGatePage';
-import ReceivePOPage from './apps/Inventory/EntryGate/ReceivePOPage';
-import ExitGatePage from './apps/Inventory/ExitGate/ExitGatePage';
-import PutAwayPage from './apps/Inventory/PutAway/PutAwayPage';
-import BatchesPage from './apps/Inventory/Batches/BatchesPage';
-import GRNListPage from './apps/Inventory/GRN/GRNListPage';
-import ViewGRNPage from './apps/Inventory/GRN/ViewGRNPage';
-
-// Supervisory Inventory
-import InventoryDashboardPage from './apps/Inventory/Dashboard/InventoryDashboardPage';
-import AuditLogPage from './apps/Inventory/AuditLog/AuditLogPage';
-import DeliveryChallansPage from './apps/Inventory/DeliveryChallans/DeliveryChallansPage';
-import StockAdjustmentsPage from './apps/Inventory/Adjustments/StockAdjustmentsPage';
-import StockRelocationPage from './apps/Inventory/Relocations/StockRelocationPage';
-import StockAgingPage from './apps/Inventory/Aging/StockAgingPage';
-import ClientsTrackingPage from './apps/Inventory/Clients/ClientsTrackingPage';
-import SuppliersTrackingPage from './apps/Inventory/Suppliers/SuppliersTrackingPage';
-import StockCountsPage from './apps/Inventory/StockCount/StockCountsPage';
-import StockCountPage from './apps/Inventory/StockCount/StockCountPage';
-import ReturnsPage from './apps/Inventory/Returns/ReturnsPage';
-
-// Administration
-import DashboardPage from './apps/Administration/Dashboard/DashboardPage';
-import SuppliersPage from './apps/Administration/Suppliers/SuppliersPage';
-import ItemsPage from './apps/Administration/Items/ItemsPage';
-import LocationsPage from './apps/Administration/Locations/LocationsPage';
-import ReportsPage from './apps/Administration/Reports/ReportsPage';
-import UsersPage from './apps/Administration/Users/UsersPage';
-import PrinterSettingsPage from './apps/Administration/Settings/PrinterSettingsPage';
-import CostPricesPage from './apps/Administration/CostPrices/CostPricesPage';
-
 import { hasPermission, getDefaultRoute, COST_PRICE_PERMISSION, type UserModule } from './utils/roles';
 import ErrorBoundary from './components/Common/ErrorBoundary';
+
+// Each screen is its own download, so the app starts fast. A tab left open across an update may
+// ask for a file that no longer exists: reloading once picks up the new version.
+function screen(load: () => Promise<{ default: ComponentType }>) {
+  return lazy(async () => {
+    try {
+      const loaded = await load();
+      sessionStorage.removeItem('wms_reloaded_for_update');
+      return loaded;
+    } catch (err) {
+      if (sessionStorage.getItem('wms_reloaded_for_update')) throw err;
+      sessionStorage.setItem('wms_reloaded_for_update', '1');
+      window.location.reload();
+      return new Promise<never>(() => {});
+    }
+  });
+}
+
+const screenLoading = <div className="loading-center" style={{ minHeight: '40vh' }}><span className="spinner spinner-lg" /></div>;
+
+const LoginPage = screen(() => import('./apps/Core/Login/LoginPage'));
+const ModuleSelectorPage = screen(() => import('./apps/Core/ModuleSelector/ModuleSelectorPage'));
+
+// Purchasing
+const PurchaseOrdersPage = screen(() => import('./apps/Purchasing/PurchaseOrders/PurchaseOrdersPage'));
+const CreatePOPage = screen(() => import('./apps/Purchasing/PurchaseOrders/CreatePOPage'));
+const ViewPOPage = screen(() => import('./apps/Purchasing/PurchaseOrders/ViewPOPage'));
+
+// Warehouse Operations
+const EntryGatePage = screen(() => import('./apps/Inventory/EntryGate/EntryGatePage'));
+const ReceivePOPage = screen(() => import('./apps/Inventory/EntryGate/ReceivePOPage'));
+const ExitGatePage = screen(() => import('./apps/Inventory/ExitGate/ExitGatePage'));
+const PutAwayPage = screen(() => import('./apps/Inventory/PutAway/PutAwayPage'));
+const BatchesPage = screen(() => import('./apps/Inventory/Batches/BatchesPage'));
+const GRNListPage = screen(() => import('./apps/Inventory/GRN/GRNListPage'));
+const ViewGRNPage = screen(() => import('./apps/Inventory/GRN/ViewGRNPage'));
+
+// Supervisory Inventory
+const InventoryDashboardPage = screen(() => import('./apps/Inventory/Dashboard/InventoryDashboardPage'));
+const AuditLogPage = screen(() => import('./apps/Inventory/AuditLog/AuditLogPage'));
+const DeliveryChallansPage = screen(() => import('./apps/Inventory/DeliveryChallans/DeliveryChallansPage'));
+const StockAdjustmentsPage = screen(() => import('./apps/Inventory/Adjustments/StockAdjustmentsPage'));
+const StockRelocationPage = screen(() => import('./apps/Inventory/Relocations/StockRelocationPage'));
+const StockAgingPage = screen(() => import('./apps/Inventory/Aging/StockAgingPage'));
+const ClientsTrackingPage = screen(() => import('./apps/Inventory/Clients/ClientsTrackingPage'));
+const SuppliersTrackingPage = screen(() => import('./apps/Inventory/Suppliers/SuppliersTrackingPage'));
+const StockCountsPage = screen(() => import('./apps/Inventory/StockCount/StockCountsPage'));
+const StockCountPage = screen(() => import('./apps/Inventory/StockCount/StockCountPage'));
+const ReturnsPage = screen(() => import('./apps/Inventory/Returns/ReturnsPage'));
+
+// Administration
+const DashboardPage = screen(() => import('./apps/Administration/Dashboard/DashboardPage'));
+const SuppliersPage = screen(() => import('./apps/Administration/Suppliers/SuppliersPage'));
+const ItemsPage = screen(() => import('./apps/Administration/Items/ItemsPage'));
+const LocationsPage = screen(() => import('./apps/Administration/Locations/LocationsPage'));
+const ReportsPage = screen(() => import('./apps/Administration/Reports/ReportsPage'));
+const ExportLogPage = screen(() => import('./apps/Administration/ExportLog/ExportLogPage'));
+const UsersPage = screen(() => import('./apps/Administration/Users/UsersPage'));
+const PrinterSettingsPage = screen(() => import('./apps/Administration/Settings/PrinterSettingsPage'));
+const CostPricesPage = screen(() => import('./apps/Administration/CostPrices/CostPricesPage'));
 
 function ProtectedRoute({ 
   children, 
@@ -54,17 +74,17 @@ function ProtectedRoute({
   check 
 }: { 
   children: ReactNode; 
-  permission?: string; 
+  permission?: string | string[];   // any one of these 
   check?: (modules: UserModule[]) => boolean 
 }) {
   const { user, loading } = useAuth();
 
   if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}><span className="spinner spinner-lg" /></div>;
   if (!user) return <Navigate to="/login" replace />;
-  if (permission && !hasPermission(user, permission)) return <Navigate to="/" replace />;
+  if (permission && ![permission].flat().some(p => hasPermission(user, p))) return <Navigate to="/" replace />;
   if (check && !check(user.modules)) return <Navigate to="/" replace />;
 
-  return <Layout>{children}</Layout>;
+  return <Layout><Suspense fallback={screenLoading}>{children}</Suspense></Layout>;
 }
 
 function AppRoutes() {
@@ -74,8 +94,8 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
-      <Route path="/select-module" element={<ModuleSelectorPage />} />
+      <Route path="/login" element={user ? <Navigate to="/" replace /> : <Suspense fallback={screenLoading}><LoginPage /></Suspense>} />
+      <Route path="/select-module" element={<Suspense fallback={screenLoading}><ModuleSelectorPage /></Suspense>} />
 
       <Route path="/" element={
         user
@@ -119,10 +139,11 @@ function AppRoutes() {
       <Route path="/suppliers" element={<ProtectedRoute permission="admin.suppliers"><SuppliersPage /></ProtectedRoute>} />
       <Route path="/items" element={<ProtectedRoute permission="admin.items"><ItemsPage /></ProtectedRoute>} />
       <Route path="/locations" element={<ProtectedRoute permission="admin.locations"><LocationsPage /></ProtectedRoute>} />
+      <Route path="/export-log" element={<ProtectedRoute permission="export.log"><ExportLogPage /></ProtectedRoute>} />
       <Route path="/reports" element={<ProtectedRoute permission="admin.reports"><ReportsPage /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute permission="admin.users"><UsersPage /></ProtectedRoute>} />
       <Route path="/cost-prices" element={<ProtectedRoute permission={COST_PRICE_PERMISSION}><CostPricesPage /></ProtectedRoute>} />
-      <Route path="/settings/printer" element={<ProtectedRoute permission="ops.printer"><PrinterSettingsPage /></ProtectedRoute>} />
+      <Route path="/settings/printer" element={<ProtectedRoute permission={['ops.printer', 'admin.dashboard']}><PrinterSettingsPage /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

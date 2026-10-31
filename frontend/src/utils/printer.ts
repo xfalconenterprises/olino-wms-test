@@ -59,10 +59,10 @@ let autoPrintCache: { enabled: boolean; at: number } | null = null;
 const AUTO_PRINT_CACHE_MS = 60_000;
 
 /**
- * Prints the label for a just-received roll if "Auto print on receipt" is on.
- * Printing failures are logged, never thrown, so receiving is never blocked by the printer.
+ * Prints the label for a just-received roll if "Auto print on receipt" is on. Callers do not wait
+ * for it, so a slow or switched-off printer never holds up receiving; onFail tells the worker.
  */
-export async function autoPrintReceivedLabel(batchCode: string): Promise<void> {
+export async function autoPrintReceivedLabel(batchCode: string, onFail?: (message: string) => void): Promise<void> {
   if (!autoPrintCache || Date.now() - autoPrintCache.at > AUTO_PRINT_CACHE_MS) {
     try {
       const settings = await getPrinterSettings();
@@ -76,6 +76,7 @@ export async function autoPrintReceivedLabel(batchCode: string): Promise<void> {
     await printTSPL(batchCode);
   } catch (err: any) {
     console.warn('Auto-print failed:', err?.response?.data?.error || err?.message || err);
+    onFail?.(`The label for ${batchCode} did not print. Check the printer, then use Reprint Label.`);
   }
 }
 
@@ -170,18 +171,6 @@ export async function discoverPrinters(subnet?: string): Promise<DiscoveryRespon
 }
 
 /**
- * Fetch detected physical subnets on the host
- */
-export async function getDetectedSubnets(): Promise<string[]> {
-  try {
-    const res = await api.get('/api/printer/subnets');
-    return res.data.subnets || ['192.168.1'];
-  } catch {
-    return ['192.168.1', '192.168.0', '192.168.29'];
-  }
-}
-
-/**
  * Transmit a test calibration label (100mm x 50mm) to the designated printer via network
  */
 export async function testPrintDirect(
@@ -238,13 +227,14 @@ export interface PrintBatchOptions {
  */
 export async function printBatchDirect(
   batchCode: string,
-  copies = 1,
+  copies?: number,   // left out: the "Copies of each label" setting applies
   printerId?: string,
   options?: PrintBatchOptions
 ): Promise<{ success: boolean; message: string }> {
   const cleanCode = batchCode.trim();
   const targetPrinterId = printerId || getWorkstationPrinterId() || undefined;
-  const payload: any = { copies, printerId: targetPrinterId };
+  const payload: any = { printerId: targetPrinterId };
+  if (copies !== undefined) payload.copies = copies;
   if (options?.quantity !== undefined) {
     payload.quantity = options.quantity;
   }
@@ -268,18 +258,7 @@ export async function printTSPL(
   if (!batchCodeOrCommands) return false;
   const targetPrinterId = printerId || getWorkstationPrinterId() || undefined;
 
-  // If it's a batchCode (e.g. BAT-2026-0001 or SIY-001)
-  if (!batchCodeOrCommands.includes('\n') && !batchCodeOrCommands.startsWith('SIZE')) {
-    await printBatchDirect(batchCodeOrCommands, 1, targetPrinterId, options);
-    return true;
-  }
-
-  // If it's a raw TSPL command string (e.g. from locations or custom templates)
-  if (batchCodeOrCommands.startsWith('SIZE') || batchCodeOrCommands.includes('\n')) {
-    await api.post('/api/printer/raw-tspl', { tspl: batchCodeOrCommands, printerId: targetPrinterId });
-    return true;
-  }
-
-  await testPrintDirect(targetPrinterId ? { printerId: targetPrinterId } : undefined);
+  // The server builds the label for the roll (raw printer commands are not accepted)
+  await printBatchDirect(batchCodeOrCommands.trim(), undefined, targetPrinterId, options);
   return true;
 }

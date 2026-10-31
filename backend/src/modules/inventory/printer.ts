@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { userMessage } from '../../utils/errors';
 import net from 'net';
 import os from 'os';
 import fs from 'fs';
@@ -14,6 +15,9 @@ router.use(requireAuth);
 
 // Changing printers or probing the network needs the Printer Settings screen permission
 const requirePrinterAdmin = requirePermission('ops.printer', 'admin.dashboard');
+
+// Screens that print or preview roll labels (receiving, dispatch remainders, returns, stock passport)
+export const LABEL_PERMISSIONS = ['ops.entry_gate', 'ops.exit_gate', 'ops.returns', 'inv.dashboard', 'ops.printer'] as const;
 
 // Printers live on the warehouse LAN; never let the server connect anywhere else
 export function isPrivateIPv4(ip: string): boolean {
@@ -155,7 +159,7 @@ export async function sendTsplToPrinter(
         client.end();
         resolve({
           success: true,
-          message: `Label sent to TSC TE210 at ${ip}:${port}`,
+          message: `Label sent to the printer at ${ip}:${port}`,
         });
       });
     });
@@ -609,11 +613,24 @@ router.post('/settings', requirePrinterAdmin, (req: Request, res: Response) => {
   const { autoPrintOnReceipt, copies } = req.body || {};
   const updated = savePrinterConfig({
     ...(typeof autoPrintOnReceipt === 'boolean' && { autoPrintOnReceipt }),
-    ...(copies !== undefined && Number(copies) >= 1 && { copies: Math.floor(Number(copies)) }),
+    ...(copies !== undefined && Number(copies) >= 1 && { copies: Math.min(10, Math.floor(Number(copies))) }),
   });
   const defaultPrinter = getDefaultPrinter(updated);
   res.json({ success: true, settings: updated, defaultPrinter });
 });
+
+// Port, resolution, gap and direction as sent, or the fallback's when missing or out of range
+function printerOptions(input: Record<string, unknown>, fallback: Pick<PrinterDevice, 'port' | 'dpi' | 'gapMm' | 'direction'>) {
+  const port = Number(input.port);
+  const gapMm = Number(input.gapMm);
+  const direction = input.direction === undefined || input.direction === null ? fallback.direction : Number(input.direction);
+  return {
+    port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : fallback.port,
+    dpi: Number(input.dpi) === 300 ? 300 : Number(input.dpi) === 203 ? 203 : fallback.dpi,
+    gapMm: gapMm > 0 && gapMm <= 20 ? gapMm : fallback.gapMm,
+    direction: direction === 0 ? 0 : 1,
+  };
+}
 
 // POST /api/printer/devices — Add a new printer device
 router.post('/devices', requirePrinterAdmin, (req: Request, res: Response) => {
@@ -640,12 +657,9 @@ router.post('/devices', requirePrinterAdmin, (req: Request, res: Response) => {
     name: name.trim(),
     model: (model || 'TSC TE210').trim(),
     ip: ip.trim(),
-    port: Number(port || 9100),
-    dpi: Number(dpi || 203),
+    ...printerOptions({ port, dpi, gapMm, direction }, DEFAULT_PRINTER),
     labelWidthMm: LABEL_WIDTH_MM,
     labelHeightMm: LABEL_HEIGHT_MM,
-    gapMm: Number(gapMm || 3),
-    direction: Number(direction || 1),
     isDefault: shouldBeDefault,
     station: station || 'INBOUND',
   };
@@ -681,12 +695,9 @@ router.put('/devices/:id', requirePrinterAdmin, (req: Request, res: Response) =>
     name: updates.name ? String(updates.name).trim() : current.name,
     model: updates.model ? String(updates.model).trim() : current.model,
     ip: updates.ip ? String(updates.ip).trim() : current.ip,
-    port: Number(updates.port || current.port),
-    dpi: Number(updates.dpi || current.dpi),
+    ...printerOptions(updates, current),
     labelWidthMm: LABEL_WIDTH_MM,
     labelHeightMm: LABEL_HEIGHT_MM,
-    gapMm: Number(updates.gapMm || current.gapMm),
-    direction: Number(updates.direction ?? current.direction) === 0 ? 0 : 1,
     isDefault: updates.isDefault ? true : current.isDefault,
     station: updates.station || current.station,
   };
@@ -774,14 +785,11 @@ router.post('/check-connection', requirePrinterAdmin, async (req: Request, res: 
     const result = await checkPrinterConnection(targetIp, targetPort);
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
+    res.status(400).json({ success: false, error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
 // GET /api/printer/subnets — Return detected physical subnets on the host
-router.get('/subnets', requirePrinterAdmin, (_req: Request, res: Response) => {
-  res.json({ success: true, subnets: getDetectedSubnets() });
-});
 
 // POST /api/printer/discover — Auto-scan local network subnet on Port 9100
 router.post('/discover', requirePrinterAdmin, async (req: Request, res: Response) => {
@@ -804,7 +812,7 @@ router.post('/discover', requirePrinterAdmin, async (req: Request, res: Response
       scannedSubnets: result.scannedSubnets,
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
@@ -839,12 +847,12 @@ router.post('/test-print', requirePrinterAdmin, async (req: Request, res: Respon
     res.json(result);
   } catch (err: any) {
     console.error('Test print failed:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
 // POST /api/printer/print-batch/:batchCode — Send batch label to specific or default printer
-router.post('/print-batch/:batchCode', async (req: Request, res: Response) => {
+router.post('/print-batch/:batchCode', requirePermission(...LABEL_PERMISSIONS), async (req: Request, res: Response) => {
   const { batchCode } = req.params;
   const { copies, printerId, quantity, isRemainder } = req.body || {};
 
@@ -875,7 +883,7 @@ router.post('/print-batch/:batchCode', async (req: Request, res: Response) => {
 
     const config = getPrinterConfig();
     const targetDevice = getPrinterDevice(printerId, config);
-    const numCopies = copies || config.copies || 1;
+    const numCopies = Math.min(10, Math.max(1, Math.floor(Number(copies)) || config.copies || 1));
     const tspl = build100x50Tspl(batch, numCopies, targetDevice.dpi || 203, targetDevice);
 
     await sendTsplToPrinter(tspl, targetDevice.ip, targetDevice.port);
@@ -890,25 +898,9 @@ router.post('/print-batch/:batchCode', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error(`Print batch ${batchCode} failed:`, err.message);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: userMessage(err, 'Something went wrong. Please try again.') });
   }
 });
 
-// POST /api/printer/raw-tspl — Send raw TSPL commands directly to the printer
-router.post('/raw-tspl', async (req: Request, res: Response) => {
-  const { tspl, printerId } = req.body;
-  if (!tspl) {
-    res.status(400).json({ success: false, error: 'TSPL command string required' });
-    return;
-  }
-  try {
-    // Use this workstation's printer when given, otherwise the default
-    const device = getPrinterDevice(printerId);
-    const result = await sendTsplToPrinter(tspl, device.ip, device.port);
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 export default router;

@@ -97,8 +97,8 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
 
-    if (newPassword.length < 6) {
-      setError('New password must be at least 6 characters long.');
+    if (newPassword.length < 8) {
+      setError('New password must be at least 8 characters long.');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -754,7 +754,7 @@ export default function LoginPage() {
               <input
                 type={showNewPassword ? 'text' : 'password'}
                 className="form-input"
-                placeholder="Minimum 6 characters"
+                placeholder="Minimum 8 characters"
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 required

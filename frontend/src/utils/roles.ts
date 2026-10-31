@@ -97,6 +97,23 @@ export const PERMISSION_GROUPS: {
   },
 ];
 
+// Every download in the system. Not a module: these are ticked one by one and only full access
+// ('*') includes them, so opening a screen never brings the right to take its data away.
+export const EXPORT_PERMISSIONS: { key: string; label: string; description: string }[] = [
+  { key: 'export.stock',             label: 'Global Dashboard Stock',    description: 'Excel of stock from the Global Dashboard' },
+  { key: 'export.delivery_challans', label: 'Delivery Challans',         description: 'Delivery challan register' },
+  { key: 'export.suppliers',         label: 'Suppliers Tracking',        description: 'Stock by supplier mill' },
+  { key: 'export.clients',           label: 'Clients Tracking',          description: 'Dispatches by client' },
+  { key: 'export.report_throughput', label: 'Report: Periodic Throughput', description: 'Inward and outward for a period' },
+  { key: 'export.report_shipments',  label: 'Report: Customer Shipments', description: 'Delivery challans by customer' },
+  { key: 'export.report_stock_master', label: 'Report: Stock Master',    description: 'Full stock list by product type' },
+  { key: 'export.report_suppliers',  label: 'Report: Supplier Performance', description: 'Supplier order and delivery figures' },
+  { key: 'export.report_capacity',   label: 'Report: Rack & Space Capacity', description: 'Rack usage and free space' },
+  { key: 'export.locations',         label: 'Location Barcodes',         description: 'Location lists and barcodes for label designers' },
+  { key: 'export.employee_barcodes', label: 'Employee Barcodes',         description: 'Employee ID barcode images' },
+  { key: 'export.log',               label: 'View Export Log',           description: 'See who exported stock and what they took' },
+];
+
 // Confidential cost prices: granted only by name. Full access ('*') and module fallbacks do not
 // include it, and only a user who already has it can give it to someone (checked on the server).
 export const COST_PRICE_PERMISSION = 'secure.cost_prices';
@@ -106,7 +123,7 @@ export function hasCostAccess(user: WmsUser | null | undefined): boolean {
 }
 
 // Flat list of all permission keys
-export const ALL_PERMISSION_KEYS = PERMISSION_GROUPS.flatMap(g => g.permissions.map(p => p.key));
+export const ALL_PERMISSION_KEYS = [...PERMISSION_GROUPS.flatMap(g => g.permissions.map(p => p.key)), ...EXPORT_PERMISSIONS.map(p => p.key)];
 
 // ─── Standard Role Presets ────────────────────────────────────────────────────
 export interface RolePreset {
@@ -225,7 +242,7 @@ export const canAccessApp = {
     hasPermission(user, 'inv.relocations') ||
     hasPermission(user, 'inv.aging')
   ),
-  ADMINISTRATION: (user: WmsUser | null) => hasCostAccess(user) || hasModuleAccess(user, 'ADMINISTRATION') && (
+  ADMINISTRATION: (user: WmsUser | null) => hasCostAccess(user) || hasPermission(user, 'export.log') || hasModuleAccess(user, 'ADMINISTRATION') && (
     hasPermission(user, 'admin.dashboard') || 
     hasPermission(user, 'admin.clients') || 
     hasPermission(user, 'admin.suppliers') || 

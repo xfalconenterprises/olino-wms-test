@@ -33,6 +33,13 @@ declare global {
 }
 
 export const SESSION_DURATION = '8h';
+export const MIN_PASSWORD_LENGTH = 8;
+
+/** Sessions started before this moment end (set when a password or PIN is changed or reset). */
+export function sessionCutoff(): Date {
+  // Whole seconds, like a token's issue time, so the token issued right after still counts
+  return new Date(Math.floor(Date.now() / 1000) * 1000);
+}
 
 export function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
@@ -102,10 +109,14 @@ async function authenticate(req: Request, res: Response, next: NextFunction, all
 
   const user = await prisma.user.findUnique({
     where: { id: decoded.userId },
-    select: { id: true, username: true, name: true, modules: true, permissions: true, isActive: true },
+    select: { id: true, username: true, name: true, modules: true, permissions: true, isActive: true, sessionsValidFrom: true },
   });
   if (!user || !user.isActive) {
     res.status(401).json({ error: 'Unauthorized — user not found or deactivated' });
+    return;
+  }
+  if (user.sessionsValidFrom && (decoded.iat ?? 0) < user.sessionsValidFrom.getTime() / 1000) {
+    res.status(401).json({ error: 'Your password or PIN was changed. Please sign in again.' });
     return;
   }
 

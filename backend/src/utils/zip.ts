@@ -63,9 +63,11 @@ export function createZip(entries: ZipEntry[]): Buffer {
   return Buffer.concat([...localParts, ...centralParts, end]);
 }
 
-function dosDateTime(d: Date) {
+// ZIP entries store plain local time: IST, read through the UTC getters after shifting by 5:30
+function dosDateTime(when: Date) {
+  const d = new Date(when.getTime() + 5.5 * 60 * 60 * 1000);
   return {
-    time: (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2),
-    date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+    time: (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | Math.floor(d.getUTCSeconds() / 2),
+    date: ((d.getUTCFullYear() - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate(),
   };
 }

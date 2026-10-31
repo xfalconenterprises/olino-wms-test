@@ -4,7 +4,6 @@ import api from '../../../utils/api';
 import { 
   FileCheck, 
   Search, 
-  Calendar, 
   Printer, 
   Eye, 
   AlertTriangle, 
@@ -13,6 +12,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
+import DateField from '../../../components/Common/DateField';
 import { formatUnitTotals } from '../../../utils/units';
 import '../../../styles/components.css';
 
@@ -160,68 +160,14 @@ export default function GRNListPage() {
           {/* Date Filter & Presets */}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             
-            {/* Calendar Range Pill */}
-            <div style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              background: '#ffffff', 
-              border: (startDate || endDate) ? '1px solid var(--color-brand)' : '1px solid var(--color-border)', 
-              borderRadius: 'var(--radius-md)', 
-              padding: '2px 8px', 
-              height: 36,
-              gap: 6,
-              boxShadow: 'var(--shadow-xs)'
-            }}>
-              <Calendar size={15} color={(startDate || endDate) ? 'var(--color-brand)' : 'var(--color-text-muted)'} />
-              <input 
-                type="date" 
-                value={startDate} 
-                onChange={e => setStartDate(e.target.value)} 
-                title="From Date"
-                style={{ 
-                  border: 'none', 
-                  outline: 'none', 
-                  fontSize: 12, 
-                  color: 'var(--color-text-main)', 
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  width: 110
-                }}
-              />
-              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>&ndash;</span>
-              <input 
-                type="date" 
-                value={endDate} 
-                onChange={e => setEndDate(e.target.value)} 
-                title="To Date"
-                style={{ 
-                  border: 'none', 
-                  outline: 'none', 
-                  fontSize: 12, 
-                  color: 'var(--color-text-main)', 
-                  background: 'transparent',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  width: 110
-                }}
-              />
+            {/* Calendar Range */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <DateField compact short="From" label="From date" value={startDate} onChange={setStartDate} max={endDate || undefined} />
+              <DateField compact short="To" label="To date" value={endDate} onChange={setEndDate} min={startDate || undefined} />
               {(startDate || endDate) && (
-                <button 
-                  type="button"
-                  onClick={() => { setStartDate(''); setEndDate(''); }}
-                  title="Clear date filter"
-                  style={{ 
-                    border: 'none', 
-                    background: 'none', 
-                    cursor: 'pointer', 
-                    padding: '2px', 
-                    display: 'flex', 
-                    alignItems: 'center',
-                    color: 'var(--color-text-muted)'
-                  }}
-                >
-                  <X size={14} />
+                <button type="button" className="btn btn-ghost btn-icon" onClick={() => { setStartDate(''); setEndDate(''); }}
+                  title="Clear date filter" aria-label="Clear date filter">
+                  <X size={15} />
                 </button>
               )}
             </div>

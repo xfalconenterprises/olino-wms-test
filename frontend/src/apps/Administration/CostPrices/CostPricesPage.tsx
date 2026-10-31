@@ -22,7 +22,7 @@ interface CostLine {
   costPrice: number | null; code: string; stockValue: number | null; updatedAt: string | null;
 }
 
-interface CodeSettings { codeWord: string; repeatLetter: string; prefix: string; suffix: string }
+interface CodeSettings { codeWord: string }
 
 interface LogRow {
   id: string; poId: string | null; poNumber: string | null; lineLabel: string;
@@ -40,7 +40,7 @@ const SAMPLE_PRICES = [245, 180, 200, 1150];
 export default function CostPricesPage() {
   const [unlock, setUnlock] = useState<Unlock | null>(null);
   const [lockMessage, setLockMessage] = useState('');
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const [tab, setTab] = useState<'lines' | 'code' | 'log'>('lines');
 
   const lock = useCallback((message = '') => { setUnlock(null); setLockMessage(message); }, []);
@@ -280,7 +280,7 @@ function LinesTab({ costApi, onSetCode }: { costApi: CostApi; onSetCode: () => v
                       </div>
                     )}
                   </td>
-                  <td style={{ fontFamily: 'monospace', fontWeight: 700, letterSpacing: 1 }}>{l.code}</td>
+                  <td style={{ fontFamily: 'monospace', fontWeight: 700, letterSpacing: 1 }} title="Labels add 2 decoy letters before and 1 after">{l.code}</td>
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{l.stockValue ? rupees(l.stockValue) : ''}</td>
                 </tr>
               ))}
@@ -301,9 +301,9 @@ function LinesTab({ costApi, onSetCode }: { costApi: CostApi; onSetCode: () => v
 }
 
 function CodeTab({ costApi }: { costApi: CostApi }) {
-  const [form, setForm] = useState<CodeSettings>({ codeWord: '', repeatLetter: '', prefix: '', suffix: '' });
+  const [form, setForm] = useState<CodeSettings>({ codeWord: '' });
   const [saved, setSaved] = useState<CodeSettings | null>(null);
-  const [preview, setPreview] = useState<{ price: number; code: string }[]>([]);
+  const [preview, setPreview] = useState<{ price: number; code: string; examples: string[] }[]>([]);
   const [previewError, setPreviewError] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -314,7 +314,7 @@ function CodeTab({ costApi }: { costApi: CostApi }) {
 
   useEffect(() => {
     costApi<CodeSettings & { updatedAt: string | null }>({ url: '/api/cost-prices/settings' })
-      .then(s => { const v = { codeWord: s.codeWord, repeatLetter: s.repeatLetter, prefix: s.prefix, suffix: s.suffix }; setForm(v); setSaved(s.codeWord ? v : null); })
+      .then(s => { const v = { codeWord: s.codeWord }; setForm(v); setSaved(s.codeWord ? v : null); })
       .catch(err => { if (err?.response?.status !== 423) setError(apiError(err, 'Failed to load the code settings')); });
   }, [costApi]);
 
@@ -323,15 +323,14 @@ function CodeTab({ costApi }: { costApi: CostApi }) {
     clearTimeout(timer.current);
     if (!form.codeWord) { setPreview([]); setPreviewError(''); return; }
     timer.current = setTimeout(() => {
-      costApi<{ codes: { price: number; code: string }[] }>({ method: 'POST', url: '/api/cost-prices/preview', data: { settings: form, prices: SAMPLE_PRICES } })
+      costApi<{ codes: { price: number; code: string; examples: string[] }[] }>({ method: 'POST', url: '/api/cost-prices/preview', data: { settings: form, prices: SAMPLE_PRICES } })
         .then(r => { setPreview(r.codes); setPreviewError(''); })
         .catch(err => { setPreview([]); if (err?.response?.status !== 423) setPreviewError(apiError(err, '')); });
     }, 300);
     return () => clearTimeout(timer.current);
   }, [form, costApi]);
 
-  const set = (key: keyof CodeSettings) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm(f => ({ ...f, [key]: e.target.value.toUpperCase().replace(key === 'codeWord' || key === 'repeatLetter' ? /[^A-Z]/g : /[^A-Z0-9]/g, '') }));
+  const setCodeWord = (e: React.ChangeEvent<HTMLInputElement>) => setForm({ codeWord: e.target.value.toUpperCase().replace(/[^A-Z]/g, '') });
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -367,13 +366,14 @@ function CodeTab({ costApi }: { costApi: CostApi }) {
         <h2 style={{ fontSize: 16, fontWeight: 700, margin: '0 0 4px' }}>Secret code word</h2>
         <p style={{ fontSize: 12.5, color: 'var(--color-text-muted)', margin: '0 0 14px' }}>
           10 letters, none repeated. They stand for the digits 1, 2, 3, 4, 5, 6, 7, 8, 9, 0. Costs are coded in whole rupees. Avoid well-known words.
+          Each label adds 2 random letters before the code and 1 after; they are never letters of the code word, so just skip the first two letters and the last one.
         </p>
         {error && <div className="alert alert-danger" style={{ marginBottom: 12 }}>{error}</div>}
         {success && <div className="alert alert-success" style={{ marginBottom: 12 }}>{success}</div>}
 
         <div className="form-group" style={{ marginBottom: 12 }}>
           <label className="form-label">Code word <span className="required">*</span></label>
-          <input className="form-input" maxLength={10} value={form.codeWord} onChange={set('codeWord')} placeholder="10 different letters"
+          <input className="form-input" maxLength={10} value={form.codeWord} onChange={setCodeWord} placeholder="10 different letters"
             style={{ fontFamily: 'monospace', fontSize: 16, letterSpacing: 3 }} autoComplete="off" />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', gap: 4, marginBottom: 14, textAlign: 'center', fontFamily: 'monospace' }}>
@@ -384,23 +384,6 @@ function CodeTab({ costApi }: { costApi: CostApi }) {
             </div>
           ))}
         </div>
-        <div className="form-row" style={{ marginBottom: 14 }}>
-          <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label">Repeat letter <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(Optional)</span></label>
-            <input className="form-input" maxLength={1} value={form.repeatLetter} onChange={set('repeatLetter')} placeholder="e.g. X" style={{ fontFamily: 'monospace' }} />
-          </div>
-          <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label">Decoy before <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(Optional)</span></label>
-            <input className="form-input" maxLength={3} value={form.prefix} onChange={set('prefix')} placeholder="e.g. Z" style={{ fontFamily: 'monospace' }} />
-          </div>
-          <div className="form-group" style={{ flex: 1 }}>
-            <label className="form-label">Decoy after <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(Optional)</span></label>
-            <input className="form-input" maxLength={3} value={form.suffix} onChange={set('suffix')} placeholder="e.g. Q" style={{ fontFamily: 'monospace' }} />
-          </div>
-        </div>
-        <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '0 0 14px' }}>
-          The repeat letter is written when a digit repeats straight after itself (₹200 → one letter for 2, one for 0, then the repeat letter), so codes don't show doubled letters.
-        </p>
         <button type="submit" className="btn btn-primary" disabled={saving || form.codeWord.length !== 10}>
           {saving ? <span className="spinner" /> : 'Save code settings'}
         </button>
@@ -413,10 +396,14 @@ function CodeTab({ costApi }: { costApi: CostApi }) {
           {!previewError && preview.length === 0 && <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>Type a 10-letter code word to see examples.</p>}
           {preview.length > 0 && (
             <table className="table" style={{ fontSize: 13, margin: 0 }}>
-              <thead><tr><th>Cost</th><th>Printed on label</th></tr></thead>
+              <thead><tr><th>Cost</th><th>Code</th><th>On three different rolls</th></tr></thead>
               <tbody>
                 {preview.map(p => (
-                  <tr key={p.price}><td>{rupees(p.price)}</td><td style={{ fontFamily: 'monospace', fontWeight: 700, letterSpacing: 2 }}>{p.code}</td></tr>
+                  <tr key={p.price}>
+                    <td>{rupees(p.price)}</td>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 700, letterSpacing: 2 }}>{p.code}</td>
+                    <td style={{ fontFamily: 'monospace', letterSpacing: 2 }}>{p.examples.join('   ')}</td>
+                  </tr>
                 ))}
               </tbody>
             </table>
@@ -424,7 +411,7 @@ function CodeTab({ costApi }: { costApi: CostApi }) {
         </div>
         <form onSubmit={decode} className="card" style={{ padding: 20 }}>
           <h2 style={{ fontSize: 16, fontWeight: 700, margin: '0 0 4px' }}>Read a code from a label</h2>
-          <p style={{ fontSize: 12.5, color: 'var(--color-text-muted)', margin: '0 0 10px' }}>Uses the saved code word.</p>
+          <p style={{ fontSize: 12.5, color: 'var(--color-text-muted)', margin: '0 0 10px' }}>Type the letters as printed; the decoy letters are skipped. Uses the saved code word.</p>
           <div style={{ display: 'flex', gap: 8 }}>
             <input className="form-input" value={decodeInput} onChange={e => setDecodeInput(e.target.value.toUpperCase())} placeholder="e.g. AEP" style={{ fontFamily: 'monospace' }} />
             <button type="submit" className="btn btn-secondary" disabled={!decodeInput.trim() || !saved}>Read</button>

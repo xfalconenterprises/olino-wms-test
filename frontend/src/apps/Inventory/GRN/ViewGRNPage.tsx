@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
 import { fabricCategoryLabel, formatQty, formatTotals, uomOf } from '../../../utils/units';
+import { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type GateDiscrepancy } from '../EntryGate/DiscrepancyModal';
 import '../../../styles/components.css';
 
 interface GRNLine {
@@ -46,14 +47,6 @@ interface BatchItem {
   supplierBundle: string | null;
 }
 
-interface DiscrepancyItem {
-  id: string;
-  bundleNumber: string;
-  issueType: string;
-  expectedQty: number | null;
-  receivedQty: number | null;
-  notes: string | null;
-}
 
 interface GRNDetail {
   id: string;
@@ -73,7 +66,7 @@ interface GRNDetail {
   createdAt: string;
   lines: GRNLine[];
   batches: BatchItem[];
-  discrepancies: DiscrepancyItem[];
+  discrepancies: GateDiscrepancy[];
 }
 
 export default function ViewGRNPage() {
@@ -313,6 +306,7 @@ export default function ViewGRNPage() {
             <thead>
               <tr style={{ background: '#fef3c7' }}>
                 <th>Bundle / Bale</th>
+                <th>Item</th>
                 <th>Issue Type</th>
                 <th style={{ textAlign: 'right' }}>Expected</th>
                 <th style={{ textAlign: 'right' }}>Received</th>
@@ -322,19 +316,15 @@ export default function ViewGRNPage() {
             </thead>
             <tbody>
               {grn.discrepancies.map(d => {
-                const claimed = d.expectedQty || 0;
-                const found = d.receivedQty || 0;
-                const short = Math.max(0, claimed - found);
-
+                const uom = d.uom || ((d.itemType || 'FABRIC') === 'FABRIC' ? 'METERS' : 'PCS');
                 return (
                   <tr key={d.id}>
-                    <td style={{ fontWeight: 700 }}>{d.bundleNumber || 'Unbundled'}</td>
-                    <td style={{ color: '#b45309', fontWeight: 600 }}>{d.issueType.replace(/_/g, ' ')}</td>
-                    <td style={{ textAlign: 'right' }}>{claimed ? claimed.toFixed(1) : '—'}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{found.toFixed(1)}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>
-                      {short > 0 ? `-${short.toFixed(1)}` : 'Defective'}
-                    </td>
+                    <td style={{ fontWeight: 700 }}>{d.bundleNumber}</td>
+                    <td>{discrepancyItemText(d)}</td>
+                    <td style={{ color: '#b45309', fontWeight: 600 }}>{DISCREPANCY_TYPE_LABELS[d.issueType] ?? d.issueType}</td>
+                    <td style={{ textAlign: 'right' }}>{d.expectedQty != null ? formatQty(d.expectedQty, uom) : ''}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatQty(d.receivedQty ?? 0, uom)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>{discrepancyShortText(d)}</td>
                     <td style={{ color: '#475569' }}>{d.notes}</td>
                   </tr>
                 );

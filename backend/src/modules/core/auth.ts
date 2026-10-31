@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import argon2 from 'argon2';
 import prisma from '../../lib/prisma';
-import { SESSION_DURATION, requireAuth, requireResetOrAuth, signToken } from '../../middleware/auth';
+import { MIN_PASSWORD_LENGTH, SESSION_DURATION, requireAuth, requireResetOrAuth, sessionCutoff, signToken } from '../../middleware/auth';
 
 const router = Router();
 
@@ -192,8 +192,15 @@ router.post('/badge-login', loginRateLimiter, async (req: Request, res: Response
 // POST /api/auth/reset-initial-password — First-time web user forces password reset
 router.post('/reset-initial-password', requireResetOrAuth, async (req: Request, res: Response) => {
   const { newPassword } = req.body;
-  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
-    res.status(400).json({ error: 'New password must be at least 6 characters long' });
+  // Only the first-login step (or an administrator's reset) may set the password here; it never
+  // asks for the old one, so it is closed once the password has been set
+  const current = await prisma.user.findUnique({ where: { id: req.user!.userId }, select: { mustResetPassword: true } });
+  if (!current?.mustResetPassword) {
+    res.status(403).json({ error: 'Your password is already set. Ask an administrator to reset it.' });
+    return;
+  }
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < MIN_PASSWORD_LENGTH) {
+    res.status(400).json({ error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters long` });
     return;
   }
 
@@ -203,6 +210,7 @@ router.post('/reset-initial-password', requireResetOrAuth, async (req: Request, 
     data: {
       passwordHash,
       mustResetPassword: false,
+      sessionsValidFrom: sessionCutoff(),
     },
     select: USER_SELECT,
   });
@@ -218,6 +226,11 @@ router.post('/reset-initial-password', requireResetOrAuth, async (req: Request, 
 // POST /api/auth/reset-initial-pin — First-time terminal user forces 6-digit PIN reset
 router.post('/reset-initial-pin', requireResetOrAuth, async (req: Request, res: Response) => {
   const { newPin } = req.body;
+  const pinDue = await prisma.user.findUnique({ where: { id: req.user!.userId }, select: { mustResetPin: true } });
+  if (!pinDue?.mustResetPin) {
+    res.status(403).json({ error: 'Your PIN is already set. Ask an administrator to reset it.' });
+    return;
+  }
   const cleanPin = String(newPin || '').trim();
   if (!/^\d{6}$/.test(cleanPin)) {
     res.status(400).json({ error: 'New PIN must be exactly 6 numeric digits (0-9)' });
@@ -230,6 +243,7 @@ router.post('/reset-initial-pin', requireResetOrAuth, async (req: Request, res: 
     data: {
       pinHash,
       mustResetPin: false,
+      sessionsValidFrom: sessionCutoff(),
     },
     select: USER_SELECT,
   });

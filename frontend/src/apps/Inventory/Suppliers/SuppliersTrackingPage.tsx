@@ -23,6 +23,8 @@ import {
 } from 'lucide-react';
 import api from '../../../utils/api';
 import { formatDate } from '../../../utils/format';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import { formatQty, formatTotals, unitLabel } from '../../../utils/units';
 import '../../../styles/components.css';
 
@@ -163,6 +165,7 @@ interface SupplierDiscrepancy {
 }
 
 export default function SuppliersTrackingPage() {
+  const { user } = useAuth();
   const [suppliers, setSuppliers] = useState<SupplierTrackingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -420,14 +423,16 @@ export default function SuppliersTrackingPage() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button 
-            type="button" 
-            className="btn btn-secondary" 
-            onClick={handleExportCSV}
-            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-          >
-            <Download size={18} /> Export CSV
-          </button>
+          {hasPermission(user, 'export.suppliers') && (
+            <button 
+              type="button" 
+              className="btn btn-secondary" 
+              onClick={handleExportCSV}
+              style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              <Download size={18} /> Export CSV
+            </button>
+          )}
           <button 
             type="button" 
             className="btn btn-primary" 

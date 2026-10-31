@@ -5,6 +5,7 @@ import { apiError, openPrintPage } from '../../../utils/printPage';
 import { printTSPL } from '../../../utils/printer';
 import { formatDateTime } from '../../../utils/format';
 import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
+import TouchChoice from './TouchChoice';
 
 interface Scanned {
   id: string; batchCode: string; description: string; uom: string; quantity: number; status: string;
@@ -108,14 +109,14 @@ export default function SupplierReturnsTab() {
         <div className="alert alert-success" style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <strong style={{ display: 'flex', alignItems: 'center', gap: 6 }}><CheckCircle2 size={16} /> {saved.returnNumber} saved — send the printed return challan with the goods</strong>
-            <button className="btn btn-secondary btn-sm" onClick={() => printChallan(saved.id)} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Printer size={14} /> Print challan</button>
+            <button className="btn btn-secondary" onClick={() => printChallan(saved.id)} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Printer size={16} /> Print challan</button>
           </div>
           {saved.lines.some(l => l.remainingQty > 0) && (
             <div style={{ marginTop: 8, fontSize: 13 }}>
               Cut rolls go back to put-away with a remainder label:
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                 {saved.lines.filter(l => l.remainingQty > 0).map(l => (
-                  <button key={l.batch.batchCode} className="btn btn-secondary btn-sm" style={{ fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6 }}
+                  <button key={l.batch.batchCode} className="btn btn-secondary" style={{ fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6 }}
                     onClick={() => printTSPL(l.batch.batchCode, undefined, { quantity: l.remainingQty, isRemainder: true }).catch(err => setError(apiError(err, 'Label printing failed')))}>
                     <Printer size={13} /> {l.batch.batchCode} · {fmt(l.remainingQty)} {unit(l.batch.uom)} left
                   </button>
@@ -132,7 +133,7 @@ export default function SupplierReturnsTab() {
           <div className="form-row" style={{ gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
             <div className="form-group" style={{ flex: '1 1 260px' }}>
               <label className="form-label">Supplier <span className="required">*</span></label>
-              <select className="form-select" value={supplierId} onChange={e => setSupplierId(e.target.value)}>
+              <select className="form-select" value={supplierId} onChange={e => setSupplierId(e.target.value)} style={{ minHeight: 48 }}>
                 <option value="">Choose…</option>
                 {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
@@ -140,61 +141,58 @@ export default function SupplierReturnsTab() {
             <form onSubmit={addScan} className="form-group" style={{ flex: '2 1 320px' }}>
               <label className="form-label">Scan rolls / boxes to return</label>
               <div style={{ display: 'flex', gap: 8 }}>
-                <input ref={scanRef} className="form-input" value={scan} onChange={e => setScan(e.target.value)} placeholder="Scan barcode" style={{ fontFamily: 'monospace' }} />
-                <button className="btn btn-secondary" type="submit"><ScanLine size={16} /></button>
+                <input ref={scanRef} className="form-input" value={scan} onChange={e => setScan(e.target.value)} placeholder="Scan barcode" style={{ fontFamily: 'monospace', minHeight: 48 }} />
+                <button className="btn btn-secondary" type="submit" aria-label="Add" style={{ minWidth: 56, minHeight: 48 }}><ScanLine size={20} /></button>
               </div>
             </form>
           </div>
 
           {lines.length > 0 && (
-            <div style={{ overflowX: 'auto', marginBottom: 12 }}>
-              <table className="table" style={{ width: '100%', fontSize: 13 }}>
-                <thead><tr><th>Barcode</th><th>Item</th><th>From supplier</th><th>Location</th><th style={{ textAlign: 'right' }}>In stock</th><th style={{ width: 150 }}>Returning</th><th /></tr></thead>
-                <tbody>
-                  {lines.map((l, i) => {
-                    const partial = Number(l.qty) > 0 && Number(l.qty) < l.batch.quantity - 0.001;
-                    return (
-                      <tr key={l.batch.batchCode} style={{ background: mismatch(l.batch) ? '#fef2f2' : undefined }}>
-                        <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{l.batch.batchCode}</td>
-                        <td>{l.batch.description}{l.batch.status === 'QC_HOLD' && <span className="badge badge-warning" style={{ marginLeft: 6 }}>QC hold</span>}</td>
-                        <td>
-                          {l.batch.supplier?.name ?? <span style={{ color: 'var(--color-text-muted)' }}>Unknown</span>}
-                          {mismatch(l.batch) && <div style={{ color: '#dc2626', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} /> Not this supplier</div>}
-                        </td>
-                        <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{l.batch.locations.join(', ') || 'Unplaced'}</td>
-                        <td style={{ textAlign: 'right' }}>{fmt(l.batch.quantity)} {unit(l.batch.uom)}</td>
-                        <td>
-                          <input type="number" className="form-input" min="0" max={l.batch.quantity} step={allowsDecimals(l.batch.uom) ? 'any' : 1}
-                            value={l.qty} onChange={e => setLines(prev => prev.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))} style={{ height: 36 }} />
-                          {partial && <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 2 }}>Cut piece: {fmt(l.batch.quantity - Number(l.qty))} {unit(l.batch.uom)} stays</div>}
-                        </td>
-                        <td>
-                          <button className="btn btn-ghost btn-sm" onClick={() => setLines(prev => prev.filter((_, j) => j !== i))} style={{ padding: 4, color: '#dc2626' }} title="Remove"><Trash2 size={14} /></button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
+              {lines.map((l, i) => {
+                const partial = Number(l.qty) > 0 && Number(l.qty) < l.batch.quantity - 0.001;
+                const wrongSupplier = mismatch(l.batch);
+                return (
+                  <div key={l.batch.batchCode} style={{ border: `1px solid ${wrongSupplier ? '#fca5a5' : 'var(--color-border)'}`, background: wrongSupplier ? '#fef2f2' : undefined, borderRadius: 'var(--radius)', padding: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14.5 }}>
+                          {l.batch.description}{l.batch.status === 'QC_HOLD' && <span className="badge badge-warning" style={{ marginLeft: 6 }}>QC hold</span>}
+                        </div>
+                        <div style={{ fontFamily: 'monospace', fontSize: 12.5, color: 'var(--color-text-muted)', marginTop: 2 }}>{l.batch.batchCode}</div>
+                        <div style={{ fontSize: 13, marginTop: 4 }}>
+                          {l.batch.supplier?.name ?? 'Supplier unknown'}{l.batch.locations.length > 0 ? ` · ${l.batch.locations.join(', ')}` : ' · Not on a shelf'}
+                        </div>
+                        {wrongSupplier && <div style={{ color: '#dc2626', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}><AlertTriangle size={14} /> Not this supplier</div>}
+                      </div>
+                      <button className="btn btn-ghost" onClick={() => setLines(prev => prev.filter((_, j) => j !== i))} title="Remove" aria-label="Remove" style={{ minWidth: 48, minHeight: 48, color: '#dc2626', flexShrink: 0 }}><Trash2 size={18} /></button>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10, flexWrap: 'wrap' }}>
+                      <div style={{ width: 200 }}>
+                        <label className="form-label">Returning ({unit(l.batch.uom)})</label>
+                        <input type="number" className="form-input" min="0" max={l.batch.quantity} step={allowsDecimals(l.batch.uom) ? 'any' : 1} inputMode={allowsDecimals(l.batch.uom) ? 'decimal' : 'numeric'}
+                          value={l.qty} onChange={e => setLines(prev => prev.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))} style={{ minHeight: 48 }} />
+                      </div>
+                      <div style={{ fontSize: 13, color: 'var(--color-text-muted)', paddingTop: 20 }}>In stock {fmt(l.batch.quantity)} {unit(l.batch.uom)}</div>
+                      {partial && <div style={{ fontSize: 13, color: '#b45309', fontWeight: 600, paddingTop: 20 }}>Cut piece: {fmt(l.batch.quantity - Number(l.qty))} {unit(l.batch.uom)} stays</div>}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          <div className="form-row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div className="form-group" style={{ flex: '1 1 200px' }}>
-              <label className="form-label">Reason <span className="required">*</span></label>
-              <select className="form-select" value={reason} onChange={e => setReason(e.target.value)}>
-                <option value="">Choose…</option>
-                {SUPPLIER_REASONS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-              </select>
-            </div>
-            <div className="form-group" style={{ flex: '2 1 280px' }}>
-              <label className="form-label">Remarks</label>
-              <input className="form-input" value={remarks} onChange={e => setRemarks(e.target.value)} placeholder="e.g. Colour bleeding on washing test" />
-            </div>
-            <button className="btn btn-primary" onClick={save} disabled={saving || lines.length === 0} style={{ height: 42, fontWeight: 700 }}>
-              {saving ? <span className="spinner" /> : `Return ${lines.length || ''} item(s) & print challan`}
-            </button>
+          <div>
+            <label className="form-label">Reason <span className="required">*</span></label>
+            <TouchChoice label="Reason" options={SUPPLIER_REASONS} value={reason} onChange={setReason} />
           </div>
+          <div className="form-group" style={{ marginTop: 12 }}>
+            <label className="form-label">Remarks</label>
+            <input className="form-input" value={remarks} onChange={e => setRemarks(e.target.value)} placeholder="e.g. Colour bleeding on washing test" style={{ minHeight: 48 }} />
+          </div>
+          <button className="btn btn-primary" onClick={save} disabled={saving || lines.length === 0} style={{ width: '100%', minHeight: 54, fontWeight: 700, fontSize: 15, marginTop: 14, justifyContent: 'center' }}>
+            {saving ? <span className="spinner" /> : `Return ${lines.length || ''} item(s) & print challan`}
+          </button>
         </div>
       </div>
 
@@ -215,7 +213,7 @@ export default function SupplierReturnsTab() {
                     <td>{reasonLabel(r.reason)}</td>
                     <td>{r.lines.length}</td>
                     <td>{r.createdBy.name}</td>
-                    <td><button className="btn btn-ghost btn-sm" onClick={() => printChallan(r.id)} title="Print challan" style={{ padding: 4 }}><Printer size={14} /></button></td>
+                    <td><button className="btn btn-ghost btn-sm" onClick={() => printChallan(r.id)} title="Print challan" aria-label="Print challan" style={{ minWidth: 44, minHeight: 44 }}><Printer size={18} /></button></td>
                   </tr>
                 ))}
               </tbody>

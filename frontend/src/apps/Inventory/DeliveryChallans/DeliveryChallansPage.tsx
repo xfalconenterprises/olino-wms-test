@@ -15,6 +15,8 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { formatDateTime } from '../../../utils/format';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import { formatTotals } from '../../../utils/units';
 import { exportToExcel } from '../../../utils/exportExcel';
 import '../../../styles/components.css';
@@ -53,6 +55,7 @@ interface DeliveryChallan {
 }
 
 export default function DeliveryChallansPage() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [challans, setChallans] = useState<DeliveryChallan[]>([]);
   const [loading, setLoading] = useState(true);
@@ -274,14 +277,16 @@ export default function DeliveryChallansPage() {
           </button>
         </div>
 
-        <button
-          className="btn btn-secondary"
-          onClick={handleExportExcel}
-          disabled={filteredChallans.length === 0 || loading}
-          style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, height: 40 }}
-        >
-          <Download size={15} /> Download Excel (.CSV)
-        </button>
+        {hasPermission(user, 'export.delivery_challans') && (
+          <button
+            className="btn btn-secondary"
+            onClick={handleExportExcel}
+            disabled={filteredChallans.length === 0 || loading}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, height: 40 }}
+          >
+            <Download size={15} /> Download Excel (.CSV)
+          </button>
+        )}
       </div>
 
       {/* ─── Challans Table ──────────────────────────────────────────────── */}

@@ -56,13 +56,15 @@ model User {
   id           String   @id @default(uuid())
   name         String
   username     String   @unique
+  phone        String?
   passwordHash String
-  badgeCode    String?  @unique @map("badge_code")
+  badgeCode    String?  @unique @map("badge_code") // Employee ID, assigned automatically (EMP-0001…); scanned with the PIN on floor terminals
   pinHash      String?  @map("pin_hash")
   modules      Module[]
   permissions  String[] @default([])
   mustResetPassword Boolean  @default(true) @map("must_reset_password")
   mustResetPin      Boolean  @default(true) @map("must_reset_pin")
+  sessionsValidFrom DateTime? @map("sessions_valid_from") // sessions started before this (password/PIN change) are signed out
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -74,6 +76,7 @@ model User {
   inboundDiscrepancies InboundDiscrepancy[]
   grnsReceived    GoodsReceiptNote[]
   directInwardDraft DirectInwardDraft?
+  poDrafts        PoDraft[]
   stockCountsCreated   StockCount[]         @relation("StockCountCreatedBy")
   stockCountsClosed    StockCount[]         @relation("StockCountClosedBy")
   stockCountLocations  StockCountLocation[]
@@ -271,6 +274,7 @@ model PurchaseOrder {
   createdBy    User                @relation(fields: [createdById], references: [id])
   lines        PurchaseOrderLine[]
   grns         GoodsReceiptNote[]
+  discrepancies InboundDiscrepancy[]
 
   @@map("purchase_orders")
 }
@@ -299,6 +303,7 @@ model PurchaseOrderLine {
   grnLines    GoodsReceiptNoteLine[]
   allocations PoLineAllocation[]
   cost        PoLineCost?
+  discrepancies InboundDiscrepancy[]
 
   @@map("purchase_order_lines")
 }
@@ -307,6 +312,22 @@ model PurchaseOrderLine {
 // Kept apart from the PO line so no screen, document or export picks the price up with the
 // line. Only the Cost Prices tab (explicit permission, unlocked with the user's password)
 // reads it; labels print it only as the secret cost code.
+
+// Unfinished purchase orders, private to the person who made them. Nothing outside the drafts
+// module reads this table; costs sit in their own column and are never sent back.
+model PoDraft {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  data      Json
+  costs     Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+  @@map("po_drafts")
+}
 
 model PoLineCost {
   poLineId    String   @id @map("po_line_id")
@@ -320,6 +341,23 @@ model PoLineCost {
 }
 
 // Every change to a cost price or to the cost code settings
+// One row for each stock file downloaded
+model ExportLog {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  userName     String    @map("user_name")
+  view         String    // ROLLUP, GRANULAR
+  filters      Json
+  rowCount     Int       @map("row_count")
+  columns      Json?     // Column headers taken, by sheet name
+  choice       Json?     // Sheets left out and columns unticked, offered again next time
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([userId, view, createdAt])
+  @@map("export_logs")
+}
+
 model CostPriceLog {
   id            String   @id @default(uuid())
   poId          String?  @map("po_id")
@@ -336,13 +374,11 @@ model CostPriceLog {
   @@map("cost_price_logs")
 }
 
-// The secret code word that turns a cost into letters on the label (one row)
+// The secret code word that turns a cost into letters on the label (one row). Labels add 2 decoy
+// letters before the code and 1 after, chosen by the system for each roll.
 model CostCodeSettings {
   id           Int      @id @default(1)
   codeWord     String   @map("code_word")      // 10 different letters for 1,2,…,9,0
-  repeatLetter String?  @map("repeat_letter")  // written instead of a digit repeated straight after itself
-  prefix       String?                          // decoy letters before the code
-  suffix       String?                          // decoy letters after the code
   updatedById  String?  @map("updated_by_id")
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
@@ -460,22 +496,28 @@ model DeliveryChallanLine {
 
 // ─── Inbound Discrepancies (Shortages, Missing Items, Defective Bundles) ──────
 
+// A shortage, missing, wrong or damaged item found in a supplier bundle at the gate. It stays open
+// until the GRN for that delivery is issued, then it is printed on (and locked to) that GRN.
 model InboundDiscrepancy {
   id           String   @id @default(uuid())
   supplierId   String
-  invoiceRef   String   // Supplier Invoice No.
-  bundleNumber String   // The bundle/bale number on the invoice where discrepancy was found
+  invoiceRef   String?  // Supplier invoice no., when one was entered at the gate
+  poId         String?  @map("po_id")       // PO and line of the item, when known
+  poLineId     String?  @map("po_line_id")
+  bundleNumber String   // The bundle/bale number where the discrepancy was found
   itemType     String?  // FABRIC, READY_MADE, ACCESSORY
   category     String?
   brand        String?
   quality      String?
+  qualityName  String?  @map("quality_name")
   shade        String?
   size         String?
   name         String?
   artNo        String?
-  issueType    String   // "MISSING_FROM_BUNDLE", "SHORT_LENGTH", "WRONG_ITEM", "DAMAGED"
-  expectedQty  Float?   // What the supplier invoice stated
-  receivedQty  Float?   @default(0) // What was actually found in this bundle (0 if not found)
+  uom          String?  // unit of the quantities (METERS, KG, PCS…)
+  issueType    String   // MISSING_FROM_BUNDLE, SHORT_QUANTITY, WRONG_ITEM_PACKED, DAMAGED_DEFECTIVE
+  expectedQty  Float?   // As per invoice / bundle tag
+  receivedQty  Float?   @default(0) // Actually received in good condition (0 when missing)
   notes        String?  // Worker explanation
   reportedById String
   createdAt    DateTime @default(now())
@@ -484,6 +526,11 @@ model InboundDiscrepancy {
   reportedBy   User     @relation(fields: [reportedById], references: [id])
   grnId        String?
   grn          GoodsReceiptNote? @relation(fields: [grnId], references: [id])
+  po           PurchaseOrder?     @relation(fields: [poId], references: [id], onDelete: SetNull)
+  poLine       PurchaseOrderLine? @relation(fields: [poLineId], references: [id], onDelete: SetNull)
+
+  @@index([supplierId, grnId])
+  @@index([poId])
 
   @@map("inbound_discrepancies")
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { 
   LogIn, 
   ArrowLeft, 
@@ -20,6 +21,7 @@ import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate } from '../../../utils/format';
 import { allowsDecimals, fabricCategoryLabel, formatTotals, unitLabel, unitName } from '../../../utils/units';
 import SpecLine from '../../../components/Common/SpecLine';
+import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type DiscrepancyItem, type GateDiscrepancy } from './DiscrepancyModal';
 import '../../../styles/components.css';
 
 // Dropdown text for a PO line, with only the details that were entered: "[Fabric] Brand — Quality (Shade: 12)"
@@ -111,25 +113,16 @@ export default function ReceivePOPage() {
   const [grnRemarks, setGrnRemarks] = useState('');
   const [issuingGrn, setIssuingGrn] = useState(false);
 
-  // Discrepancy reporting state
+  // Discrepancies reported at the gate for this PO, not yet on a GRN (the next GRN carries them)
   const [showDiscrepancyModal, setShowDiscrepancyModal] = useState(false);
-  const [discrepancySubmitting, setDiscrepancySubmitting] = useState(false);
-  const [discrepancyForm, setDiscrepancyForm] = useState({
-    bundleNumber: '',
-    lineId: '',
-    itemType: 'FABRIC',
-    brand: '',
-    quality: '',
-    shade: '',
-    size: '',
-    category: '',
-    name: '',
-    artNo: '',
-    issueType: 'MISSING_FROM_BUNDLE',
-    expectedQty: '',
-    receivedQty: '0',
-    notes: ''
-  });
+  const [discrepancyLine, setDiscrepancyLine] = useState<POLine | null>(null);
+  const [discrepancies, setDiscrepancies] = useState<GateDiscrepancy[]>([]);
+
+  const loadDiscrepancies = (poId: string) => {
+    api.get('/api/purchase-orders/supplier-inbound/discrepancies', { params: { poId, open: '1' } })
+      .then(r => setDiscrepancies(r.data || []))
+      .catch(() => setDiscrepancies([]));
+  };
 
   const load = () => {
     setLoading(true);
@@ -137,6 +130,7 @@ export default function ReceivePOPage() {
     api.get(`/api/purchase-orders/${id}`)
        .then(r => {
          setPo(r.data);
+         loadDiscrepancies(r.data.id);
          // Only set invoiceRef if the PO is already finalized (so it displays the confirmed invoice),
          // or if prefilledInvoice was passed via URL query params.
          // Never auto-fill an open/pending PO input with past GRN invoices.
@@ -261,64 +255,24 @@ export default function ReceivePOPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showReceiveModal, showDiscrepancyModal, viewingBarcodeLine]);
 
+  // From a line being received the item is fixed; from the page header the item is chosen
   const openDiscrepancyModal = (line?: POLine | null) => {
-    const targetLine = line || currentLine;
-    const remaining = targetLine ? cleanNumber(Math.max(0, targetLine.orderedQty - targetLine.receivedQty)) : 0;
-    setDiscrepancyForm({
-      bundleNumber: supplierBundle.trim(),
-      lineId: targetLine?.id || '',
-      itemType: targetLine?.itemType || 'FABRIC',
-      brand: targetLine?.brand || '',
-      quality: targetLine?.quality || '',
-      shade: targetLine?.shade || '',
-      size: targetLine?.size || '',
-      category: targetLine?.category || '',
-      name: targetLine?.name || '',
-      artNo: targetLine?.artNo || '',
-      issueType: 'MISSING_FROM_BUNDLE',
-      expectedQty: remaining > 0 ? formatQty(remaining) : '',
-      receivedQty: '0',
-      notes: ''
-    });
+    setDiscrepancyLine(line ?? null);
     setShowDiscrepancyModal(true);
   };
 
-  const handleSaveDiscrepancy = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!po) return;
-    const sId = po.supplierId || po.supplier?.id;
-    if (!sId) {
-      alert('Supplier ID is not linked to this purchase order.');
-      return;
-    }
-    const inv = invoiceRef.trim() || po.poNumber;
+  const discrepancyItem = (l: POLine): DiscrepancyItem => ({
+    poLineId: l.id, itemType: l.itemType || 'FABRIC', category: l.category, brand: l.brand, quality: l.quality, qualityName: l.qualityName,
+    shade: l.shade, size: l.size, name: l.name, artNo: l.artNo, uom: lineUom(l),
+  });
 
-    setDiscrepancySubmitting(true);
+  const handleDeleteDiscrepancy = async (discrepancyId: string) => {
+    if (!po || !window.confirm('Remove this discrepancy?')) return;
     try {
-      await api.post('/api/purchase-orders/supplier-inbound/discrepancies', {
-        supplierId: sId,
-        invoiceRef: inv,
-        bundleNumber: discrepancyForm.bundleNumber.trim(),
-        itemType: discrepancyForm.itemType,
-        brand: discrepancyForm.brand || undefined,
-        quality: discrepancyForm.quality || undefined,
-        shade: discrepancyForm.shade || undefined,
-        size: discrepancyForm.size || undefined,
-        category: discrepancyForm.category || undefined,
-        name: discrepancyForm.name || undefined,
-        artNo: discrepancyForm.artNo || undefined,
-        issueType: discrepancyForm.issueType,
-        expectedQty: discrepancyForm.expectedQty ? parseFloat(discrepancyForm.expectedQty) : undefined,
-        receivedQty: discrepancyForm.receivedQty ? parseFloat(discrepancyForm.receivedQty) : 0,
-        notes: discrepancyForm.notes.trim() || undefined,
-      });
-
-      setShowDiscrepancyModal(false);
-      alert(`Discrepancy recorded for ${discrepancyForm.bundleNumber || 'item'}. It will be included on GRN shortage records.`);
+      await api.delete(`/api/purchase-orders/supplier-inbound/discrepancies/${discrepancyId}`);
+      loadDiscrepancies(po.id);
     } catch (err: any) {
-      alert(err.response?.data?.error || 'Failed to record discrepancy');
-    } finally {
-      setDiscrepancySubmitting(false);
+      alert(err.response?.data?.error || 'Failed to remove the discrepancy');
     }
   };
 
@@ -347,7 +301,9 @@ export default function ReceivePOPage() {
         invoiceRef: invoiceRef.trim() || undefined,
         remarks: rem || undefined,
         batchIds: unfinalized.map(b => b.id),
+        discrepancyIds: discrepancies.map(d => d.id),
       });
+      loadDiscrepancies(po.id);
       const response = await api.get(`/api/grn/${grn.id}/print`, { responseType: 'text' });
       if (printWindow) {
         printWindow.document.open();
@@ -410,7 +366,7 @@ export default function ReceivePOPage() {
       const newBatch = res.data.newRolls?.[0];
       if (newBatch?.batchCode) {
         setRecentBatch({ batchCode: newBatch.batchCode, quantity: qty });
-        await autoPrintReceivedLabel(newBatch.batchCode);
+        void autoPrintReceivedLabel(newBatch.batchCode, setError);   // never waits for the printer
       }
 
       // Refresh PO data directly
@@ -448,8 +404,9 @@ export default function ReceivePOPage() {
     }
   };
 
+  // The preview needs the login, so it is fetched and written into a new window
   const previewLabel = (batchCode: string) => {
-    window.open(`/api/labels/preview/${batchCode}`, '_blank');
+    openPrintPage(`/api/labels/preview/${encodeURIComponent(batchCode)}`, 'label').catch(() => alert('Could not open the label preview.'));
   };
 
   // Overall PO Statistics with clear Unit and Total Lumps/Rolls
@@ -814,6 +771,30 @@ export default function ReceivePOPage() {
           </div>
         </div>
       </div>
+
+      {discrepancies.length > 0 && (
+        <div style={{ marginBottom: 16, padding: '10px 14px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 'var(--radius)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: '#92400e', marginBottom: 6 }}>
+            <AlertTriangle size={16} color="#b45309" /> {discrepancies.length} discrepanc{discrepancies.length === 1 ? 'y' : 'ies'} reported — will be on the next GRN
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {discrepancies.map(d => (
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: '#78350f' }}>
+                <strong>Bundle {d.bundleNumber}</strong>
+                <span>{discrepancyItemText(d) || 'Item'}</span>
+                <span>· {DISCREPANCY_TYPE_LABELS[d.issueType] ?? d.issueType}</span>
+                <strong>· short {discrepancyShortText(d)}</strong>
+                {d.notes && <span style={{ color: '#92400e' }}>· {d.notes}</span>}
+                {!isPoFullyFinalized && (
+                  <button type="button" onClick={() => handleDeleteDiscrepancy(d.id)} title="Remove" style={{ border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: '#991b1b', display: 'inline-flex' }}>
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ─── PO Overview Card (Clean, Calm, Clearly mentions Lump / Pcs / Qty) ─ */}
       <div style={{
@@ -1333,10 +1314,7 @@ export default function ReceivePOPage() {
                       className="form-input"
                       placeholder="e.g. BND-01 or leave blank if loose"
                       value={supplierBundle}
-                      onChange={e => {
-                        setSupplierBundle(e.target.value);
-                        setDiscrepancyForm(prev => ({ ...prev, bundleNumber: e.target.value }));
-                      }}
+                      onChange={e => setSupplierBundle(e.target.value)}
                       style={{ height: 44, fontSize: 14 }}
                     />
                   </div>
@@ -1762,208 +1740,24 @@ export default function ReceivePOPage() {
       {/* ─────────────────────────────────────────────────────────────────────────────
           BUNDLE DISCREPANCY REPORTING MODAL
           ───────────────────────────────────────────────────────────────────────────── */}
-      {showDiscrepancyModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(15, 23, 42, 0.55)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1010,
-          padding: 16
-        }}>
-          <div style={{
-            background: '#fff',
-            borderRadius: 'var(--radius-lg)',
-            width: '100%',
-            maxWidth: 540,
-            boxShadow: 'var(--shadow-xl)',
-            overflow: 'hidden'
-          }}>
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fffbeb' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <AlertTriangle size={20} color="#b45309" />
-                <div>
-                  <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: '#92400e' }}>
-                    Bundle Packing Discrepancy
-                  </h2>
-                  <div style={{ fontSize: 12, color: '#b45309' }}>
-                    Report when a lump or item on the supplier invoice/PO is NOT in this bundle
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowDiscrepancyModal(false)}
-                aria-label="Close"
-                style={{
-                  width: 44,
-                  height: 44,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: '50%',
-                  border: 'none',
-                  background: '#fef3c7',
-                  color: '#92400e',
-                  cursor: 'pointer'
-                }}
-              >
-                <X size={24} strokeWidth={2.5} />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveDiscrepancy} style={{ padding: 20 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-                <div>
-                  <label className="form-label">Supplier Invoice</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={invoiceRef}
-                    onChange={e => setInvoiceRef(e.target.value)}
-                    placeholder="e.g. INV-98124"
-                    style={{ height: 42 }}
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="form-label">Bundle Number</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={discrepancyForm.bundleNumber}
-                    onChange={e => setDiscrepancyForm({ ...discrepancyForm, bundleNumber: e.target.value })}
-                    placeholder="Enter bundle number"
-                    style={{ height: 42 }}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div style={{ marginBottom: 14 }}>
-                <label className="form-label">Affected Item Line</label>
-                <select
-                  className="form-select"
-                  value={discrepancyForm.lineId}
-                  style={{ height: 42 }}
-                  onChange={e => {
-                    const l = po.lines.find(x => x.id === e.target.value);
-                    const rem = l ? cleanNumber(Math.max(0, l.orderedQty - l.receivedQty)) : 0;
-                    setDiscrepancyForm({
-                      ...discrepancyForm,
-                      lineId: e.target.value,
-                      itemType: l?.itemType || 'FABRIC',
-                      brand: l?.brand || '',
-                      quality: l?.quality || '',
-                      shade: l?.shade || '',
-                      size: l?.size || '',
-                      category: l?.category || '',
-                      name: l?.name || '',
-                      artNo: l?.artNo || '',
-                      expectedQty: rem > 0 ? formatQty(rem) : discrepancyForm.expectedQty
-                    });
-                  }}
-                >
-                  <option value="">Select affected item...</option>
-                  {po.lines.map(l => {
-                    const lType = l.itemType || 'FABRIC';
-                    const lBrand = l.brand || '';
-                    const lQuality = l.quality || '';
-                    const lShade = l.shade || '';
-                    const lName = l.name || '';
-                    const lArtNo = l.artNo || '';
-                    const lSize = l.size || '';
-                    const lCategory = l.category || '';
-                    return (
-                      <option key={l.id} value={l.id}>
-                        {lType === 'FABRIC'
-                          ? optionText('[Fabric]', [lBrand, lQuality].filter(Boolean).join(' — '), [['Quality Name', l.qualityName], ['Shade', lShade]])
-                          : lType === 'READY_MADE'
-                          ? optionText('[Ready-Made]', lName || lBrand, [['Fabric', lCategory], ['Shade', lShade], ['Art', lArtNo], ['Size', lSize]])
-                          : optionText('[Accessory]', [lCategory, lName || lBrand].filter(Boolean).join(' - '), [['Size', lSize]])}
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
-
-              <div style={{ marginBottom: 14 }}>
-                <label className="form-label">Discrepancy Issue Type <span className="required">*</span></label>
-                <select
-                  className="form-select"
-                  value={discrepancyForm.issueType}
-                  onChange={e => setDiscrepancyForm({ ...discrepancyForm, issueType: e.target.value })}
-                  style={{ height: 42 }}
-                  required
-                >
-                  <option value="MISSING_FROM_BUNDLE">Lump / Set / Item NOT Available in Bundle (Missing)</option>
-                  <option value="WRONG_ITEM_PACKED">Wrong Item / Shade / Size Packed in Bundle</option>
-                  <option value="SHORT_QUANTITY">Physical Quantity Less than Invoice / PO (Shortage)</option>
-                  <option value="DAMAGED_DEFECTIVE">Damaged, Defective, Stained Goods in Bundle</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-                <div>
-                  <label className="form-label">Expected Qty on Invoice / PO</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    className="form-input"
-                    placeholder="e.g. 60.0"
-                    value={discrepancyForm.expectedQty}
-                    onChange={e => setDiscrepancyForm({ ...discrepancyForm, expectedQty: e.target.value })}
-                    style={{ height: 42 }}
-                  />
-                </div>
-                <div>
-                  <label className="form-label">Actual Qty Found in Bundle</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    className="form-input"
-                    placeholder="0"
-                    value={discrepancyForm.receivedQty}
-                    onChange={e => setDiscrepancyForm({ ...discrepancyForm, receivedQty: e.target.value })}
-                    style={{ height: 42 }}
-                  />
-                </div>
-              </div>
-
-              {discrepancyForm.expectedQty && (
-                <div style={{ marginBottom: 14, background: '#fef3c7', padding: '10px 14px', borderRadius: 6, fontSize: 13, color: '#92400e', fontWeight: 600 }}>
-                  Calculated Shortage: {formatQty(Math.max(0, (parseFloat(discrepancyForm.expectedQty) || 0) - (parseFloat(discrepancyForm.receivedQty) || 0)))} {currentUnit}
-                </div>
-              )}
-
-              <div style={{ marginBottom: 20 }}>
-                <label className="form-label">Worker Notes / Observation</label>
-                <textarea
-                  className="form-input"
-                  rows={2}
-                  placeholder="e.g. Invoice states 3 rolls in this bundle. Found only 2."
-                  value={discrepancyForm.notes}
-                  onChange={e => setDiscrepancyForm({ ...discrepancyForm, notes: e.target.value })}
-                />
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setShowDiscrepancyModal(false)} style={{ height: 42 }}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={discrepancySubmitting} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#b45309', borderColor: '#b45309', height: 42 }}>
-                  {discrepancySubmitting ? <span className="spinner" /> : <AlertTriangle size={16} />}
-                  Record Discrepancy
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {showDiscrepancyModal && (po.supplierId || po.supplier?.id) && (
+        <DiscrepancyModal
+          supplierId={(po.supplierId || po.supplier?.id)!}
+          invoiceRef={invoiceRef}
+          item={discrepancyLine ? discrepancyItem(discrepancyLine) : null}
+          lineOptions={po.lines.map(l => ({
+            id: l.id,
+            label: (l.itemType || 'FABRIC') === 'FABRIC'
+              ? optionText('[Fabric]', [l.brand, l.quality].filter(Boolean).join(' — '), [['Quality Name', l.qualityName], ['Shade', l.shade]])
+              : (l.itemType === 'READY_MADE'
+                ? optionText('[Ready-Made]', l.name || l.brand || '', [['Fabric', l.category], ['Shade', l.shade], ['Art', l.artNo], ['Size', l.size]])
+                : optionText('[Accessory]', [l.category, l.name || l.brand].filter(Boolean).join(' - '), [['Size', l.size]])),
+            item: discrepancyItem(l),
+          }))}
+          defaultBundle={supplierBundle}
+          onClose={() => setShowDiscrepancyModal(false)}
+          onSaved={() => { setShowDiscrepancyModal(false); loadDiscrepancies(po.id); }}
+        />
       )}
 
       {/* ─── Finalize GRN & Print Confirmation Modal ─── */}

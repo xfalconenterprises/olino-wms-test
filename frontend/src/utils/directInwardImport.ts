@@ -249,7 +249,7 @@ function parseCsv(textContent: string): Cell[][] {
   let row: Cell[] = [];
   let field = '';
   let quoted = false;
-  const s = textContent.replace(/^﻿/, '');
+  const s = textContent.replace(/^\uFEFF/, '');
   for (let i = 0; i < s.length; i++) {
     const ch = s[i];
     if (quoted) {

@@ -2,7 +2,7 @@
 CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateEnum
-CREATE TYPE "Module" AS ENUM ('PURCHASE', 'WAREHOUSE', 'INVENTORY', 'ADMINISTRATION', 'ENTRY_GATE', 'EXIT_GATE', 'MANAGEMENT');
+CREATE TYPE "Module" AS ENUM ('PURCHASE', 'WAREHOUSE', 'INVENTORY', 'ADMINISTRATION');
 
 -- CreateEnum
 CREATE TYPE "BatchStatus" AS ENUM ('IN_STOCK', 'PARTIALLY_USED', 'OUT', 'QC_HOLD');
@@ -22,11 +22,15 @@ CREATE TYPE "DeliveryChallanStatus" AS ENUM ('DRAFT', 'DISPATCHED', 'CANCELLED')
 -- CreateEnum
 CREATE TYPE "GrnStatus" AS ENUM ('COMPLETED', 'CANCELLED');
 
+-- CreateEnum
+CREATE TYPE "StockCountStatus" AS ENUM ('OPEN', 'COMPLETED', 'CANCELLED');
+
 -- CreateTable
 CREATE TABLE "users" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "username" TEXT NOT NULL,
+    "phone" TEXT,
     "passwordHash" TEXT NOT NULL,
     "badge_code" TEXT,
     "pin_hash" TEXT,
@@ -34,11 +38,23 @@ CREATE TABLE "users" (
     "permissions" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "must_reset_password" BOOLEAN NOT NULL DEFAULT true,
     "must_reset_pin" BOOLEAN NOT NULL DEFAULT true,
+    "sessions_valid_from" TIMESTAMP(3),
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "users_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "direct_inward_drafts" (
+    "id" TEXT NOT NULL,
+    "user_id" TEXT NOT NULL,
+    "data" JSONB NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "direct_inward_drafts_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -62,32 +78,21 @@ CREATE TABLE "suppliers" (
 );
 
 -- CreateTable
-CREATE TABLE "aisles" (
+CREATE TABLE "racks" (
     "id" TEXT NOT NULL,
-    "number" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "aisles_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "rows" (
-    "id" TEXT NOT NULL,
-    "aisleId" TEXT NOT NULL,
-    "number" TEXT NOT NULL,
-    "isActive" BOOLEAN NOT NULL DEFAULT true,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "rows_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "racks_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
 CREATE TABLE "bays" (
     "id" TEXT NOT NULL,
-    "rowId" TEXT NOT NULL,
-    "number" TEXT NOT NULL,
-    "levels" INTEGER NOT NULL DEFAULT 4,
+    "rackId" TEXT NOT NULL,
+    "number" INTEGER NOT NULL,
+    "levels" INTEGER NOT NULL DEFAULT 1,
     "positions" INTEGER NOT NULL DEFAULT 3,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -118,6 +123,7 @@ CREATE TABLE "item_batches" (
     "category" TEXT,
     "brand" TEXT,
     "quality" TEXT,
+    "quality_name" TEXT,
     "shade" TEXT,
     "size" TEXT,
     "name" TEXT,
@@ -184,6 +190,7 @@ CREATE TABLE "purchase_order_lines" (
     "category" TEXT,
     "brand" TEXT,
     "quality" TEXT,
+    "quality_name" TEXT,
     "shade" TEXT,
     "size" TEXT,
     "name" TEXT,
@@ -196,6 +203,57 @@ CREATE TABLE "purchase_order_lines" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "purchase_order_lines_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "po_line_costs" (
+    "po_line_id" TEXT NOT NULL,
+    "cost_price" DECIMAL(12,2) NOT NULL,
+    "updated_by_id" TEXT,
+    "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "po_line_costs_pkey" PRIMARY KEY ("po_line_id")
+);
+
+-- CreateTable
+CREATE TABLE "export_logs" (
+    "id" TEXT NOT NULL,
+    "user_id" TEXT NOT NULL,
+    "user_name" TEXT NOT NULL,
+    "view" TEXT NOT NULL,
+    "filters" JSONB NOT NULL,
+    "row_count" INTEGER NOT NULL,
+    "columns" JSONB,
+    "choice" JSONB,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "export_logs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "cost_price_logs" (
+    "id" TEXT NOT NULL,
+    "po_id" TEXT,
+    "po_number" TEXT,
+    "line_label" TEXT NOT NULL,
+    "old_price" DECIMAL(12,2),
+    "new_price" DECIMAL(12,2),
+    "source" TEXT NOT NULL,
+    "changed_by_id" TEXT,
+    "changed_by_name" TEXT,
+    "changed_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "cost_price_logs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "cost_code_settings" (
+    "id" INTEGER NOT NULL DEFAULT 1,
+    "code_word" TEXT NOT NULL,
+    "updated_by_id" TEXT,
+    "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "cost_code_settings_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -272,6 +330,8 @@ CREATE TABLE "delivery_challan_lines" (
     "quantity" DOUBLE PRECISION NOT NULL,
     "isPartialCut" BOOLEAN NOT NULL DEFAULT false,
     "cutReference" TEXT,
+    "earmarked_for" TEXT,
+    "earmark_override" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "delivery_challan_lines_pkey" PRIMARY KEY ("id")
@@ -281,16 +341,20 @@ CREATE TABLE "delivery_challan_lines" (
 CREATE TABLE "inbound_discrepancies" (
     "id" TEXT NOT NULL,
     "supplierId" TEXT NOT NULL,
-    "invoiceRef" TEXT NOT NULL,
+    "invoiceRef" TEXT,
+    "po_id" TEXT,
+    "po_line_id" TEXT,
     "bundleNumber" TEXT NOT NULL,
     "itemType" TEXT,
     "category" TEXT,
     "brand" TEXT,
     "quality" TEXT,
+    "quality_name" TEXT,
     "shade" TEXT,
     "size" TEXT,
     "name" TEXT,
     "artNo" TEXT,
+    "uom" TEXT,
     "issueType" TEXT NOT NULL,
     "expectedQty" DOUBLE PRECISION,
     "receivedQty" DOUBLE PRECISION DEFAULT 0,
@@ -308,6 +372,7 @@ CREATE TABLE "master_attributes" (
     "type" TEXT NOT NULL,
     "value" TEXT NOT NULL,
     "category" TEXT,
+    "unit" TEXT,
     "usageCount" INTEGER NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -344,6 +409,7 @@ CREATE TABLE "goods_receipt_note_lines" (
     "itemType" TEXT NOT NULL DEFAULT 'FABRIC',
     "brand" TEXT,
     "quality" TEXT,
+    "quality_name" TEXT,
     "shade" TEXT,
     "category" TEXT,
     "size" TEXT,
@@ -360,6 +426,99 @@ CREATE TABLE "goods_receipt_note_lines" (
     CONSTRAINT "goods_receipt_note_lines_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "stock_counts" (
+    "id" TEXT NOT NULL,
+    "countNumber" TEXT NOT NULL,
+    "scope_label" TEXT NOT NULL,
+    "whole_warehouse" BOOLEAN NOT NULL DEFAULT false,
+    "status" "StockCountStatus" NOT NULL DEFAULT 'OPEN',
+    "notes" TEXT,
+    "created_by_id" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "closed_by_id" TEXT,
+    "closed_at" TIMESTAMP(3),
+    "result_summary" JSONB,
+
+    CONSTRAINT "stock_counts_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "stock_count_locations" (
+    "id" TEXT NOT NULL,
+    "count_id" TEXT NOT NULL,
+    "location_id" TEXT NOT NULL,
+    "counted_at" TIMESTAMP(3),
+    "counted_by_id" TEXT,
+    "expected" JSONB,
+
+    CONSTRAINT "stock_count_locations_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "stock_count_entries" (
+    "id" TEXT NOT NULL,
+    "count_location_id" TEXT NOT NULL,
+    "batch_id" TEXT NOT NULL,
+    "quantity" DOUBLE PRECISION NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "stock_count_entries_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "customer_returns" (
+    "id" TEXT NOT NULL,
+    "returnNumber" TEXT NOT NULL,
+    "dc_id" TEXT NOT NULL,
+    "customer_id" TEXT,
+    "customer_name" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "remarks" TEXT,
+    "created_by_id" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "customer_returns_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "customer_return_lines" (
+    "id" TEXT NOT NULL,
+    "return_id" TEXT NOT NULL,
+    "dc_line_id" TEXT NOT NULL,
+    "batch_id" TEXT NOT NULL,
+    "quantity" DOUBLE PRECISION NOT NULL,
+    "condition" TEXT NOT NULL,
+    "notes" TEXT,
+
+    CONSTRAINT "customer_return_lines_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "supplier_returns" (
+    "id" TEXT NOT NULL,
+    "returnNumber" TEXT NOT NULL,
+    "supplier_id" TEXT,
+    "supplier_name" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "remarks" TEXT,
+    "created_by_id" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "supplier_returns_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "supplier_return_lines" (
+    "id" TEXT NOT NULL,
+    "return_id" TEXT NOT NULL,
+    "batch_id" TEXT NOT NULL,
+    "quantity" DOUBLE PRECISION NOT NULL,
+    "remaining_qty" DOUBLE PRECISION NOT NULL,
+
+    CONSTRAINT "supplier_return_lines_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "users_username_key" ON "users"("username");
 
@@ -367,16 +526,16 @@ CREATE UNIQUE INDEX "users_username_key" ON "users"("username");
 CREATE UNIQUE INDEX "users_badge_code_key" ON "users"("badge_code");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "direct_inward_drafts_user_id_key" ON "direct_inward_drafts"("user_id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "suppliers_code_key" ON "suppliers"("code");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "aisles_number_key" ON "aisles"("number");
+CREATE UNIQUE INDEX "racks_name_key" ON "racks"("name");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "rows_aisleId_number_key" ON "rows"("aisleId", "number");
-
--- CreateIndex
-CREATE UNIQUE INDEX "bays_rowId_number_key" ON "bays"("rowId", "number");
+CREATE UNIQUE INDEX "bays_rackId_number_key" ON "bays"("rackId", "number");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "locations_code_key" ON "locations"("code");
@@ -418,6 +577,15 @@ CREATE INDEX "transactions_type_idx" ON "transactions"("type");
 CREATE UNIQUE INDEX "purchase_orders_poNumber_key" ON "purchase_orders"("poNumber");
 
 -- CreateIndex
+CREATE INDEX "export_logs_created_at_idx" ON "export_logs"("created_at");
+
+-- CreateIndex
+CREATE INDEX "export_logs_user_id_view_created_at_idx" ON "export_logs"("user_id", "view", "created_at");
+
+-- CreateIndex
+CREATE INDEX "cost_price_logs_changed_at_idx" ON "cost_price_logs"("changed_at");
+
+-- CreateIndex
 CREATE INDEX "batch_locations_batchId_idx" ON "batch_locations"("batchId");
 
 -- CreateIndex
@@ -433,16 +601,55 @@ CREATE UNIQUE INDEX "clients_code_key" ON "clients"("code");
 CREATE UNIQUE INDEX "delivery_challans_challanNumber_key" ON "delivery_challans"("challanNumber");
 
 -- CreateIndex
+CREATE INDEX "inbound_discrepancies_supplierId_grnId_idx" ON "inbound_discrepancies"("supplierId", "grnId");
+
+-- CreateIndex
+CREATE INDEX "inbound_discrepancies_po_id_idx" ON "inbound_discrepancies"("po_id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "master_attributes_type_value_key" ON "master_attributes"("type", "value");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "goods_receipt_notes_grnNumber_key" ON "goods_receipt_notes"("grnNumber");
 
--- AddForeignKey
-ALTER TABLE "rows" ADD CONSTRAINT "rows_aisleId_fkey" FOREIGN KEY ("aisleId") REFERENCES "aisles"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- CreateIndex
+CREATE UNIQUE INDEX "stock_counts_countNumber_key" ON "stock_counts"("countNumber");
+
+-- CreateIndex
+CREATE INDEX "stock_counts_status_idx" ON "stock_counts"("status");
+
+-- CreateIndex
+CREATE INDEX "stock_count_locations_location_id_idx" ON "stock_count_locations"("location_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "stock_count_locations_count_id_location_id_key" ON "stock_count_locations"("count_id", "location_id");
+
+-- CreateIndex
+CREATE INDEX "stock_count_entries_batch_id_idx" ON "stock_count_entries"("batch_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "stock_count_entries_count_location_id_batch_id_key" ON "stock_count_entries"("count_location_id", "batch_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "customer_returns_returnNumber_key" ON "customer_returns"("returnNumber");
+
+-- CreateIndex
+CREATE INDEX "customer_returns_dc_id_idx" ON "customer_returns"("dc_id");
+
+-- CreateIndex
+CREATE INDEX "customer_return_lines_dc_line_id_idx" ON "customer_return_lines"("dc_line_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "supplier_returns_returnNumber_key" ON "supplier_returns"("returnNumber");
+
+-- CreateIndex
+CREATE INDEX "supplier_return_lines_batch_id_idx" ON "supplier_return_lines"("batch_id");
 
 -- AddForeignKey
-ALTER TABLE "bays" ADD CONSTRAINT "bays_rowId_fkey" FOREIGN KEY ("rowId") REFERENCES "rows"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "direct_inward_drafts" ADD CONSTRAINT "direct_inward_drafts_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "bays" ADD CONSTRAINT "bays_rackId_fkey" FOREIGN KEY ("rackId") REFERENCES "racks"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "locations" ADD CONSTRAINT "locations_bayId_fkey" FOREIGN KEY ("bayId") REFERENCES "bays"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -470,6 +677,9 @@ ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_createdById_fkey" 
 
 -- AddForeignKey
 ALTER TABLE "purchase_order_lines" ADD CONSTRAINT "purchase_order_lines_poId_fkey" FOREIGN KEY ("poId") REFERENCES "purchase_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "po_line_costs" ADD CONSTRAINT "po_line_costs_po_line_id_fkey" FOREIGN KEY ("po_line_id") REFERENCES "purchase_order_lines"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "po_line_allocations" ADD CONSTRAINT "po_line_allocations_po_line_id_fkey" FOREIGN KEY ("po_line_id") REFERENCES "purchase_order_lines"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -508,6 +718,12 @@ ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_report
 ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_grnId_fkey" FOREIGN KEY ("grnId") REFERENCES "goods_receipt_notes"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_po_id_fkey" FOREIGN KEY ("po_id") REFERENCES "purchase_orders"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "inbound_discrepancies" ADD CONSTRAINT "inbound_discrepancies_po_line_id_fkey" FOREIGN KEY ("po_line_id") REFERENCES "purchase_order_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "goods_receipt_notes" ADD CONSTRAINT "goods_receipt_notes_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "suppliers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -521,3 +737,66 @@ ALTER TABLE "goods_receipt_note_lines" ADD CONSTRAINT "goods_receipt_note_lines_
 
 -- AddForeignKey
 ALTER TABLE "goods_receipt_note_lines" ADD CONSTRAINT "goods_receipt_note_lines_poLineId_fkey" FOREIGN KEY ("poLineId") REFERENCES "purchase_order_lines"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_counts" ADD CONSTRAINT "stock_counts_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_counts" ADD CONSTRAINT "stock_counts_closed_by_id_fkey" FOREIGN KEY ("closed_by_id") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_count_locations" ADD CONSTRAINT "stock_count_locations_count_id_fkey" FOREIGN KEY ("count_id") REFERENCES "stock_counts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_count_locations" ADD CONSTRAINT "stock_count_locations_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "locations"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_count_locations" ADD CONSTRAINT "stock_count_locations_counted_by_id_fkey" FOREIGN KEY ("counted_by_id") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_count_entries" ADD CONSTRAINT "stock_count_entries_count_location_id_fkey" FOREIGN KEY ("count_location_id") REFERENCES "stock_count_locations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "stock_count_entries" ADD CONSTRAINT "stock_count_entries_batch_id_fkey" FOREIGN KEY ("batch_id") REFERENCES "item_batches"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "customer_returns" ADD CONSTRAINT "customer_returns_dc_id_fkey" FOREIGN KEY ("dc_id") REFERENCES "delivery_challans"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "customer_returns" ADD CONSTRAINT "customer_returns_customer_id_fkey" FOREIGN KEY ("customer_id") REFERENCES "clients"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "customer_returns" ADD CONSTRAINT "customer_returns_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "customer_return_lines" ADD CONSTRAINT "customer_return_lines_return_id_fkey" FOREIGN KEY ("return_id") REFERENCES "customer_returns"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "customer_return_lines" ADD CONSTRAINT "customer_return_lines_dc_line_id_fkey" FOREIGN KEY ("dc_line_id") REFERENCES "delivery_challan_lines"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "customer_return_lines" ADD CONSTRAINT "customer_return_lines_batch_id_fkey" FOREIGN KEY ("batch_id") REFERENCES "item_batches"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "supplier_returns" ADD CONSTRAINT "supplier_returns_supplier_id_fkey" FOREIGN KEY ("supplier_id") REFERENCES "suppliers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "supplier_returns" ADD CONSTRAINT "supplier_returns_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "supplier_return_lines" ADD CONSTRAINT "supplier_return_lines_return_id_fkey" FOREIGN KEY ("return_id") REFERENCES "supplier_returns"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "supplier_return_lines" ADD CONSTRAINT "supplier_return_lines_batch_id_fkey" FOREIGN KEY ("batch_id") REFERENCES "item_batches"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+
+-- Only one cost code settings row
+ALTER TABLE "cost_code_settings" ADD CONSTRAINT "cost_code_settings_single_row" CHECK ("id" = 1);
+
+-- Fabric types; Knits are measured in kilograms
+INSERT INTO "master_attributes" ("id", "type", "value", "unit", "usageCount", "createdAt", "updatedAt") VALUES
+  (gen_random_uuid()::text, 'FABRIC_CATEGORY', 'SUITING', 'METERS', 0, now(), now()),
+  (gen_random_uuid()::text, 'FABRIC_CATEGORY', 'SHIRTING', 'METERS', 0, now(), now()),
+  (gen_random_uuid()::text, 'FABRIC_CATEGORY', 'PLAIN_SHIRTING', 'METERS', 0, now(), now()),
+  (gen_random_uuid()::text, 'FABRIC_CATEGORY', 'KNITS', 'KG', 0, now(), now()),
+  (gen_random_uuid()::text, 'FABRIC_CATEGORY', 'OTHER', 'METERS', 0, now(), now());

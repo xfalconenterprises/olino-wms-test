@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { istDateKey, istDayEnd, istDayStart } from '../../utils/format';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 import { unitLabel, unitName } from '../../utils/units';
@@ -21,34 +22,31 @@ function reportKind(batch?: { itemType?: string | null; category?: string | null
 // ─── 1. Periodic Throughput (Daily / Monthly / Yearly) ───────────────────────────
 router.get('/periodic', requirePermission('admin.reports'), async (req: Request, res: Response) => {
   const period = (req.query.period as string) || 'daily';
-  const targetDateStr = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+  const targetDateStr = (req.query.date as string) || istDateKey();
   const itemTypeFilter = (req.query.itemType as string) || 'ALL';
   const categoryFilter = (req.query.category as string) || '';
 
   let startDate: Date;
   let endDate: Date;
 
+  // Day, month and year boundaries are IST midnights, wherever the server runs
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const [yearPart, monthPart] = targetDateStr.split('-');
+  const year = parseInt(yearPart, 10) || parseInt(istDateKey().slice(0, 4), 10);
+  const month = parseInt(monthPart, 10) || 1;
+
   if (period === 'daily') {
-    // Single day: 00:00:00 to 23:59:59
-    const parts = targetDateStr.split('-');
-    const year = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
-    const day = parseInt(parts[2], 10);
-    startDate = new Date(year, month, day, 0, 0, 0, 0);
-    endDate = new Date(year, month, day, 23, 59, 59, 999);
+    startDate = istDayStart(targetDateStr) as Date;
+    endDate = istDayEnd(targetDateStr) as Date;
   } else if (period === 'monthly') {
-    // Full month: from 1st of month to last day of month
-    const parts = targetDateStr.split('-');
-    const year = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
-    startDate = new Date(year, month, 1, 0, 0, 0, 0);
-    endDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    startDate = istDayStart(`${year}-${pad(month)}-01`) as Date;
+    endDate = istDayEnd(`${year}-${pad(month)}-${pad(lastDay)}`) as Date;
   } else {
-    // Yearly: from Jan 1 to Dec 31
-    const year = parseInt(targetDateStr.slice(0, 4), 10) || new Date().getFullYear();
-    startDate = new Date(year, 0, 1, 0, 0, 0, 0);
-    endDate = new Date(year, 11, 31, 23, 59, 59, 999);
+    startDate = istDayStart(`${year}-01-01`) as Date;
+    endDate = istDayEnd(`${year}-12-31`) as Date;
   }
+  if (!startDate || !endDate) { res.status(400).json({ error: 'Choose a valid date.' }); return; }
 
   // Fetch all transactions in the time window
   const transactions = await prisma.transaction.findMany({
@@ -103,10 +101,8 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
     const itemType = reportKind(tx.batch);
     const qty = tx.quantityMoved || 0;
 
-    // Format date key (YYYY-MM-DD for monthly/daily, YYYY-MM for yearly)
-    const dateKey = period === 'yearly' 
-      ? tx.createdAt.toISOString().slice(0, 7) // YYYY-MM
-      : tx.createdAt.toISOString().slice(0, 10); // YYYY-MM-DD
+    // Grouped by IST day (or IST month for a yearly report)
+    const dateKey = period === 'yearly' ? istDateKey(tx.createdAt).slice(0, 7) : istDateKey(tx.createdAt);
 
     if (!timelineMap[dateKey]) {
       timelineMap[dateKey] = {

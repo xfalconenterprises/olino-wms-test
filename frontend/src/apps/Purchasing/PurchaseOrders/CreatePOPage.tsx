@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../../../utils/api';
 import { ShoppingCart, Plus, Trash2, ArrowLeft, Repeat2, Edit, Building2, X, Search, CheckCircle2, Users, UserPlus, LockKeyhole, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
-import { formatDate } from '../../../utils/format';
+import { formatDate, istDateKey } from '../../../utils/format';
+import DateField from '../../../components/Common/DateField';
 import LearningTypeaheadInput from '../../../components/Common/LearningTypeaheadInput';
 import { QuickAddClientModal, QuickAddSupplierModal } from '../../../components/Common/QuickAddModals';
 import { allowsDecimals, fabricCategoryLabel, fabricUnit, formatTotals, unitLabel, unitName, useFabricCategories } from '../../../utils/units';
@@ -21,9 +22,12 @@ export default function CreatePOPage() {
   const { id } = useParams();
   const isEditMode = Boolean(id);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const draftId = isEditMode ? null : searchParams.get('draft');
   
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [error, setError] = useState('');
   const [suppliersList, setSuppliersList] = useState<SupplierOption[]>([]);
 
@@ -38,7 +42,7 @@ export default function CreatePOPage() {
   const [form, setForm] = useState({
     supplierId: '',
     supplierName: '',
-    expectedDate: new Date().toISOString().split('T')[0],
+    expectedDate: istDateKey(),
     targetClient: '',
     notes: '',
   });
@@ -81,6 +85,7 @@ export default function CreatePOPage() {
     id?: string;          // saved line (edit mode): a blank cost keeps the line's saved cost
     costPrice?: string;   // confidential: typed here, never shown back
     hasCost?: boolean;    // the saved line already has a cost
+    draftKey?: string;    // line of a saved draft: a blank cost keeps the draft's cost
   }[]>([
     { name: '', category: 'SUITING', artNo: '', brand: '', quality: '', shade: '', size: '', orderedQty: '', notes: '', allocations: [] }
   ]);
@@ -168,7 +173,7 @@ export default function CreatePOPage() {
         setForm({
           supplierId: po.supplierId || '',
           supplierName: po.supplierName,
-          expectedDate: po.expectedDate ? new Date(po.expectedDate).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+          expectedDate: po.expectedDate ? istDateKey(new Date(po.expectedDate)) : istDateKey(),
           targetClient: po.targetClient || '',
           notes: po.notes || '',
         });
@@ -204,10 +209,23 @@ export default function CreatePOPage() {
         }
       }).catch(() => setError('Failed to load PO details for editing'))
       .finally(() => setLoading(false));
+    } else if (draftId) {
+      api.get(`/api/po-drafts/${draftId}`).then(r => {
+        const saved = r.data.data;
+        setPoType(saved.poType);
+        setCategoryCollapsed(true);
+        setForm(f => ({ ...f, ...saved.form }));
+        setSupplierInput(saved.form?.supplierName || '');
+        setClientInput(saved.form?.targetClient || '');
+        if (saved.lines?.length > 0) setLines(saved.lines.map((l: any) => ({ ...l, costPrice: '' })));
+      }).catch(() => {
+        setError('This draft no longer exists.');
+        navigate('/purchase-orders/new', { replace: true });
+      }).finally(() => setLoading(false));
     } else {
       setLoading(false);
     }
-  }, [id, isEditMode]);
+  }, [id, isEditMode, draftId]);
 
   // Close dropdown menus when clicking outside
   useEffect(() => {
@@ -276,7 +294,7 @@ export default function CreatePOPage() {
   const duplicateLine = (index: number) => {
     const newLines = [...lines];
     // A copy is a new line: it keeps what was typed here but not the saved line's stored cost
-    newLines.splice(index + 1, 0, { ...lines[index], id: undefined, hasCost: false });
+    newLines.splice(index + 1, 0, { ...lines[index], id: undefined, hasCost: false, draftKey: undefined });
     setLines(newLines);
   };
 
@@ -460,9 +478,11 @@ export default function CreatePOPage() {
             notes: l.notes?.trim() || undefined,
             allocations: lineAllocations && lineAllocations.length > 0 ? lineAllocations : undefined,
             id: l.id,
+            draftKey: l.draftKey,
             costPrice: l.costPrice?.trim() ? parseFloat(l.costPrice) : undefined
           };
-        })
+        }),
+        draftId: draftId || undefined,
       };
 
       // Auto-learn all newly confirmed attributes into Master Attributes catalog
@@ -495,6 +515,22 @@ export default function CreatePOPage() {
     }
   };
 
+  // Saves as it stands, however unfinished. The checks run when the PO is confirmed.
+  const handleSaveDraft = async () => {
+    setError('');
+    setSavingDraft(true);
+    try {
+      const data = { poType, form, lines };
+      if (draftId) await api.put(`/api/po-drafts/${draftId}`, { data });
+      else await api.post('/api/po-drafts', { data });
+      navigate('/purchase-orders');
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || 'The draft could not be saved.');
+      setSavingDraft(false);
+    }
+  };
+
   if (loading) return <div className="loading-center"><span className="spinner spinner-lg" /></div>;
 
   return (
@@ -505,7 +541,7 @@ export default function CreatePOPage() {
             <ArrowLeft size={16} /> Back
           </button>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {isEditMode ? <><Edit size={28} /> Edit Purchase Order</> : <><ShoppingCart size={28} /> Create Purchase Order</>}
+            {isEditMode ? <><Edit size={28} /> Edit Purchase Order</> : <><ShoppingCart size={28} /> {draftId ? 'Draft Purchase Order' : 'Create Purchase Order'}</>}
           </h1>
         </div>
       </div>
@@ -785,14 +821,8 @@ export default function CreatePOPage() {
                     <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
                       Expected Delivery Date <span className="required">*</span>
                     </label>
-                    <input
-                      type="date"
-                      className="form-input"
-                      value={form.expectedDate}
-                      onChange={e => setForm({ ...form, expectedDate: e.target.value })}
-                      required
-                      style={{ height: 40, fontSize: 13.5 }}
-                    />
+                    <DateField label="Expected Delivery Date" required value={form.expectedDate}
+                      onChange={expectedDate => setForm(f => ({ ...f, expectedDate }))} />
                   </div>
 
                   {/* Client */}
@@ -1432,8 +1462,13 @@ export default function CreatePOPage() {
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
               <button type="button" className="btn btn-secondary" onClick={() => navigate('/purchase-orders')}>Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={submitting || (isEditMode && error.includes('cannot be edited'))}>
-                {submitting ? <><span className="spinner" /> Saving...</> : (isEditMode ? 'Update PO' : 'Create Purchase Order')}
+              {!isEditMode && (
+                <button type="button" className="btn btn-secondary" onClick={handleSaveDraft} disabled={submitting || savingDraft}>
+                  {savingDraft ? <><span className="spinner" /> Saving...</> : (draftId ? 'Save Draft' : 'Save as Draft')}
+                </button>
+              )}
+              <button type="submit" className="btn btn-primary" disabled={submitting || savingDraft || (isEditMode && error.includes('cannot be edited'))}>
+                {submitting ? <><span className="spinner" /> Saving...</> : (isEditMode ? 'Update PO' : draftId ? 'Confirm PO' : 'Create Purchase Order')}
               </button>
             </div>
           </>

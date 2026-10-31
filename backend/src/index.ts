@@ -2,6 +2,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import express from 'express';
+import compression from 'compression';
 
 import authRoutes from './modules/core/auth';
 import batchesRoutes from './modules/inventory/batches';
@@ -19,6 +20,7 @@ import printerRoutes from './modules/inventory/printer';
 import clientsRoutes from './modules/inventory/clients';
 import grnRoutes from './modules/inventory/grn';
 import directInwardRoutes from './modules/inventory/direct-inward';
+import poDraftRoutes from './modules/purchasing/po-drafts';
 import returnsRoutes from './modules/inventory/returns';
 import stockCountsRoutes from './modules/inventory/stock-counts';
 import costPricesRoutes from './modules/administration/cost-prices';
@@ -26,7 +28,24 @@ import costPricesRoutes from './modules/administration/cost-prices';
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// ─── Security headers ────────────────────────────────────────────────────────
+// No server banner; browsers must not guess content types, show the app inside another site's
+// frame (clickjacking), or send full URLs to other sites.
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "frame-ancestors 'none'",
+    'Referrer-Policy': 'same-origin',
+  });
+  next();
+});
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
+// Large lists and the app itself shrink to about a tenth, which matters on warehouse Wi-Fi
+app.use(compression());
+
 // Direct Inward drafts carry whole imported sheets; every other request keeps the 100 KB default
 app.use('/api/direct-inward/draft', express.json({ limit: '2mb' }));
 app.use(express.json());
@@ -69,6 +88,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/printer', printerRoutes);
 app.use('/api/clients', clientsRoutes);
 app.use('/api/direct-inward', directInwardRoutes);
+app.use('/api/po-drafts', poDraftRoutes);
 app.use('/api/returns', returnsRoutes);
 app.use('/api/stock-counts', stockCountsRoutes);
 app.use('/api/cost-prices', costPricesRoutes);
@@ -90,6 +110,9 @@ const frontendDist = path.resolve(__dirname, '../../frontend/dist');
 const frontendIndex = path.join(frontendDist, 'index.html');
 
 if (fs.existsSync(frontendIndex)) {
+  // Built files have a content hash in their name, so browsers may keep them for good
+  app.use('/assets', express.static(path.join(frontendDist, 'assets'), { immutable: true, maxAge: '1y' }));
+  app.use('/assets', (_req, res) => { res.status(404).end(); });
   app.use(express.static(frontendDist, { index: false }));
   // Client-side routes (e.g. /entry-gate) all load the single-page app
   app.use((req, res, next) => {
@@ -99,6 +122,21 @@ if (fs.existsSync(frontendIndex)) {
 } else {
   console.log('Frontend build not found; run "npm run build" to serve the app from this server.');
 }
+
+// Anything that fails unexpectedly: logged here, answered with a plain message. The details
+// (database errors, stack traces) never reach the browser.
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err?.type === 'entity.parse.failed') { res.status(400).json({ error: 'The request body is not valid JSON.' }); return; }
+  if (err?.type === 'entity.too.large') { res.status(413).json({ error: 'The request is too large.' }); return; }
+  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Something went wrong on the server. Please try again.' });
+});
+
+// A failed background task must not take the warehouse down; it is logged with its reason
+process.on('unhandledRejection', reason => {
+  console.error('Unhandled background failure:', reason);
+});
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(Number(PORT), () => {

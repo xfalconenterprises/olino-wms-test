@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
 import { generateSmartBatchCodePrefix } from '../../utils/batch-code';
 import { requireAuth, requirePermission } from '../../middleware/auth';
@@ -37,7 +38,7 @@ router.get('/', requirePermission('inv.aging'), async (req: Request, res: Respon
       }),
     } as any,
     include: {
-      batchLocations: { include: { location: true } },
+      batchLocations: { select: { quantity: true, location: { select: { code: true } } } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -47,20 +48,24 @@ router.get('/', requirePermission('inv.aging'), async (req: Request, res: Respon
 // GET /api/batches/pending-putaway — items received at Entry Gate awaiting shelf placement
 router.get('/pending-putaway', requirePermission('ops.put_away', 'ops.dock_queue'), async (_req: Request, res: Response) => {
   try {
+    const waiting = await prisma.$queryRaw<{ id: string }[]>`
+      SELECT b.id FROM item_batches b
+      LEFT JOIN batch_locations bl ON bl."batchId" = b.id
+      WHERE b.status::text IN ('IN_STOCK', 'PARTIALLY_USED') AND b.quantity > 0
+      GROUP BY b.id
+      HAVING b.quantity - COALESCE(SUM(bl.quantity), 0) >= 0.005`;
+
     const batches = await prisma.itemBatch.findMany({
-      where: {
-        status: { in: ['IN_STOCK', 'PARTIALLY_USED'] },
-        quantity: { gt: 0 },
-      },
+      where: { id: { in: waiting.map(w => w.id) } },
       include: {
-        batchLocations: { include: { location: true } },
+        batchLocations: { include: { location: { select: { id: true, code: true } } } },
         transactions: {
           take: 1,
           orderBy: { createdAt: 'desc' },
           select: { type: true, notes: true, referenceId: true }
         },
         poLine: {
-          include: {
+          select: {
             po: {
               select: {
                 poNumber: true,
@@ -89,7 +94,8 @@ router.get('/pending-putaway', requirePermission('ops.put_away', 'ops.dock_queue
 
     res.json(pending);
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to fetch pending put-away items', details: err.message });
+    console.error('Failed to fetch pending put-away items:', err);
+    res.status(500).json({ error: 'Failed to fetch pending put-away items' });
   }
 });
 
@@ -472,7 +478,7 @@ router.post('/:id/reallocate-client', requirePermission('inv.dashboard'), async 
 
     res.json(updated);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to reallocate client' });
+    res.status(500).json({ error: userMessage(err, 'Failed to reallocate client') });
   }
 });
 

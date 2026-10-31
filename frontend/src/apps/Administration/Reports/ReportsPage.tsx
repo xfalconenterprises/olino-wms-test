@@ -14,7 +14,10 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
-import { formatDateTime } from '../../../utils/format';
+import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
+import DateField, { MonthField } from '../../../components/Common/DateField';
 import { exportToExcel } from '../../../utils/exportExcel';
 import { fabricCategoryLabel, useFabricCategories } from '../../../utils/units';
 
@@ -37,6 +40,7 @@ type PeriodType = 'daily' | 'monthly' | 'yearly';
 type ProductFilterType = 'ALL' | 'FABRIC' | 'SHOES' | 'SOCKS';
 
 export default function ReportsPage() {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<ReportTab>('PERIODIC');
   const [loading, setLoading] = useState(false);
   const fabricTypes = useFabricCategories();
@@ -45,9 +49,9 @@ export default function ReportsPage() {
   const [periodType, setPeriodType] = useState<PeriodType>('monthly');
   const [throughputProduct, setThroughputProduct] = useState<ProductFilterType>('ALL');
   const [throughputFabricCategory, setThroughputFabricCategory] = useState('');
-  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [selectedYear, setSelectedYear] = useState(() => String(new Date().getFullYear()));
+  const [selectedDate, setSelectedDate] = useState(() => istDateKey());
+  const [selectedMonth, setSelectedMonth] = useState(() => istDateKey().slice(0, 7));
+  const [selectedYear, setSelectedYear] = useState(() => istDateKey().slice(0, 4));
   const [periodicData, setPeriodicData] = useState<any>(null);
 
   // ─── 2. Customer Shipments State ─────────────────────────────────────────
@@ -167,7 +171,7 @@ export default function ReportsPage() {
       t.referenceId || '',
       t.notes || ''
     ]);
-    exportToExcel(`Olino_Throughput_${throughputProduct}_${periodType}_${periodType === 'daily' ? selectedDate : periodType === 'monthly' ? selectedMonth : selectedYear}`, headers, rows);
+    exportToExcel(`Olino_Throughput_${throughputProduct}_${periodType}_${periodType === 'daily' ? formatDate(selectedDate) : periodType === 'monthly' ? selectedMonth.split('-').reverse().join('-') : selectedYear}`, headers, rows);
   };
 
   const exportShipmentsExcel = () => {
@@ -310,23 +314,11 @@ export default function ReportsPage() {
               </div>
 
               {periodType === 'daily' && (
-                <input
-                  type="date"
-                  className="form-input"
-                  value={selectedDate}
-                  onChange={e => setSelectedDate(e.target.value)}
-                  style={{ height: 38, width: 160, fontSize: 13 }}
-                />
+                <DateField label="Report date" required value={selectedDate} onChange={setSelectedDate} style={{ width: 160 }} />
               )}
 
               {periodType === 'monthly' && (
-                <input
-                  type="month"
-                  className="form-input"
-                  value={selectedMonth}
-                  onChange={e => setSelectedMonth(e.target.value)}
-                  style={{ height: 38, width: 160, fontSize: 13 }}
-                />
+                <MonthField value={selectedMonth} onChange={setSelectedMonth} style={{ height: 38, fontSize: 13 }} />
               )}
 
               {periodType === 'yearly' && (
@@ -377,14 +369,16 @@ export default function ReportsPage() {
               )}
             </div>
 
-            <button
-              className="btn btn-secondary"
-              onClick={exportPeriodicExcel}
-              disabled={!periodicData || loading}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
-            >
-              <Download size={15} /> Download Excel (.CSV)
-            </button>
+            {hasPermission(user, 'export.report_throughput') && (
+              <button
+                className="btn btn-secondary"
+                onClick={exportPeriodicExcel}
+                disabled={!periodicData || loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+              >
+                <Download size={15} /> Download Excel (.CSV)
+              </button>
+            )}
           </div>
 
           {loading ? (
@@ -545,14 +539,16 @@ export default function ReportsPage() {
               />
             </div>
 
-            <button
-              className="btn btn-secondary"
-              onClick={exportShipmentsExcel}
-              disabled={shipmentsData.length === 0 || loading}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
-            >
-              <Download size={15} /> Download Excel (.CSV)
-            </button>
+            {hasPermission(user, 'export.report_shipments') && (
+              <button
+                className="btn btn-secondary"
+                onClick={exportShipmentsExcel}
+                disabled={shipmentsData.length === 0 || loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+              >
+                <Download size={15} /> Download Excel (.CSV)
+              </button>
+            )}
           </div>
 
           {loading ? (
@@ -723,14 +719,16 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            <button
-              className="btn btn-secondary"
-              onClick={exportStockMasterExcel}
-              disabled={stockMasterData.length === 0 || loading}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
-            >
-              <Download size={15} /> Download Excel (.CSV)
-            </button>
+            {hasPermission(user, 'export.report_stock_master') && (
+              <button
+                className="btn btn-secondary"
+                onClick={exportStockMasterExcel}
+                disabled={stockMasterData.length === 0 || loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+              >
+                <Download size={15} /> Download Excel (.CSV)
+              </button>
+            )}
           </div>
 
           {loading ? (
@@ -785,14 +783,16 @@ export default function ReportsPage() {
       {activeTab === 'SUPPLIERS' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-            <button
-              className="btn btn-secondary"
-              onClick={exportSupplierExcel}
-              disabled={supplierData.length === 0 || loading}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
-            >
-              <Download size={15} /> Download Excel (.CSV)
-            </button>
+            {hasPermission(user, 'export.report_suppliers') && (
+              <button
+                className="btn btn-secondary"
+                onClick={exportSupplierExcel}
+                disabled={supplierData.length === 0 || loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+              >
+                <Download size={15} /> Download Excel (.CSV)
+              </button>
+            )}
           </div>
 
           {loading ? (
@@ -853,14 +853,16 @@ export default function ReportsPage() {
       {activeTab === 'CAPACITY' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-            <button
-              className="btn btn-secondary"
-              onClick={exportCapacityExcel}
-              disabled={capacityData.length === 0 || loading}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
-            >
-              <Download size={15} /> Download Excel (.CSV)
-            </button>
+            {hasPermission(user, 'export.report_capacity') && (
+              <button
+                className="btn btn-secondary"
+                onClick={exportCapacityExcel}
+                disabled={capacityData.length === 0 || loading}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+              >
+                <Download size={15} /> Download Excel (.CSV)
+              </button>
+            )}
           </div>
 
           {loading ? (

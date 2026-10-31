@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import api from '../../../utils/api';
 import { formatDate } from '../../../utils/format';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import { formatTotals, unitLabel, uomOf } from '../../../utils/units';
 import '../../../styles/components.css';
 
@@ -88,6 +90,7 @@ interface ClientSuppliedItem {
 }
 
 export default function ClientsTrackingPage() {
+  const { user } = useAuth();
   const [clients, setClients] = useState<ClientItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -311,14 +314,16 @@ export default function ClientsTrackingPage() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button 
-            type="button" 
-            className="btn btn-secondary" 
-            onClick={handleExportCSV}
-            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-          >
-            <Download size={18} /> Export CSV
-          </button>
+          {hasPermission(user, 'export.clients') && (
+            <button 
+              type="button" 
+              className="btn btn-secondary" 
+              onClick={handleExportCSV}
+              style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              <Download size={18} /> Export CSV
+            </button>
+          )}
           <button 
             type="button" 
             className="btn btn-primary" 
