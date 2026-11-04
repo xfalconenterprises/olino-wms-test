@@ -3,6 +3,7 @@ import { userMessage } from '../../utils/errors';
 import bwipjs from 'bwip-js';
 import { requireAuth, requirePermission, userHasPermission } from '../../middleware/auth';
 import prisma from '../../lib/prisma';
+import { awaitingGrn } from '../../utils/received';
 import { formatDate, istDateKey } from '../../utils/format';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
 import { filledMeta } from '../../utils/print-document';
@@ -245,6 +246,10 @@ router.post('/:id/lines', requireAuth, requirePermission('ops.exit_gate'), async
     res.status(400).json({ error: `Batch ${batch.batchCode} is on QC Hold (pending quality inspection) and cannot be dispatched.` });
     return;
   }
+  if (await awaitingGrn(prisma, batch)) {
+    res.status(400).json({ error: `${batch.batchCode} isn't on a GRN yet. Finalize its GRN at the Entry Gate before dispatching it.` });
+    return;
+  }
   if (numQty > batch.quantity + 0.001) {
     res.status(400).json({ error: `Cannot ship ${numQty}. Only ${batch.quantity} available in this batch.` });
     return;
@@ -388,6 +393,8 @@ router.post('/:id/dispatch', requireAuth, requirePermission('ops.exit_gate'), as
         const batch = await tx.itemBatch.findUnique({ where: { id: line.batchId } });
         if (!batch || batch.status === 'OUT') throw new Error(`Batch ${line.batch.batchCode} is no longer available.`);
         if (batch.status === 'QC_HOLD') throw new Error(`Batch ${batch.batchCode} is on QC Hold and cannot be dispatched.`);
+        // Packed before its GRN was required
+        if (await awaitingGrn(tx, batch)) throw new Error(`${batch.batchCode} isn't on a GRN yet. Finalize its GRN at the Entry Gate, or remove it from this challan.`);
         if (line.quantity > batch.quantity + 0.001) throw new Error(`Batch ${line.batch.batchCode} does not have enough quantity (${batch.quantity} available, ${line.quantity} requested).`);
         // The reservation may have changed since the line was added
         const reservedFor = reservedForOther(batch, dc);

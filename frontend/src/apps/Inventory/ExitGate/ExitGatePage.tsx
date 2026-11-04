@@ -251,6 +251,12 @@ export default function ExitGatePage() {
         return;
       }
 
+      if (batch.awaitingGrn) {
+        setScanError(`"${code}" isn't on a GRN yet. Finalize its GRN at the Entry Gate before dispatching it.`);
+        setScanning(false);
+        return;
+      }
+
       if (activeDC.lines?.some(l => l.batch.batchCode === batch.batchCode)) {
         setScanError(`SKU "${code}" is already added to this Challan.`);
         setScanning(false);

@@ -6,6 +6,7 @@ import { requireAuth, requirePermission } from '../../middleware/auth';
 import { autoLearnAttributes } from '../master-data/attributes';
 import { allowsDecimals, fabricUnitFor, unitLabel } from '../../utils/units';
 import { recordAllocationReceipt } from '../purchasing/allocations';
+import { awaitingGrn } from '../../utils/received';
 
 const router = Router();
 
@@ -126,7 +127,8 @@ router.get('/:id', requirePermission('inv.dashboard'), async (req: Request, res:
   });
 
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
-  res.json(batch);
+  // Scanning screens refuse dispatch straight away for goods not yet on a GRN
+  res.json({ ...batch, awaitingGrn: await awaitingGrn(prisma, batch) });
 });
 
 // GET /api/batches/by-code/:code — instant scan barcode lookup (fast, no heavy table scans)
@@ -156,7 +158,8 @@ router.get('/by-code/:code', requirePermission('ops.put_away', 'ops.dock_queue',
   });
 
   if (!batch) { res.status(404).json({ error: 'Batch not found' }); return; }
-  res.json(batch);
+  // Scanning screens refuse dispatch straight away for goods not yet on a GRN
+  res.json({ ...batch, awaitingGrn: await awaitingGrn(prisma, batch) });
 });
 
 // POST /api/batches/:id/qc-hold — Place batch on Quality Inspection Hold

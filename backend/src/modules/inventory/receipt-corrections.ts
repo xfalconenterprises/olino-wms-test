@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission, userHasPermission } from '../../middleware/auth';
-import { receivedQuantities } from '../../utils/received';
+import { lastingUse, receivedQuantities } from '../../utils/received';
 import { allowsDecimals, unitLabel } from '../../utils/units';
 
 // Fixing a receiving mistake: the wrong quantity typed, or a roll that should not have been received.
@@ -18,8 +18,6 @@ class CorrectionError extends Error {
 }
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
-// Movements that mean the roll has already been used, so its receipt can no longer be corrected
-const USES = new Set(['DELIVERY_CHALLAN', 'SUPPLIER_RETURN']);
 
 async function correctableRoll(tx: Prisma.TransactionClient, batchId: string) {
   const batch = await tx.itemBatch.findUnique({
@@ -30,10 +28,8 @@ async function correctableRoll(tx: Prisma.TransactionClient, batchId: string) {
   if (batch.receiptVoidedAt) throw new CorrectionError(`${batch.batchCode}'s receipt was already undone.`);
   const fromReturn = await tx.customerReturnLine.findFirst({ where: { batchId }, include: { customerReturn: { select: { returnNumber: true } } } });
   if (fromReturn) throw new CorrectionError(`${batch.batchCode} came from customer return ${fromReturn.customerReturn.returnNumber}. Cancel that return instead.`);
-  const used = await tx.transaction.findFirst({
-    where: { batchId, type: { in: ['STOCK_OUT', 'PARTIAL_CUT'] }, referenceType: { in: [...USES] } },
-  });
-  if (used) throw new CorrectionError(`${batch.batchCode} has already been cut or sent out, so its receipt can't be corrected. Use Stock Adjustments.`);
+  // Once dispatched or sent back to the supplier, the receipt can no longer be corrected
+  if (await lastingUse(tx, batchId)) throw new CorrectionError(`${batch.batchCode} has already been cut or sent out, so its receipt can't be corrected. Use Stock Adjustments.`);
   const packed = await tx.deliveryChallanLine.findFirst({
     where: { batchId, dc: { status: 'DRAFT', isDeleted: false } },
     include: { dc: { select: { challanNumber: true } } },
@@ -57,8 +53,8 @@ async function fitShelves(tx: Prisma.TransactionClient, batchId: string, quantit
 /** The PO line's received total, its client split and the PO's status, all moved by the same amount. */
 async function movePoReceipt(tx: Prisma.TransactionClient, batch: { poLineId: string | null; clientId: string | null; clientName: string | null }, change: number) {
   if (!batch.poLineId || Math.abs(change) < 0.0005) return;
-  const line = await tx.purchaseOrderLine.update({ where: { id: batch.poLineId }, data: { receivedQty: { increment: change } } });
-  if (line.receivedQty < 0) await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQty: 0 } });
+  const current = await tx.purchaseOrderLine.findUniqueOrThrow({ where: { id: batch.poLineId } });
+  const line = await tx.purchaseOrderLine.update({ where: { id: current.id }, data: { receivedQty: Math.max(0, round3(current.receivedQty + change)) } });
 
   const allocations = await tx.poLineAllocation.findMany({ where: { poLineId: line.id }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
   const name = (batch.clientName ?? '').trim().toLowerCase();

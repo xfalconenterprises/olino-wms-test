@@ -6,7 +6,7 @@ import { nextBatchCode } from '../../utils/batch-code';
 import { nextDocumentNumber } from '../../utils/document-number';
 import { formatDate } from '../../utils/format';
 import { renderPrintDocument } from '../../utils/print-document';
-import { receivedQuantities } from '../../utils/received';
+import { awaitingGrn, lastingUse, receivedQuantities } from '../../utils/received';
 import { allowsDecimals, fabricCategoryLabel, unitLabel } from '../../utils/units';
 
 export { unitLabel };
@@ -252,6 +252,14 @@ function batchSupplier(batch: { grn: { supplierId: string | null; supplierName: 
   return null;
 }
 
+// Goods not yet on a GRN were never accepted into stock, so they can't be "returned": a wrong
+// receipt is fixed on the receiving screen instead
+async function notReturnable(db: Prisma.TransactionClient, batch: { id: string; batchCode: string; grnId: string | null }) {
+  return (await awaitingGrn(db, batch))
+    ? `${batch.batchCode} isn't on a GRN yet, so it can't be returned. If it shouldn't have been received, use Fix on the receiving screen to correct or undo it.`
+    : null;
+}
+
 function sameSupplier(origin: { id: string | null; name: string }, supplierId: string | null, supplierName: string) {
   if (origin.id && supplierId) return origin.id === supplierId;
   return origin.name.trim().toLowerCase() === supplierName.trim().toLowerCase();
@@ -263,6 +271,8 @@ router.get('/supplier/lookup/:batchCode', async (req: Request, res: Response) =>
   const batch = await prisma.itemBatch.findUnique({ where: { batchCode }, include: SUPPLIER_BATCH_INCLUDE });
   if (!batch) { res.status(404).json({ error: `Barcode "${batchCode}" not found` }); return; }
   if (batch.status === 'OUT' || batch.quantity <= 0) { res.status(400).json({ error: `${batchCode} has no stock left` }); return; }
+  const noGrn = await notReturnable(prisma, batch);
+  if (noGrn) { res.status(400).json({ error: noGrn }); return; }
   res.json({
     id: batch.id, batchCode: batch.batchCode, itemType: batch.itemType, description: itemDescription(batch),
     category: batch.category, brand: batch.brand, quality: batch.quality, qualityName: batch.qualityName, shade: batch.shade, size: batch.size, name: batch.name, artNo: batch.artNo,
@@ -309,6 +319,8 @@ router.post('/supplier', async (req: Request, res: Response) => {
           include: { dc: { select: { challanNumber: true } } },
         });
         if (packed) throw new ReturnError(`${batch.batchCode} is packed in draft challan ${packed.dc.challanNumber}. Remove it there first.`);
+        const noGrn = await notReturnable(tx, batch);
+        if (noGrn) throw new ReturnError(noGrn);
         prepared.push({ batch, quantity });
       }
 
@@ -412,13 +424,6 @@ const cancelReason = (body: any) => {
   return reason;
 };
 
-// Movements that mean a roll has been used since, so taking it back out of stock would be wrong
-async function rollUsed(tx: Prisma.TransactionClient, batchId: string) {
-  return tx.transaction.findFirst({
-    where: { batchId, type: { in: ['STOCK_OUT', 'PARTIAL_CUT'] }, referenceType: { in: ['DELIVERY_CHALLAN', 'SUPPLIER_RETURN'] } },
-  });
-}
-
 // POST /api/returns/customer/:id/cancel — { reason }: the rolls it created leave stock
 router.post('/customer/:id/cancel', requirePermission('inv.adjustments'), async (req: Request, res: Response) => {
   await run(res, async () => {
@@ -428,7 +433,7 @@ router.post('/customer/:id/cancel', requirePermission('inv.adjustments'), async 
       if (!r) throw new ReturnError('Return not found', 404);
       if (r.cancelledAt) throw new ReturnError(`${r.returnNumber} is already cancelled.`);
       for (const line of r.lines) {
-        if (await rollUsed(tx, line.batchId)) throw new ReturnError(`${line.batch.batchCode} from this return has already been cut or sent out, so the return can't be cancelled.`);
+        if (await lastingUse(tx, line.batchId)) throw new ReturnError(`${line.batch.batchCode} from this return has already been cut or sent out, so the return can't be cancelled.`);
         const packed = await tx.deliveryChallanLine.findFirst({ where: { batchId: line.batchId, dc: { status: 'DRAFT', isDeleted: false } }, include: { dc: { select: { challanNumber: true } } } });
         if (packed) throw new ReturnError(`${line.batch.batchCode} is packed in draft challan ${packed.dc.challanNumber}. Remove it there first.`);
       }
