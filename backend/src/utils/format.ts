@@ -82,3 +82,8 @@ export function istDayEnd(day: unknown): Date | null {
   const d = new Date(`${String(day).slice(0, 10)}T23:59:59.999+05:30`);
   return isNaN(d.getTime()) ? null : d;
 }
+
+/** The receipt date on barcode labels: YYMMDD in IST, e.g. 4 November 2026 is 261104. */
+export function labelDate(date: Date = new Date()): string {
+  return istDateKey(date).replace(/-/g, '').slice(2);
+}

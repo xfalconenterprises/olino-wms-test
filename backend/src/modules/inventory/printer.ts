@@ -5,7 +5,7 @@ import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import prisma from '../../lib/prisma';
-import { formatDate } from '../../utils/format';
+import { labelDate } from '../../utils/format';
 import { labelUnit } from '../../utils/units';
 import { costCodeForBatch } from '../administration/cost-prices';
 import { requireAuth, requirePermission } from '../../middleware/auth';
@@ -492,8 +492,8 @@ export function build100x50Tspl(batch: any, copies = 1, dpi = 203, device?: Pick
   const name = tsplText(batch.name || '');
   const batchCode = tsplText(batch.batchCode || 'BAT-0000');
 
-  // Order received date (DD-MM-YYYY in IST)
-  const dateFormatted = formatDate(batch.createdAt || new Date());
+  // Received date as YYMMDD in IST (261104), the warehouse's label format
+  const dateFormatted = labelDate(batch.createdAt ? new Date(batch.createdAt) : new Date());
 
   // Scaling helper for 300 DPI vs 203 DPI (8 dots/mm vs ~12 dots/mm)
   const scale = dpi === 300 ? (300 / 203) : 1;

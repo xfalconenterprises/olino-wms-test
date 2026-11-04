@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bwipjs from 'bwip-js';
 import QRCode from 'qrcode';
-import { formatDate } from '../../utils/format';
+import { labelDate } from '../../utils/format';
 import { escapeHtml } from '../../utils/html';
 import { costCodeForBatch } from '../administration/cost-prices';
 import { LABEL_PERMISSIONS, labelField } from './printer';
@@ -80,8 +80,8 @@ router.get('/preview/:batchCode', async (req: Request, res: Response) => {
     const size = escapeHtml(labelField(batch.size));
     const safeCode = escapeHtml(batchCode);
 
-    // Order received date (DD-MM-YYYY in IST)
-    const dateFormatted = formatDate(batch.createdAt || new Date());
+    // Received date as YYMMDD in IST (261104), the warehouse's label format
+    const dateFormatted = labelDate(batch.createdAt ? new Date(batch.createdAt) : new Date());
 
     // Only the details that were entered are printed
     const specLine = ([label, value]: [string, string]) => value ? `<div><strong>${label}:</strong> ${value}</div>` : '';

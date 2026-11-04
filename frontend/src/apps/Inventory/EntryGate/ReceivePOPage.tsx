@@ -220,8 +220,8 @@ export default function ReceivePOPage() {
     }
 
     setSelectedLine(line.id);
-    const remaining = cleanNumber(Math.max(0, line.orderedQty - line.receivedQty));
-    setQuantity(remaining > 0 ? formatQty(remaining) : formatQty(line.orderedQty));
+    // The worker types what they measured; Fill Remaining is there if they want it
+    setQuantity('');
     setError('');
     setRecentBatch(null);
     setSkuOverride({
@@ -363,13 +363,8 @@ export default function ReceivePOPage() {
       const updatedLine = updatedPo?.lines?.find((l: POLine) => l.id === selectedLine);
       if (updatedLine) {
         const remaining = cleanNumber(Math.max(0, updatedLine.orderedQty - updatedLine.receivedQty));
-        if (remaining <= 0.001) {
-          // Line fulfilled! Clear quantity, do not allow further submissions
-          setQuantity('');
-        } else {
-          setQuantity(formatQty(remaining));
-          setTimeout(() => qtyInputRef.current?.focus(), 100);
-        }
+        setQuantity('');
+        if (remaining > 0.001) setTimeout(() => qtyInputRef.current?.focus(), 100);
       }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
