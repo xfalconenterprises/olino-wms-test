@@ -231,6 +231,14 @@ export default function EntryGatePage() {
     matchedPoNumber?: string;
   } | null>(null);
 
+  // The "Inward Successful" note goes by itself after 10 seconds, long enough to tap Reprint;
+  // each new roll starts the time again
+  useEffect(() => {
+    if (!recentBatch) return;
+    const timer = setTimeout(() => setRecentBatch(null), 10 * 1000);
+    return () => clearTimeout(timer);
+  }, [recentBatch]);
+
   // Live session rolls (truck delivery feed)
   const [sessionRolls, setSessionRolls] = useState<ReceivedRoll[]>([]);
   const [loadingSessionRolls, setLoadingSessionRolls] = useState(false);
@@ -421,16 +429,7 @@ export default function EntryGatePage() {
 
   const printGrnVoucher = async (grnId: string) => {
     try {
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        printWindow.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Loading Goods Receipt Note...</div>');
-      }
-      const response = await api.get(`/api/grn/${grnId}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      await openPrintPage(`/api/grn/${grnId}/print`, 'goods receipt note');
     } catch {
       alert('Failed to generate Goods Receipt Note document');
     }
@@ -1426,8 +1425,8 @@ export default function EntryGatePage() {
         </div>
       )}
 
-      {/* ── RECENT BATCH NOTIFICATION BANNER ── */}
-      {recentBatch && (
+      {/* ── RECENT BATCH NOTIFICATION BANNER (on the receiving screens only) ── */}
+      {recentBatch && activeTab !== 'SELECT_MODE' && (
         <div style={{
           background: '#ecfdf5',
           border: '1px solid #a7f3d0',

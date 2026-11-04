@@ -15,8 +15,8 @@ const LOGIN_WINDOW_MS = 60 * 1000; // 1 minute
 const MAX_LOGIN_ATTEMPTS = 10;
 
 function loginRateLimiter(req: Request, res: Response, next: () => void) {
-  // The app is served directly on the LAN (no proxy), so X-Forwarded-For is client-controlled and ignored
-  const ip = req.socket.remoteAddress || 'unknown';
+  // req.ip is the browser's address, also behind Nginx on this machine (see "trust proxy" in index.ts)
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
   const now = Date.now();
   const record = loginAttempts.get(ip);
 

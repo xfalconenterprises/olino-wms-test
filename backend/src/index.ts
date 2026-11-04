@@ -32,6 +32,9 @@ const PORT = process.env.PORT || 4000;
 // No server banner; browsers must not guess content types, show the app inside another site's
 // frame (clickjacking), or send full URLs to other sites.
 app.disable('x-powered-by');
+// Nginx on this same machine passes the browser's address in X-Forwarded-For. Only a proxy on this
+// machine is believed, so a computer on the network can't fake its address.
+app.set('trust proxy', 'loopback');
 app.use((_req, res, next) => {
   res.set({
     'X-Content-Type-Options': 'nosniff',
@@ -139,7 +142,8 @@ process.on('unhandledRejection', reason => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-app.listen(Number(PORT), () => {
+// HOST=127.0.0.1 when Nginx is in front, so the app can only be reached through it
+app.listen(Number(PORT), process.env.HOST || '0.0.0.0', () => {
   console.log(`Olino WMS running on port ${PORT}`);
 });
 

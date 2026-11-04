@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../../../utils/api';
-import { openPrintPage } from '../../../utils/printPage';
+import { openPrintPage, openPrintViewer } from '../../../utils/printPage';
 import { 
   LogIn, 
   ArrowLeft, 
@@ -288,9 +288,7 @@ export default function ReceivePOPage() {
     }
 
     setIssuingGrn(true);
-    // Open the window during the click so the browser does not block it
-    const printWindow = window.open('', '_blank');
-    printWindow?.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Issuing Goods Receipt Note...</div>');
+    const viewer = openPrintViewer('goods receipt note');
     try {
       const rem = (overrideRemarks || grnRemarks).trim();
       const { data: grn } = await api.post('/api/grn', {
@@ -305,11 +303,7 @@ export default function ReceivePOPage() {
       });
       loadDiscrepancies(po.id);
       const response = await api.get(`/api/grn/${grn.id}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      viewer.show(response.data);
       setShowGrnFinalizeModal(false);
       // Refresh PO data to update issued GRNs
       try {
@@ -319,7 +313,7 @@ export default function ReceivePOPage() {
         // silent
       }
     } catch (err: any) {
-      printWindow?.close();
+      viewer.close();
       alert(err.response?.data?.error || 'Failed to issue Goods Receipt Note');
     } finally {
       setIssuingGrn(false);
@@ -328,16 +322,7 @@ export default function ReceivePOPage() {
 
   const handlePrintSpecificGRN = async (grnId: string) => {
     try {
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        printWindow.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Loading Goods Receipt Note...</div>');
-      }
-      const response = await api.get(`/api/grn/${grnId}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      await openPrintPage(`/api/grn/${grnId}/print`, 'goods receipt note');
     } catch {
       alert('Failed to generate Goods Receipt Note document');
     }
@@ -1712,7 +1697,7 @@ export default function ReceivePOPage() {
                         <button
                           type="button"
                           className="btn btn-ghost btn-icon btn-sm"
-                          onClick={() => window.open(`/inventory/grn/${g.id}`, '_blank')}
+                          onClick={() => navigate(`/inventory/grn/${g.id}`)}
                           title="View GRN Details"
                           style={{ color: 'var(--color-brand)' }}
                         >

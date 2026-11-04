@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { 
   ShoppingCart, 
   Plus, 
@@ -178,16 +179,7 @@ export default function PurchaseOrdersPage() {
   const handlePrint = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        printWindow.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Loading document...</div>');
-      }
-      const response = await api.get(`/api/purchase-orders/${id}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      await openPrintPage(`/api/purchase-orders/${id}/print`, 'purchase order');
     } catch {
       alert('Failed to generate print document');
     }
@@ -196,16 +188,7 @@ export default function PurchaseOrdersPage() {
   const handlePrintGrn = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        printWindow.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Loading Goods Receipt Note...</div>');
-      }
-      const response = await api.get(`/api/grn/${id}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      await openPrintPage(`/api/grn/${id}/print`, 'goods receipt note');
     } catch {
       alert('Failed to generate Goods Receipt Note document');
     }

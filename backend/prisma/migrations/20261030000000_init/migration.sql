@@ -206,6 +206,18 @@ CREATE TABLE "purchase_order_lines" (
 );
 
 -- CreateTable
+CREATE TABLE "po_drafts" (
+    "id" TEXT NOT NULL,
+    "user_id" TEXT NOT NULL,
+    "data" JSONB NOT NULL,
+    "costs" JSONB NOT NULL DEFAULT '{}',
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "po_drafts_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "po_line_costs" (
     "po_line_id" TEXT NOT NULL,
     "cost_price" DECIMAL(12,2) NOT NULL,
@@ -577,6 +589,9 @@ CREATE INDEX "transactions_type_idx" ON "transactions"("type");
 CREATE UNIQUE INDEX "purchase_orders_poNumber_key" ON "purchase_orders"("poNumber");
 
 -- CreateIndex
+CREATE INDEX "po_drafts_user_id_updated_at_idx" ON "po_drafts"("user_id", "updated_at");
+
+-- CreateIndex
 CREATE INDEX "export_logs_created_at_idx" ON "export_logs"("created_at");
 
 -- CreateIndex
@@ -677,6 +692,9 @@ ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_createdById_fkey" 
 
 -- AddForeignKey
 ALTER TABLE "purchase_order_lines" ADD CONSTRAINT "purchase_order_lines_poId_fkey" FOREIGN KEY ("poId") REFERENCES "purchase_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "po_drafts" ADD CONSTRAINT "po_drafts_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "po_line_costs" ADD CONSTRAINT "po_line_costs_po_line_id_fkey" FOREIGN KEY ("po_line_id") REFERENCES "purchase_order_lines"("id") ON DELETE CASCADE ON UPDATE CASCADE;

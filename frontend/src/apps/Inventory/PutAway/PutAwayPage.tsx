@@ -84,14 +84,8 @@ export default function PutAwayPage() {
   const [scannedLocation, setScannedLocation] = useState<LocationSlot | null>(null);
   const [scannedBatch, setScannedBatch] = useState<PendingBatch | null>(null);
   const [putAwayQty, setPutAwayQty] = useState('');
-  const [keepShelfLocked, setKeepShelfLocked] = useState<boolean>(() => {
-    const saved = localStorage.getItem('putaway_shelf_locked');
-    return saved !== null ? saved === 'true' : true;
-  });
-
-  useEffect(() => {
-    localStorage.setItem('putaway_shelf_locked', String(keepShelfLocked));
-  }, [keepShelfLocked]);
+  // Locked: the shelf stays chosen for the next roll. Every newly scanned shelf starts unlocked.
+  const [keepShelfLocked, setKeepShelfLocked] = useState(false);
 
   // Status & Feedback
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -201,6 +195,7 @@ export default function PutAwayPage() {
     try {
       const res = await api.get(`/api/locations/by-code/${encodeURIComponent(loc)}`);
       setScannedLocation(res.data);
+      setKeepShelfLocked(false);
       setStep('scan-batch');
     } catch {
       setError(`Location "${loc}" not found in system. Verify rack barcode.`);
@@ -251,8 +246,9 @@ export default function PutAwayPage() {
         const locRes = await api.get(`/api/locations/by-code/${encodeURIComponent(bCode)}`);
         if (locRes.data && locRes.data.code) {
           setScannedLocation(locRes.data);
+          setKeepShelfLocked(false);
           setBatchInput('');
-          setSuccess(`Active destination shelf switched to ${locRes.data.code} (Shelf is ${keepShelfLocked ? 'LOCKED' : 'UNLOCKED'})`);
+          setSuccess(`Shelf changed to ${locRes.data.code}`);
           return;
         }
       } catch {
@@ -332,7 +328,15 @@ export default function PutAwayPage() {
     }
   };
 
+  // The scanner types into whichever box has focus, so it goes straight back to the scan box
+  const toggleShelfLock = () => {
+    setKeepShelfLocked(locked => !locked);
+    if (step === 'scan-batch') batchInputRef.current?.focus();
+    else if (step === 'confirm') confirmBtnRef.current?.focus();
+  };
+
   const handleResetLocation = () => {
+    setKeepShelfLocked(false);
     setScannedLocation(null);
     setLocationInput('');
     setStep('scan-location');
@@ -448,278 +452,118 @@ export default function PutAwayPage() {
       )}
 
       {/* ─── DIRECT SCANNER INTERFACE ────────────────────────────────────── */}
-      <div style={{
-        background: '#ffffff',
-        border: '1px solid var(--color-border)',
-        borderRadius: 'var(--radius-lg)',
-        padding: '28px 32px',
-        boxShadow: 'var(--shadow-sm)',
-        marginBottom: 24,
-      }}>
-        {/* Step Progress Indicators & Simple Shelf Lock Toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28, flexWrap: 'wrap', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            {[
-              { key: 'scan-location', label: '1. Scan Shelf Location' },
-              { key: 'scan-batch', label: '2. Scan Roll / Batch' },
-              { key: 'confirm', label: '3. Confirm Put-Away' },
-            ].map((s, i) => (
-              <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                {i > 0 && <ArrowRight size={14} color="var(--color-text-muted)" />}
-                <span style={{
-                  padding: '6px 16px',
-                  borderRadius: 20,
-                  fontSize: 12.5,
-                  fontWeight: step === s.key ? 700 : 500,
-                  background: step === s.key ? 'var(--color-brand)' : 'transparent',
-                  color: step === s.key ? '#fff' : 'var(--color-text-muted)',
-                  border: step === s.key ? 'none' : '1px solid var(--color-border)',
-                }}>
+      <div className="card putaway-panel">
+        {/* Steps: what has been scanned so far */}
+        <ol className="putaway-steps">
+          {([
+            { key: 'scan-location', label: 'Scan shelf', value: scannedLocation?.code },
+            { key: 'scan-batch', label: 'Scan roll', value: step === 'confirm' ? scannedBatch?.batchCode : undefined },
+            { key: 'confirm', label: 'Confirm', value: undefined },
+          ] as const).map((s, i, all) => {
+            const current = all.findIndex(x => x.key === step);
+            const state = i < current ? 'is-done' : i === current ? 'is-current' : '';
+            return (
+              <li key={s.key} className={`putaway-step ${state}`}>
+                <span className="putaway-step-dot">{i < current ? <Check size={16} /> : i + 1}</span>
+                <span className="putaway-step-text">
                   {s.label}
+                  {i < current && s.value && <strong>{s.value}</strong>}
                 </span>
+              </li>
+            );
+          })}
+        </ol>
+
+        {/* The chosen shelf, with lock and change, once one has been scanned */}
+        {step !== 'scan-location' && scannedLocation && (
+          <>
+            <div className="putaway-shelf">
+              <div className="putaway-shelf-code">
+                <MapPin size={20} />
+                <span>Shelf</span>
+                <strong>{scannedLocation.code}</strong>
               </div>
-            ))}
-          </div>
+              <div className="putaway-shelf-actions">
+                <button type="button" className={`btn putaway-lock${keepShelfLocked ? ' is-on' : ''}`} aria-pressed={keepShelfLocked}
+                  onClick={toggleShelfLock}>
+                  {keepShelfLocked ? <Lock size={16} /> : <Unlock size={16} />}
+                  {keepShelfLocked ? 'Shelf locked' : 'Lock shelf'}
+                </button>
+                <button type="button" className="btn btn-secondary" onClick={handleResetLocation}>
+                  <ArrowRightLeft size={16} /> Change shelf
+                </button>
+              </div>
+            </div>
+            <p className="putaway-shelf-hint">
+              {keepShelfLocked
+                ? `Locked: after each roll, the next one goes to ${scannedLocation.code} without scanning the shelf again.`
+                : 'Lock the shelf to place several rolls on it without scanning it each time.'}
+            </p>
+          </>
+        )}
 
-          {/* Simple Lock / Unlock Icon Button */}
-          <button
-            type="button"
-            onClick={() => setKeepShelfLocked(!keepShelfLocked)}
-            className="btn btn-ghost btn-sm"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 12.5,
-              fontWeight: 600,
-              padding: '5px 12px',
-              borderRadius: 6,
-              background: keepShelfLocked ? '#f0fdf4' : '#f8fafc',
-              color: keepShelfLocked ? '#15803d' : '#6b7280',
-              border: `1px solid ${keepShelfLocked ? '#86efac' : 'var(--color-border)'}`,
-              cursor: 'pointer',
-            }}
-            title={keepShelfLocked ? "Shelf is locked (retains shelf for next roll). Click to unlock." : "Shelf is unlocked (resets after each roll). Click to lock."}
-          >
-            {keepShelfLocked ? <Lock size={15} color="#15803d" /> : <Unlock size={15} color="#6b7280" />}
-            <span>{keepShelfLocked ? 'Shelf Locked' : 'Shelf Unlocked'}</span>
-          </button>
-        </div>
-
-        {/* ─── STEP 1: Scan Target Shelf Location ──────────────────────────── */}
+        {/* ─── STEP 1: Scan the shelf ───────────────────────────────────────── */}
         {step === 'scan-location' && (
-          <div style={{ maxWidth: 480, margin: '0 auto', textAlign: 'center' }}>
-            <div style={{
-              width: 56,
-              height: 56,
-              borderRadius: '50%',
-              background: 'var(--color-bg-subtle)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 16px',
-            }}>
-              <ScanLine size={28} color="var(--color-brand)" />
-            </div>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Scan Target Shelf Barcode</h2>
-            <p style={{ fontSize: 13.5, color: 'var(--color-text-muted)', marginBottom: 20 }}>
-              Scan rack position (e.g. <code>A-B1-L1-P1</code>) or floor bay (e.g. <code>FR-01</code>)
-            </p>
-
-            <form onSubmit={e => { e.preventDefault(); handleScanLocation(); }} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <input
-                ref={locationInputRef}
-                className="form-input"
-                placeholder="Scan Shelf Barcode..."
-                value={locationInput}
-                onChange={e => setLocationInput(e.target.value.toUpperCase())}
-                style={{
-                  height: 54,
-                  fontSize: 18,
-                  fontWeight: 700,
-                  textAlign: 'center',
-                  letterSpacing: 1.5,
-                  fontFamily: 'monospace',
-                }}
-                autoFocus
-              />
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={isSubmitting || !locationInput.trim()}
-                style={{ height: 46, fontSize: 15, fontWeight: 700, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8 }}
-              >
-                {isSubmitting ? <span className="spinner" /> : <><Check size={16} /> Confirm Location</>}
-              </button>
-            </form>
-          </div>
+          <form className="putaway-scan" onSubmit={e => { e.preventDefault(); handleScanLocation(); }}>
+            <div className="putaway-scan-icon"><ScanLine size={30} /></div>
+            <h2>Scan the shelf barcode</h2>
+            <p>Rack position like <code>A-B1-L1-P1</code>, or floor spot like <code>FR-01</code></p>
+            <input
+              ref={locationInputRef}
+              className="form-input putaway-input"
+              placeholder="Shelf barcode"
+              aria-label="Shelf barcode"
+              value={locationInput}
+              onChange={e => setLocationInput(e.target.value.toUpperCase())}
+              autoComplete="off"
+              autoFocus
+            />
+            <button type="submit" className="btn btn-primary putaway-go" disabled={isSubmitting || !locationInput.trim()}>
+              {isSubmitting ? <span className="spinner" /> : <><Check size={18} /> Confirm shelf</>}
+            </button>
+          </form>
         )}
 
-        {/* ─── STEP 2: Scan Batch / Roll Barcode ───────────────────────────── */}
+        {/* ─── STEP 2: Scan the roll ────────────────────────────────────────── */}
         {step === 'scan-batch' && scannedLocation && (
-          <div style={{ maxWidth: 520, margin: '0 auto', textAlign: 'center' }}>
-            {/* Simple Active Shelf Bar with Lock/Unlock Icon */}
-            <div style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 10,
-              background: '#f8fafc',
-              border: '1px solid var(--color-border)',
-              borderRadius: 8,
-              padding: '6px 14px',
-              marginBottom: 20,
-            }}>
-              <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>Shelf:</span>
-              <strong style={{ fontSize: 16, fontFamily: 'monospace', color: 'var(--color-text-main)' }}>
-                {scannedLocation.code}
-              </strong>
-
-              {/* Simple Lock / Unlock Icon Toggle */}
-              <button
-                type="button"
-                onClick={() => setKeepShelfLocked(!keepShelfLocked)}
-                className="btn btn-ghost btn-sm"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  padding: '3px 8px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  borderRadius: 4,
-                  background: keepShelfLocked ? '#dcfce7' : '#f3f4f6',
-                  color: keepShelfLocked ? '#15803d' : '#6b7280',
-                  border: `1px solid ${keepShelfLocked ? '#86efac' : 'var(--color-border)'}`,
-                  cursor: 'pointer',
-                }}
-                title={keepShelfLocked ? "Shelf is locked. Click to unlock." : "Shelf is unlocked. Click to lock."}
-              >
-                {keepShelfLocked ? <Lock size={13} color="#15803d" /> : <Unlock size={13} color="#6b7280" />}
-                <span>{keepShelfLocked ? 'Locked' : 'Unlocked'}</span>
-              </button>
-
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={handleResetLocation}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  fontSize: 12,
-                  color: 'var(--color-text-muted)',
-                  padding: '3px 6px',
-                }}
-                title="Change shelf location"
-              >
-                <ArrowRightLeft size={13} /> Change
-              </button>
-            </div>
-
-            <div style={{
-              width: 56,
-              height: 56,
-              borderRadius: '50%',
-              background: 'var(--color-bg-subtle)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 16px',
-            }}>
-              <ScanLine size={28} color="var(--color-brand)" />
-            </div>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Scan Roll / Batch Barcode</h2>
-            <p style={{ fontSize: 13.5, color: 'var(--color-text-muted)', marginBottom: 20 }}>
-              Scan the physical barcode on the arriving roll or box
-            </p>
-
-            <form onSubmit={e => { e.preventDefault(); handleScanBatch(); }} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <input
-                ref={batchInputRef}
-                className="form-input"
-                placeholder="Scan Roll Barcode..."
-                value={batchInput}
-                onChange={e => setBatchInput(e.target.value.toUpperCase())}
-                style={{
-                  height: 54,
-                  fontSize: 18,
-                  fontWeight: 700,
-                  textAlign: 'center',
-                  letterSpacing: 1.5,
-                  fontFamily: 'monospace',
-                }}
-                autoFocus
-              />
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={isSubmitting || !batchInput.trim()}
-                style={{ height: 46, fontSize: 15, fontWeight: 700, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8 }}
-              >
-                {isSubmitting ? <span className="spinner" /> : <><Check size={16} /> Confirm Batch</>}
-              </button>
-            </form>
-          </div>
+          <form className="putaway-scan" onSubmit={e => { e.preventDefault(); handleScanBatch(); }}>
+            <div className="putaway-scan-icon"><ScanLine size={30} /></div>
+            <h2>Scan the roll barcode</h2>
+            <p>The barcode label on the roll, pack or box</p>
+            <input
+              ref={batchInputRef}
+              className="form-input putaway-input"
+              placeholder="Roll barcode"
+              aria-label="Roll barcode"
+              value={batchInput}
+              onChange={e => setBatchInput(e.target.value.toUpperCase())}
+              autoComplete="off"
+              autoFocus
+            />
+            <button type="submit" className="btn btn-primary putaway-go" disabled={isSubmitting || !batchInput.trim()}>
+              {isSubmitting ? <span className="spinner" /> : <><Check size={18} /> Confirm roll</>}
+            </button>
+          </form>
         )}
 
-        {/* ─── STEP 3: Confirm Placement ───────────────────────────────────── */}
+        {/* ─── STEP 3: Confirm ──────────────────────────────────────────────── */}
         {step === 'confirm' && scannedLocation && scannedBatch && (
-          <div style={{ maxWidth: 520, margin: '0 auto', textAlign: 'center' }}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Verify &amp; Confirm Placement</h2>
-            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 20 }}>
-              Confirm shelf placement details and assign stock
-            </p>
-
-            {/* Target Shelf (with simple lock/unlock icon) and Batch Cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-              <div style={{ background: '#f8fafc', border: '1px solid var(--color-border)', borderRadius: 8, padding: '12px 14px', textAlign: 'left' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                  <span style={{ fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>
-                    Target Shelf
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setKeepShelfLocked(!keepShelfLocked)}
-                    className="btn btn-ghost btn-sm"
-                    style={{ 
-                      padding: '2px 6px', 
-                      fontSize: 11, 
-                      fontWeight: 600, 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      gap: 4, 
-                      height: 22, 
-                      color: keepShelfLocked ? '#15803d' : '#6b7280', 
-                      background: keepShelfLocked ? '#dcfce7' : '#f3f4f6',
-                      borderRadius: 4
-                    }}
-                    title="Click to toggle shelf lock"
-                  >
-                    {keepShelfLocked ? <Lock size={12} /> : <Unlock size={12} />}
-                    <span>{keepShelfLocked ? 'Locked' : 'Unlocked'}</span>
-                  </button>
-                </div>
-                <strong style={{ fontSize: 17, color: 'var(--color-text-main)', fontFamily: 'monospace' }}>
-                  {scannedLocation.code}
-                </strong>
+          <div className="putaway-confirm">
+            <div className="putaway-route">
+              <div className="putaway-route-item">
+                <span>Roll</span>
+                <strong>{scannedBatch.batchCode}</strong>
+                <small>{scannedBatch.unassignedQty} {getUnitLabel(scannedBatch)} to place</small>
               </div>
-
-              <div style={{ background: '#f8fafc', border: '1px solid var(--color-border)', borderRadius: 8, padding: '12px 14px', textAlign: 'left' }}>
-                <span style={{ fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase', fontWeight: 700, display: 'block', marginBottom: 2 }}>
-                  Batch / Roll
-                </span>
-                <strong style={{ fontSize: 17, color: 'var(--color-text-main)', fontFamily: 'monospace' }}>
-                  {scannedBatch.batchCode}
-                </strong>
-                <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 3 }}>
-                  Available: {scannedBatch.unassignedQty} {getUnitLabel(scannedBatch)}
-                </div>
+              <ArrowRight size={22} className="putaway-route-arrow" />
+              <div className="putaway-route-item">
+                <span>Shelf</span>
+                <strong>{scannedLocation.code}</strong>
               </div>
             </div>
 
             {/* Item Details Box */}
-            <div style={{ background: 'var(--color-bg-subtle)', borderRadius: 8, padding: '14px 18px', textAlign: 'left', marginBottom: 20 }}>
+            <div style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-lg)', padding: '14px 18px', textAlign: 'left', marginBottom: 18 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <strong>{scannedBatch.name || `${scannedBatch.brand || ''} ${scannedBatch.quality || ''}`.trim() || 'Item'}</strong>
@@ -753,18 +597,18 @@ export default function PutAwayPage() {
             </div>
 
             {/* Quantity Input */}
-            <div style={{ marginBottom: 24, textAlign: 'left' }}>
+            <div style={{ marginBottom: 20, textAlign: 'left' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                 <label className="form-label" style={{ fontWeight: 600, margin: 0 }}>
-                  Quantity to Place ({getUnitLabel(scannedBatch)})
+                  Quantity to place ({getUnitLabel(scannedBatch)})
                 </label>
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
                   onClick={() => setPutAwayQty(String(scannedBatch.unassignedQty))}
-                  style={{ fontSize: 11.5, padding: '2px 8px', color: 'var(--color-brand)', fontWeight: 600 }}
+                  style={{ fontSize: 12.5, padding: '2px 10px', color: 'var(--color-brand)', fontWeight: 600 }}
                 >
-                  Max ({scannedBatch.unassignedQty})
+                  Place all ({scannedBatch.unassignedQty} {getUnitLabel(scannedBatch)})
                 </button>
               </div>
               <input
@@ -782,8 +626,7 @@ export default function PutAwayPage() {
               />
             </div>
 
-            {/* Actions */}
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+            <div className="putaway-actions">
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -792,7 +635,6 @@ export default function PutAwayPage() {
                   setScannedBatch(null);
                   setBatchInput('');
                 }}
-                style={{ padding: '0 20px', height: 46 }}
               >
                 Back
               </button>
@@ -802,9 +644,8 @@ export default function PutAwayPage() {
                 className="btn btn-primary"
                 onClick={handleConfirmAssignment}
                 disabled={isSubmitting}
-                style={{ padding: '0 32px', height: 46, fontSize: 16, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8 }}
               >
-                {isSubmitting ? <span className="spinner" /> : <><CheckCircle2 size={18} /> Confirm Put-Away</>}
+                {isSubmitting ? <span className="spinner" /> : <><CheckCircle2 size={18} /> Confirm put-away</>}
               </button>
             </div>
           </div>

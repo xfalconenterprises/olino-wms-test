@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { 
   FileText, 
   Search, 
@@ -108,16 +109,7 @@ export default function DeliveryChallansPage() {
 
   const handlePrintA4 = async (id: string) => {
     try {
-      const printWindow = window.open('', '_blank', 'width=900,height=900');
-      if (printWindow) {
-        printWindow.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Loading document...</div>');
-      }
-      const response = await api.get(`/api/delivery-challans/${id}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      await openPrintPage(`/api/delivery-challans/${id}/print`, 'delivery challan');
     } catch {
       alert('Failed to generate print document');
     }

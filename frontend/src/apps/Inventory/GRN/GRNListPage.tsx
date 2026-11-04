@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { 
   FileCheck, 
   Search, 
@@ -81,16 +82,7 @@ export default function GRNListPage() {
 
   const handlePrint = async (grnId: string) => {
     try {
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        printWindow.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Loading Goods Receipt Note...</div>');
-      }
-      const response = await api.get(`/api/grn/${grnId}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      await openPrintPage(`/api/grn/${grnId}/print`, 'goods receipt note');
     } catch {
       alert('Failed to generate Goods Receipt Note document');
     }

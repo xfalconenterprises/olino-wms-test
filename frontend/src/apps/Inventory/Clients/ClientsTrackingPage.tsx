@@ -17,6 +17,7 @@ import {
   Eye
 } from 'lucide-react';
 import api from '../../../utils/api';
+import { openPrintPage } from '../../../utils/printPage';
 import { formatDate } from '../../../utils/format';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
@@ -237,14 +238,7 @@ export default function ClientsTrackingPage() {
   const handlePrintChallan = async (dcId: string) => {
     setPrintingChallanId(dcId);
     try {
-      const res = await api.get(`/api/delivery-challans/${dcId}/print`, { responseType: 'text' });
-      const printWindow = window.open('', '_blank');
-      if (printWindow) {
-        printWindow.document.write(res.data);
-        printWindow.document.close();
-        printWindow.focus();
-        printWindow.print();
-      }
+      await openPrintPage(`/api/delivery-challans/${dcId}/print`, 'delivery challan');
     } catch (err: any) {
       alert(err.response?.data?.error || err.message || 'Failed to print delivery challan.');
     } finally {

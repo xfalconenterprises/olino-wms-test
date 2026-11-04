@@ -200,8 +200,10 @@ export default function PrinterSettingsPage() {
           </SettingRow>
         )}
         <SettingRow title="Print labels automatically" hint="As soon as a roll or pack is received at the gate">
-          <input type="checkbox" checked={config.autoPrintOnReceipt} onChange={e => saveOption({ autoPrintOnReceipt: e.target.checked })}
-            aria-label="Print labels automatically" style={{ width: 20, height: 20, accentColor: 'var(--color-brand)' }} />
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, cursor: 'pointer' }}>
+            <input type="checkbox" checked={config.autoPrintOnReceipt} onChange={e => saveOption({ autoPrintOnReceipt: e.target.checked })}
+              aria-label="Print labels automatically" style={{ width: 24, height: 24, accentColor: 'var(--color-brand)' }} />
+          </label>
         </SettingRow>
         <SettingRow title="Copies of each label" last>
           <select className="form-select" value={config.copies} onChange={e => saveOption({ copies: Number(e.target.value) })} aria-label="Copies of each label" style={{ width: 80, flex: 'none' }}>

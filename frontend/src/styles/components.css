@@ -386,8 +386,30 @@
 }
 
 /* ─── Touch Screen & Tablet Responsive Ergonomics ────────────────────────────── */
-/* Small screens, and any touch screen whatever its size (the warehouse floor monitors) */
-@media (max-width: 1024px), (pointer: coarse) {
+/* Small screens, and any touch screen whatever its size (the warehouse floor monitors). "any-pointer"
+   keeps the touch sizes when a mouse is plugged into the monitor as well. */
+@media (max-width: 1024px), (any-pointer: coarse) {
+  /* Every button on the screens and in the side menu is a full finger's size, whatever inline size
+     the screen gave it */
+  .page-content button,
+  .page-content [role="button"],
+  .sidebar button {
+    min-height: 44px;
+    min-width: 44px;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .sidebar-nav-item {
+    min-height: 44px;
+  }
+  .page-content summary {
+    padding: 12px 0;
+  }
+  .page-content input[type="checkbox"],
+  .page-content input[type="radio"] {
+    width: 22px;
+    height: 22px;
+  }
   .btn {
     min-height: 44px;
     padding: 10px 18px;
@@ -580,7 +602,7 @@
   color: var(--color-border-dark);
   cursor: not-allowed;
 }
-@media (max-width: 1024px), (pointer: coarse) {
+@media (max-width: 1024px), (any-pointer: coarse) {
   .date-field {
     height: 46px;
   }
@@ -704,4 +726,293 @@
   width: 18px;
   height: 18px;
   accent-color: var(--color-brand);
+}
+
+/* A double tap never zooms the page on a touch screen; pinch to zoom still works */
+html {
+  touch-action: manipulation;
+}
+
+/* ─── Put Away scanner ────────────────────────────────────────────────────── */
+.putaway-panel {
+  padding: 24px 28px 28px;
+  margin-bottom: 24px;
+}
+.putaway-steps {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+.putaway-step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+.putaway-step-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border-dark);
+  background: var(--color-white);
+  font-size: 14px;
+  font-weight: 700;
+}
+.putaway-step-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.putaway-step-text strong {
+  font-family: monospace;
+  font-size: 13.5px;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.putaway-step.is-current {
+  background: var(--color-brand-light);
+  color: var(--color-brand-dark);
+}
+.putaway-step.is-current .putaway-step-dot {
+  border-color: var(--color-brand);
+  background: var(--color-brand);
+  color: var(--color-white);
+}
+.putaway-step.is-done .putaway-step-dot {
+  border-color: var(--color-success);
+  background: var(--color-success);
+  color: var(--color-white);
+}
+.putaway-shelf {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-white);
+}
+.putaway-shelf-code {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-brand);
+}
+.putaway-shelf-code span {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.putaway-shelf-code strong {
+  font-family: monospace;
+  font-size: 22px;
+  color: var(--color-text);
+}
+.putaway-shelf-actions {
+  display: flex;
+  gap: 8px;
+}
+.putaway-shelf-actions .btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+}
+.putaway-lock {
+  border: 1px solid var(--color-border-dark);
+  background: var(--color-white);
+  color: var(--color-text);
+}
+.putaway-lock.is-on {
+  border-color: #86efac;
+  background: var(--color-success-bg);
+  color: #15803d;
+}
+.putaway-shelf-hint {
+  margin: 8px 2px 0;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+.putaway-scan {
+  max-width: 520px;
+  margin: 26px auto 0;
+  text-align: center;
+}
+.putaway-scan-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  background: var(--color-brand-light);
+  color: var(--color-brand);
+}
+.putaway-scan h2 {
+  margin: 0 0 6px;
+  font-size: 21px;
+  font-weight: 700;
+}
+.putaway-scan p {
+  margin: 0 0 18px;
+  font-size: 14px;
+  color: var(--color-text-muted);
+}
+.putaway-input {
+  width: 100%;
+  height: 60px;
+  border: 2px dashed var(--color-border-dark);
+  font-family: monospace;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-align: center;
+}
+.putaway-input:focus {
+  border-style: solid;
+  border-color: var(--color-brand);
+}
+.putaway-go {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 52px;
+  margin-top: 12px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.putaway-confirm {
+  max-width: 600px;
+  margin: 22px auto 0;
+}
+.putaway-route {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.putaway-route-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+}
+.putaway-route-item span {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.putaway-route-item strong {
+  font-family: monospace;
+  font-size: 19px;
+  color: var(--color-text);
+  word-break: break-all;
+}
+.putaway-route-item small {
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+.putaway-route-arrow {
+  align-self: center;
+  flex-shrink: 0;
+  color: var(--color-brand);
+}
+.putaway-actions {
+  display: flex;
+  gap: 12px;
+}
+.putaway-actions .btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 52px;
+  font-size: 16px;
+}
+.putaway-actions .btn-secondary {
+  flex: 1;
+}
+.putaway-actions .btn-primary {
+  flex: 2;
+  font-weight: 700;
+}
+@media (max-width: 720px) {
+  .putaway-steps {
+    flex-direction: column;
+  }
+}
+
+/* ─── Print viewer: documents open over the app, never in a new window ────── */
+.print-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(15, 23, 42, 0.6);
+}
+.print-viewer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 20px;
+  background: var(--color-white);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 16px;
+}
+.print-viewer-actions {
+  display: flex;
+  gap: 10px;
+}
+.print-viewer-actions .btn {
+  min-width: 120px;
+  min-height: 48px;
+  justify-content: center;
+  font-size: 15px;
+}
+.print-viewer-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  padding: 16px;
+}
+.print-viewer-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--color-white);
+}
+.print-viewer-loading {
+  margin: auto;
+  padding: 20px 28px;
+  border-radius: var(--radius-lg);
+  background: var(--color-white);
+  color: var(--color-text-muted);
 }

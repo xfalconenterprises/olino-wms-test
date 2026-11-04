@@ -339,16 +339,7 @@ export default function ExitGatePage() {
   const handlePrintA4 = async () => {
     if (!activeDC) return;
     try {
-      const printWindow = window.open('', '_blank', 'width=900,height=900');
-      if (printWindow) {
-        printWindow.document.write('<div style="font-family:sans-serif;padding:40px;text-align:center;color:#64748b;">Loading print preview...</div>');
-      }
-      const response = await api.get(`/api/delivery-challans/${activeDC.id}/print`, { responseType: 'text' });
-      if (printWindow) {
-        printWindow.document.open();
-        printWindow.document.write(response.data);
-        printWindow.document.close();
-      }
+      await openPrintPage(`/api/delivery-challans/${activeDC.id}/print`, 'delivery challan');
     } catch {
       alert('Failed to generate print document');
     }
