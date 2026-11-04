@@ -139,6 +139,7 @@ CREATE TABLE "item_batches" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
     "grnId" TEXT,
     "client_id" TEXT,
+    "receipt_voided_at" TIMESTAMP(3),
     "client_name" TEXT,
 
     CONSTRAINT "item_batches_pkey" PRIMARY KEY ("id")
@@ -203,6 +204,25 @@ CREATE TABLE "purchase_order_lines" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "purchase_order_lines_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "receipt_corrections" (
+    "id" TEXT NOT NULL,
+    "batch_id" TEXT NOT NULL,
+    "batch_code" TEXT NOT NULL,
+    "grn_id" TEXT,
+    "po_line_id" TEXT,
+    "kind" TEXT NOT NULL,
+    "old_quantity" DOUBLE PRECISION NOT NULL,
+    "new_quantity" DOUBLE PRECISION NOT NULL,
+    "uom" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "user_id" TEXT NOT NULL,
+    "user_name" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "receipt_corrections_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -485,6 +505,9 @@ CREATE TABLE "customer_returns" (
     "dc_id" TEXT NOT NULL,
     "customer_id" TEXT,
     "customer_name" TEXT NOT NULL,
+    "cancelled_at" TIMESTAMP(3),
+    "cancelled_by_name" TEXT,
+    "cancel_reason" TEXT,
     "reason" TEXT NOT NULL,
     "remarks" TEXT,
     "created_by_id" TEXT NOT NULL,
@@ -512,6 +535,9 @@ CREATE TABLE "supplier_returns" (
     "returnNumber" TEXT NOT NULL,
     "supplier_id" TEXT,
     "supplier_name" TEXT NOT NULL,
+    "cancelled_at" TIMESTAMP(3),
+    "cancelled_by_name" TEXT,
+    "cancel_reason" TEXT,
     "reason" TEXT NOT NULL,
     "remarks" TEXT,
     "created_by_id" TEXT NOT NULL,
@@ -587,6 +613,12 @@ CREATE INDEX "transactions_type_idx" ON "transactions"("type");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "purchase_orders_poNumber_key" ON "purchase_orders"("poNumber");
+
+-- CreateIndex
+CREATE INDEX "receipt_corrections_batch_id_idx" ON "receipt_corrections"("batch_id");
+
+-- CreateIndex
+CREATE INDEX "receipt_corrections_grn_id_idx" ON "receipt_corrections"("grn_id");
 
 -- CreateIndex
 CREATE INDEX "po_drafts_user_id_updated_at_idx" ON "po_drafts"("user_id", "updated_at");
@@ -692,6 +724,9 @@ ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_createdById_fkey" 
 
 -- AddForeignKey
 ALTER TABLE "purchase_order_lines" ADD CONSTRAINT "purchase_order_lines_poId_fkey" FOREIGN KEY ("poId") REFERENCES "purchase_orders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "receipt_corrections" ADD CONSTRAINT "receipt_corrections_batch_id_fkey" FOREIGN KEY ("batch_id") REFERENCES "item_batches"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "po_drafts" ADD CONSTRAINT "po_drafts_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;

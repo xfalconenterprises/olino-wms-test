@@ -548,6 +548,7 @@ router.get('/supplier-inbound/session-rolls', requirePermission('ops.entry_gate'
     // POs may be linked to the supplier by id or (older entries) by name.
     const where: any = {
       grnId: null,
+      receiptVoidedAt: null,
       poLine: {
         po: {
           OR: [
@@ -697,7 +698,7 @@ router.get('/:id', requirePermission('po.view', 'po.create', 'ops.entry_gate'), 
         supplier: true,
         lines: {
           include: {
-            batches: true,
+            batches: { where: { receiptVoidedAt: null } },
             allocations: true,
           }
         },
@@ -719,7 +720,7 @@ router.get('/:id', requirePermission('po.view', 'po.create', 'ops.entry_gate'), 
           supplier: true,
           lines: {
             include: {
-              batches: true,
+              batches: { where: { receiptVoidedAt: null } },
               allocations: true,
             }
           },

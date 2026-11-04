@@ -99,7 +99,12 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
 
   for (const tx of transactions) {
     const itemType = reportKind(tx.batch);
-    const qty = tx.quantityMoved || 0;
+    // Fixing a mistake takes back the movement it fixes instead of counting as a new one:
+    // an undone receipt or cancelled customer return lowers inward, a cancelled supplier return lowers outward
+    const reversesInward = tx.type === 'STOCK_OUT' && (tx.referenceType === 'RECEIPT_CORRECTION' || tx.referenceType === 'RETURN_CANCELLED');
+    const reversesOutward = tx.type === 'STOCK_IN' && tx.referenceType === 'RETURN_CANCELLED';
+    const qty = (tx.quantityMoved || 0) * (reversesInward || reversesOutward ? -1 : 1);
+    const inward = reversesInward || (tx.type === 'STOCK_IN' && !reversesOutward);
 
     // Grouped by IST day (or IST month for a yearly report)
     const dateKey = period === 'yearly' ? istDateKey(tx.createdAt).slice(0, 7) : istDateKey(tx.createdAt);
@@ -115,7 +120,7 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
 
     timelineMap[dateKey].txCount++;
 
-    if (tx.type === 'STOCK_IN') {
+    if (inward) {
       if (itemType === 'FABRIC') {
         if (tx.batch?.uom === 'KG') inwardFabricKg += qty; else inwardFabricMeters += qty;
       } else if (itemType === 'READY_MADE') {
@@ -128,7 +133,7 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
         inwardSocksPairs += qty;
       }
       timelineMap[dateKey].inwardQty += qty;
-    } else if (tx.type === 'STOCK_OUT' || tx.type === 'PARTIAL_CUT') {
+    } else if (tx.type === 'STOCK_OUT' || tx.type === 'PARTIAL_CUT' || reversesOutward) {
       if (itemType === 'FABRIC') {
         if (tx.batch?.uom === 'KG') outwardFabricKg += qty; else outwardFabricMeters += qty;
       } else if (itemType === 'READY_MADE') {

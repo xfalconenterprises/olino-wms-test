@@ -15,12 +15,17 @@ import {
   Search,
   FileCheck,
   Users,
-  AlertCircle
+  AlertCircle,
+  PencilLine
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate } from '../../../utils/format';
 import { allowsDecimals, fabricCategoryLabel, formatTotals, unitLabel, unitName } from '../../../utils/units';
 import SpecLine from '../../../components/Common/SpecLine';
+import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } from '../../../components/Common/RollCorrection';
+import { useConfirm } from '../../../components/Common/ConfirmDialog';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type DiscrepancyItem, type GateDiscrepancy } from './DiscrepancyModal';
 import '../../../styles/components.css';
 
@@ -102,7 +107,12 @@ export default function ReceivePOPage() {
   const [skuOverride, setSkuOverride] = useState({ brand: '', quality: '', shade: '', size: '', category: '' });
   const [receiving, setReceiving] = useState(false);
   const [error, setError] = useState('');
-  const [recentBatch, setRecentBatch] = useState<{ batchCode: string; quantity: number } | null>(null);
+  const [recentBatch, setRecentBatch] = useState<{ id?: string; batchCode: string; quantity: number } | null>(null);
+  const [fixingRoll, setFixingRoll] = useState<CorrectableRoll | null>(null);
+  const [confirmDialog, ask] = useConfirm();
+  const { user } = useAuth();
+  // After the GRN is issued only a supervisor can correct a roll
+  const canCorrectAfterGrn = hasPermission(user, 'inv.adjustments');
 
   // Line search & sorting state — PO Order default
   const [lineSearch, setLineSearch] = useState('');
@@ -245,7 +255,8 @@ export default function ReceivePOPage() {
   // Keyboard navigation: Escape closes modals
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      // A correction or question on top is answered first
+      if (e.key === 'Escape' && !fixingRoll && !confirmDialog) {
         if (showReceiveModal && !showDiscrepancyModal) closeReceiveModal();
         if (viewingBarcodeLine) setViewingBarcodeLine(null);
         if (showDiscrepancyModal) setShowDiscrepancyModal(false);
@@ -253,7 +264,7 @@ export default function ReceivePOPage() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showReceiveModal, showDiscrepancyModal, viewingBarcodeLine]);
+  }, [showReceiveModal, showDiscrepancyModal, viewingBarcodeLine, fixingRoll, confirmDialog]);
 
   // From a line being received the item is fixed; from the page header the item is chosen
   const openDiscrepancyModal = (line?: POLine | null) => {
@@ -336,6 +347,12 @@ export default function ReceivePOPage() {
       setError('Please enter a valid quantity received.');
       return;
     }
+    const line = po?.lines.find(l => l.id === selectedLine);
+    const warning = line && unusualQuantityMessage(qty, line.batches.map(b => b.quantity), line.uom);
+    if (warning && !(await ask(warning))) {
+      setTimeout(() => qtyInputRef.current?.select(), 50);
+      return;
+    }
 
     setReceiving(true);
     try {
@@ -350,7 +367,7 @@ export default function ReceivePOPage() {
 
       const newBatch = res.data.newRolls?.[0];
       if (newBatch?.batchCode) {
-        setRecentBatch({ batchCode: newBatch.batchCode, quantity: qty });
+        setRecentBatch({ id: newBatch.id, batchCode: newBatch.batchCode, quantity: qty });
         void autoPrintReceivedLabel(newBatch.batchCode, setError);   // never waits for the printer
       }
 
@@ -372,6 +389,20 @@ export default function ReceivePOPage() {
     } finally {
       setReceiving(false);
     }
+  };
+
+  const fixRoll = (roll: { id: string; batchCode: string; quantity: number; grnId?: string | null }, uom?: string | null) => {
+    setFixingRoll({ ...roll, uom, grnNumber: po?.grns?.find((g: any) => g.id === roll.grnId)?.grnNumber });
+  };
+  const canFix = (roll: { grnId?: string | null }) => !roll.grnId || canCorrectAfterGrn;
+
+  // Figures change after a correction; the page stays where it is
+  const afterCorrection = () => {
+    if (fixingRoll && recentBatch?.id === fixingRoll.id) setRecentBatch(null);
+    api.get(`/api/purchase-orders/${id}`).then(r => {
+      setPo(r.data);
+      setViewingBarcodeLine(v => v && (r.data.lines.find((l: POLine) => l.id === v.id) ?? null));
+    }).catch(() => load());
   };
 
   const printLabel = async (batchCode: string) => {
@@ -646,6 +677,16 @@ export default function ReceivePOPage() {
                 >
                   <Printer size={13} />
                 </button>
+                {canFix(b) && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); fixRoll(b, line.uom); }}
+                    style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: '#b45309' }}
+                    title="Fix this receipt (wrong quantity or received by mistake)"
+                  >
+                    <PencilLine size={13} />
+                  </button>
+                )}
               </span>
             ))}
           </div>
@@ -1173,6 +1214,16 @@ export default function ReceivePOPage() {
                           >
                             <Printer size={15} /> Reprint
                           </button>
+                            {canFix(b) && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => fixRoll(b, currentLine.uom)}
+                                style={{ height: 38, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}
+                              >
+                                <PencilLine size={14} /> Fix
+                              </button>
+                            )}
                         </div>
                       </div>
                     ))
@@ -1403,6 +1454,16 @@ export default function ReceivePOPage() {
                         >
                           <Printer size={13} /> Reprint
                         </button>
+                        {recentBatch.id && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => fixRoll({ id: recentBatch.id!, batchCode: recentBatch.batchCode, quantity: recentBatch.quantity }, currentLine?.uom)}
+                            style={{ height: 34, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 4 }}
+                          >
+                            <PencilLine size={13} /> Fix
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
@@ -1602,6 +1663,16 @@ export default function ReceivePOPage() {
                         >
                           <Printer size={15} /> Reprint
                         </button>
+                        {canFix(b) && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => fixRoll(b, viewingBarcodeLine.uom)}
+                            style={{ height: 38, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}
+                          >
+                            <PencilLine size={14} /> Fix
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))
@@ -1931,6 +2002,9 @@ export default function ReceivePOPage() {
           </div>
         </div>
       )}
+
+      {fixingRoll && <RollCorrectionModal roll={fixingRoll} onClose={() => setFixingRoll(null)} onDone={afterCorrection} />}
+      {confirmDialog}
     </div>
   );
 }

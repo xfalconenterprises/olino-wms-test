@@ -8,9 +8,13 @@ import {
   FileCheck, 
   AlertTriangle, 
   Layers, 
-  Barcode
+  Barcode,
+  PencilLine
 } from 'lucide-react';
-import { formatDate } from '../../../utils/format';
+import { formatDate, formatDateTime } from '../../../utils/format';
+import { RollCorrectionModal, type CorrectableRoll } from '../../../components/Common/RollCorrection';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import { fabricCategoryLabel, formatQty, formatTotals, uomOf } from '../../../utils/units';
 import { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type GateDiscrepancy } from '../EntryGate/DiscrepancyModal';
 import '../../../styles/components.css';
@@ -68,6 +72,16 @@ interface GRNDetail {
   lines: GRNLine[];
   batches: BatchItem[];
   discrepancies: GateDiscrepancy[];
+  corrections?: {
+    id: string;
+    batchCode: string;
+    oldQuantity: number;
+    newQuantity: number;
+    uom: string;
+    reason: string;
+    userName: string;
+    createdAt: string;
+  }[];
 }
 
 export default function ViewGRNPage() {
@@ -78,6 +92,10 @@ export default function ViewGRNPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState<'ITEMS' | 'ROLLS'>('ITEMS');
+  const [fixingRoll, setFixingRoll] = useState<CorrectableRoll | null>(null);
+  const { user } = useAuth();
+  // Once a GRN is issued only a supervisor can correct what it received
+  const canCorrect = hasPermission(user, 'inv.adjustments');
 
   const loadGRN = async () => {
     setLoading(true);
@@ -96,6 +114,10 @@ export default function ViewGRNPage() {
   useEffect(() => {
     loadGRN();
   }, [id]);
+
+  const reloadQuietly = () => {
+    api.get(`/api/grn/${id}`).then(res => setGrn(res.data)).catch(() => {});
+  };
 
   const handlePrint = async () => {
     if (!id) return;
@@ -593,6 +615,7 @@ export default function ViewGRNPage() {
                   <th>{isFabric ? 'Shade' : 'Color'}</th>
                   {!isFabric && <th>Size</th>}
                   <th style={{ textAlign: 'right' }}>Quantity</th>
+                  {canCorrect && <th style={{ width: 90 }}></th>}
                 </tr>
               </thead>
               <tbody>
@@ -612,6 +635,19 @@ export default function ViewGRNPage() {
                     <td style={{ textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
                       {formatQty(b.quantity, uomOf({ uom: b.uom, itemType: b.itemType }))}
                     </td>
+                    {canCorrect && (
+                      <td style={{ textAlign: 'right' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => setFixingRoll({ id: b.id, batchCode: b.batchCode, quantity: b.quantity, uom: uomOf({ uom: b.uom, itemType: b.itemType }), grnId: grn.id, grnNumber: grn.grnNumber })}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                          title="Correct the received quantity"
+                        >
+                          <PencilLine size={13} /> Correct
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -619,6 +655,43 @@ export default function ViewGRNPage() {
           </div>
         </div>
       )}
+
+      {/* Quantities corrected after the GRN was issued; the figures above already include them */}
+      {grn.corrections && grn.corrections.length > 0 && (
+        <div className="card" style={{ marginTop: 16, padding: 0, overflow: 'hidden', boxShadow: 'var(--shadow-sm)' }}>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', background: '#fffbeb', fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', gap: 6, color: '#92400e' }}>
+            <PencilLine size={15} /> Amendments after issue ({grn.corrections.length})
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="table" style={{ fontSize: 12.5, width: '100%', margin: 0 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc' }}>
+                  <th>When</th>
+                  <th>Roll</th>
+                  <th style={{ textAlign: 'right' }}>Was</th>
+                  <th style={{ textAlign: 'right' }}>Now</th>
+                  <th>Reason</th>
+                  <th>By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grn.corrections.map(c => (
+                  <tr key={c.id}>
+                    <td>{formatDateTime(c.createdAt)}</td>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{c.batchCode}</td>
+                    <td style={{ textAlign: 'right' }}>{formatQty(c.oldQuantity, c.uom)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatQty(c.newQuantity, c.uom)}</td>
+                    <td>{c.reason}</td>
+                    <td>{c.userName}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {fixingRoll && <RollCorrectionModal roll={fixingRoll} onClose={() => setFixingRoll(null)} onDone={reloadQuietly} />}
     </div>
   );
 }

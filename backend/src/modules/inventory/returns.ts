@@ -1,10 +1,12 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
+import type { Prisma } from '@prisma/client';
 import { nextBatchCode } from '../../utils/batch-code';
 import { nextDocumentNumber } from '../../utils/document-number';
 import { formatDate } from '../../utils/format';
 import { renderPrintDocument } from '../../utils/print-document';
+import { receivedQuantities } from '../../utils/received';
 import { allowsDecimals, fabricCategoryLabel, unitLabel } from '../../utils/units';
 
 export { unitLabel };
@@ -81,7 +83,8 @@ function returnableLines(dc: { lines: Array<{ id: string; quantity: number; cutR
 }
 
 const DC_RETURN_INCLUDE = {
-  lines: { include: { batch: true, returnLines: { select: { quantity: true } } }, orderBy: { createdAt: 'asc' as const } },
+  // A cancelled return frees its quantity to be returned again
+  lines: { include: { batch: true, returnLines: { where: { customerReturn: { cancelledAt: null } }, select: { quantity: true } } }, orderBy: { createdAt: 'asc' as const } },
 };
 
 // GET /api/returns/customer/lookup/:challanNumber — what can still come back on a challan
@@ -210,7 +213,7 @@ router.get('/customer/:id/print', async (req: Request, res: Response) => {
   });
   if (!r) { res.status(404).send('Return not found'); return; }
   const html = await renderPrintDocument({
-    title: 'Customer Return Receipt',
+    title: r.cancelledAt ? 'Customer Return Receipt (CANCELLED)' : 'Customer Return Receipt',
     number: r.returnNumber,
     meta: [
       ['Customer', r.customerName], ['Return Date', formatDate(r.createdAt)],
@@ -226,7 +229,9 @@ router.get('/customer/:id/print', async (req: Request, res: Response) => {
       String(i + 1), itemDescription(l.batch), l.dcLine.cutReference || l.dcLine.batch.batchCode, l.batch.batchCode,
       l.condition === 'GOOD' ? 'Good' : 'Damaged', `${l.quantity} ${unitLabel(l.batch.uom)}`,
     ]),
-    note: 'Damaged goods are held for quality inspection before they can be used again.',
+    note: r.cancelledAt
+      ? `Cancelled on ${formatDate(r.cancelledAt)} by ${r.cancelledByName}: ${r.cancelReason}. These goods were not taken into stock.`
+      : 'Damaged goods are held for quality inspection before they can be used again.',
     signatures: ['Received By', 'Checked By', 'Returned By (Customer)'],
   });
   res.set('Content-Type', 'text/html').send(html);
@@ -376,7 +381,7 @@ router.get('/supplier/:id/print', async (req: Request, res: Response) => {
   const totals = new Map<string, number>();
   for (const l of r.lines) totals.set(l.batch.uom, round3((totals.get(l.batch.uom) ?? 0) + l.quantity));
   const html = await renderPrintDocument({
-    title: 'Return to Supplier',
+    title: r.cancelledAt ? 'Return to Supplier (CANCELLED)' : 'Return to Supplier',
     number: r.returnNumber,
     meta: [
       ['Supplier', r.supplierName], ['Return Date', formatDate(r.createdAt)],
@@ -392,9 +397,90 @@ router.get('/supplier/:id/print', async (req: Request, res: Response) => {
     ]),
     totalLabel: 'TOTAL',
     totalValue: [...totals].map(([uom, qty]) => `${qty} ${unitLabel(uom)}`).join(' + '),
+    ...(r.cancelledAt && { note: `Cancelled on ${formatDate(r.cancelledAt)} by ${r.cancelledByName}: ${r.cancelReason}. These goods stayed in our stock.` }),
     signatures: ['Prepared By', 'Dispatched By', 'Received By (Supplier)'],
   });
   res.set('Content-Type', 'text/html').send(html);
+});
+
+// ─── Cancelling a return entered by mistake (supervisors) ────────────────────
+// The return stays on record, marked cancelled with who, when and why; then it can be entered again.
+
+const cancelReason = (body: any) => {
+  const reason = String(body?.reason ?? '').trim().slice(0, 300);
+  if (!reason) throw new ReturnError('Say why the return is being cancelled.');
+  return reason;
+};
+
+// Movements that mean a roll has been used since, so taking it back out of stock would be wrong
+async function rollUsed(tx: Prisma.TransactionClient, batchId: string) {
+  return tx.transaction.findFirst({
+    where: { batchId, type: { in: ['STOCK_OUT', 'PARTIAL_CUT'] }, referenceType: { in: ['DELIVERY_CHALLAN', 'SUPPLIER_RETURN'] } },
+  });
+}
+
+// POST /api/returns/customer/:id/cancel — { reason }: the rolls it created leave stock
+router.post('/customer/:id/cancel', requirePermission('inv.adjustments'), async (req: Request, res: Response) => {
+  await run(res, async () => {
+    const reason = cancelReason(req.body);
+    return prisma.$transaction(async (tx) => {
+      const r = await tx.customerReturn.findUnique({ where: { id: String(req.params.id) }, include: { lines: { include: { batch: true } } } });
+      if (!r) throw new ReturnError('Return not found', 404);
+      if (r.cancelledAt) throw new ReturnError(`${r.returnNumber} is already cancelled.`);
+      for (const line of r.lines) {
+        if (await rollUsed(tx, line.batchId)) throw new ReturnError(`${line.batch.batchCode} from this return has already been cut or sent out, so the return can't be cancelled.`);
+        const packed = await tx.deliveryChallanLine.findFirst({ where: { batchId: line.batchId, dc: { status: 'DRAFT', isDeleted: false } }, include: { dc: { select: { challanNumber: true } } } });
+        if (packed) throw new ReturnError(`${line.batch.batchCode} is packed in draft challan ${packed.dc.challanNumber}. Remove it there first.`);
+      }
+      for (const line of r.lines) {
+        await tx.itemBatch.update({ where: { id: line.batchId }, data: { quantity: 0, status: 'OUT', receiptVoidedAt: new Date() } });
+        await tx.batchLocation.deleteMany({ where: { batchId: line.batchId } });
+        await tx.transaction.create({
+          data: {
+            batchId: line.batchId, type: 'STOCK_OUT', quantityMoved: line.batch.quantity, previousQuantity: line.batch.quantity, newQuantity: 0,
+            operatorId: req.user!.userId, referenceType: 'RETURN_CANCELLED', referenceId: r.returnNumber,
+            notes: `Customer return ${r.returnNumber} cancelled: ${reason}`,
+          },
+        });
+      }
+      return tx.customerReturn.update({
+        where: { id: r.id },
+        data: { cancelledAt: new Date(), cancelledByName: req.user!.name, cancelReason: reason },
+      });
+    }, { timeout: 30_000 });
+  });
+});
+
+// POST /api/returns/supplier/:id/cancel — { reason }: the goods did not leave, so they go back on their rolls
+router.post('/supplier/:id/cancel', requirePermission('inv.adjustments'), async (req: Request, res: Response) => {
+  await run(res, async () => {
+    const reason = cancelReason(req.body);
+    return prisma.$transaction(async (tx) => {
+      const r = await tx.supplierReturn.findUnique({ where: { id: String(req.params.id) }, include: { lines: { include: { batch: true } } } });
+      if (!r) throw new ReturnError('Return not found', 404);
+      if (r.cancelledAt) throw new ReturnError(`${r.returnNumber} is already cancelled.`);
+      const received = await receivedQuantities(r.lines.map(l => l.batchId));
+      for (const line of r.lines) {
+        const before = line.batch.quantity;
+        const quantity = round3(before + line.quantity);
+        const whole = quantity + 0.001 >= (received.get(line.batchId) ?? quantity);
+        const status = line.batch.status === 'QC_HOLD' ? 'QC_HOLD' : whole ? 'IN_STOCK' : 'PARTIALLY_USED';
+        // Back in stock but off the shelves: it shows in the put-away queue to be placed again
+        await tx.itemBatch.update({ where: { id: line.batchId }, data: { quantity, status } });
+        await tx.transaction.create({
+          data: {
+            batchId: line.batchId, type: 'STOCK_IN', quantityMoved: line.quantity, previousQuantity: before, newQuantity: quantity,
+            operatorId: req.user!.userId, referenceType: 'RETURN_CANCELLED', referenceId: r.returnNumber,
+            notes: `Return to supplier ${r.returnNumber} cancelled, ${line.quantity} ${unitLabel(line.batch.uom)} back in stock: ${reason}`,
+          },
+        });
+      }
+      return tx.supplierReturn.update({
+        where: { id: r.id },
+        data: { cancelledAt: new Date(), cancelledByName: req.user!.name, cancelReason: reason },
+      });
+    }, { timeout: 30_000 });
+  });
 });
 
 export default router;

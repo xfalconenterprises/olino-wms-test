@@ -19,7 +19,7 @@ router.get('/draft', async (req: Request, res: Response) => {
   const saved = Array.isArray(data.sessionBatches) ? data.sessionBatches : [];
   const ids = saved.map((b: any) => b?.id).filter((id: unknown): id is string => typeof id === 'string');
   const open = ids.length > 0
-    ? await withReceivedQuantity(await prisma.itemBatch.findMany({ where: { id: { in: ids }, grnId: null } }))
+    ? await withReceivedQuantity(await prisma.itemBatch.findMany({ where: { id: { in: ids }, grnId: null, receiptVoidedAt: null } }))
     : [];
   const byId = new Map(open.map(b => [b.id, b]));
   data.sessionBatches = ids.map(id => byId.get(id)).filter(Boolean);

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { ScanLine, Printer, Trash2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { ScanLine, Printer, Trash2, CheckCircle2, AlertTriangle, Ban } from 'lucide-react';
 import api from '../../../utils/api';
 import { apiError, openPrintPage } from '../../../utils/printPage';
 import { printTSPL } from '../../../utils/printer';
 import { formatDateTime } from '../../../utils/format';
 import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
 import TouchChoice from './TouchChoice';
+import CancelReturnModal from './CancelReturnModal';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 
 interface Scanned {
   id: string; batchCode: string; description: string; uom: string; quantity: number; status: string;
@@ -16,6 +19,7 @@ interface SavedReturn { id: string; returnNumber: string; lines: { quantity: num
 interface ListRow {
   id: string; returnNumber: string; createdAt: string; supplierName: string; reason: string;
   createdBy: { name: string }; lines: { quantity: number; batch: { uom: string } }[];
+  cancelledAt?: string | null; cancelledByName?: string | null; cancelReason?: string | null;
 }
 
 const SUPPLIER_REASONS: [string, string][] = [
@@ -35,6 +39,9 @@ export default function SupplierReturnsTab() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<SavedReturn | null>(null);
   const [list, setList] = useState<ListRow[]>([]);
+  const [cancelling, setCancelling] = useState<ListRow | null>(null);
+  const { user } = useAuth();
+  const canCancel = hasPermission(user, 'inv.adjustments');
   const scanRef = useRef<HTMLInputElement>(null);
 
   const supplier = suppliers.find(s => s.id === supplierId) ?? null;
@@ -207,13 +214,21 @@ export default function SupplierReturnsTab() {
               <tbody>
                 {list.map(r => (
                   <tr key={r.id}>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{r.returnNumber}</td>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                      {r.returnNumber}
+                      {r.cancelledAt && <div><span className="badge badge-danger" title={`${r.cancelledByName}: ${r.cancelReason}`}>Cancelled</span></div>}
+                    </td>
                     <td>{formatDateTime(r.createdAt)}</td>
                     <td>{r.supplierName}</td>
                     <td>{reasonLabel(r.reason)}</td>
                     <td>{r.lines.length}</td>
                     <td>{r.createdBy.name}</td>
-                    <td><button className="btn btn-ghost btn-sm" onClick={() => printChallan(r.id)} title="Print challan" aria-label="Print challan" style={{ minWidth: 44, minHeight: 44 }}><Printer size={18} /></button></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => printChallan(r.id)} title="Print challan" aria-label="Print challan" style={{ minWidth: 44, minHeight: 44 }}><Printer size={18} /></button>
+                      {canCancel && !r.cancelledAt && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => setCancelling(r)} title="Cancel this return" aria-label="Cancel this return" style={{ minWidth: 44, minHeight: 44, color: '#dc2626' }}><Ban size={18} /></button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -221,6 +236,11 @@ export default function SupplierReturnsTab() {
           </div>
         )}
       </div>
+
+      {cancelling && (
+        <CancelReturnModal kind="supplier" ret={cancelling} onClose={() => setCancelling(null)}
+          onCancelled={() => { setCancelling(null); loadList(); }} />
+      )}
     </div>
   );
 }

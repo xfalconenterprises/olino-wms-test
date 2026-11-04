@@ -212,6 +212,7 @@ model ItemBatch {
   grnId          String?
   grn            GoodsReceiptNote? @relation(fields: [grnId], references: [id])
   clientId       String?            @map("client_id")
+  receiptVoidedAt DateTime?         @map("receipt_voided_at") // receipt undone: never counted as stock again
   clientName     String?            @map("client_name")
   client         Client?            @relation(fields: [clientId], references: [id])
   stockCountEntries   StockCountEntry[]
@@ -223,6 +224,7 @@ model ItemBatch {
   @@index([brand, quality, shade])
   @@index([createdAt])
   @@index([clientId])
+  receiptCorrections ReceiptCorrection[]
   @@index([poLineId])
   @@index([grnId])
   @@map("item_batches")
@@ -312,6 +314,30 @@ model PurchaseOrderLine {
 // Kept apart from the PO line so no screen, document or export picks the price up with the
 // line. Only the Cost Prices tab (explicit permission, unlocked with the user's password)
 // reads it; labels print it only as the secret cost code.
+
+// Fixes to what was received: a corrected quantity, or a receipt undone. They stay in the roll's
+// history, and a GRN that was already issued prints them as its amendments.
+model ReceiptCorrection {
+  id          String   @id @default(uuid())
+  batchId     String   @map("batch_id")
+  batchCode   String   @map("batch_code")
+  grnId       String?  @map("grn_id")
+  poLineId    String?  @map("po_line_id")
+  kind        String   // QUANTITY, UNDO
+  oldQuantity Float    @map("old_quantity")
+  newQuantity Float    @map("new_quantity")
+  uom         String
+  reason      String
+  userId      String   @map("user_id")
+  userName    String   @map("user_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  batch ItemBatch @relation(fields: [batchId], references: [id])
+
+  @@index([batchId])
+  @@index([grnId])
+  @@map("receipt_corrections")
+}
 
 // Unfinished purchase orders, private to the person who made them. Nothing outside the drafts
 // module reads this table; costs sit in their own column and are never sent back.
@@ -686,6 +712,9 @@ model CustomerReturn {
   dcId         String   @map("dc_id")
   customerId   String?  @map("customer_id")
   customerName String   @map("customer_name")
+  cancelledAt     DateTime? @map("cancelled_at")
+  cancelledByName String?   @map("cancelled_by_name")
+  cancelReason    String?   @map("cancel_reason")
   reason       String                         // SIZE_EXCHANGE, DEFECTIVE, WRONG_ITEM, EXCESS, OTHER
   remarks      String?
   createdById  String   @map("created_by_id")
@@ -723,6 +752,9 @@ model SupplierReturn {
   returnNumber String   @unique               // e.g. SR-26-0001
   supplierId   String?  @map("supplier_id")
   supplierName String   @map("supplier_name")
+  cancelledAt     DateTime? @map("cancelled_at")
+  cancelledByName String?   @map("cancelled_by_name")
+  cancelReason    String?   @map("cancel_reason")
   reason       String                         // DEFECTIVE, WRONG_ITEM, EXCESS, SHORT_LENGTH, OTHER
   remarks      String?
   createdById  String   @map("created_by_id")

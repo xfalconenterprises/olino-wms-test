@@ -144,7 +144,8 @@ router.get('/:id', requireAuth, requirePermission('inv.grn', 'ops.entry_gate', '
       return;
     }
 
-    res.json({ ...grn, batches: await withReceivedQuantity(grn.batches) });
+    const corrections = await prisma.receiptCorrection.findMany({ where: { grnId: grn.id }, orderBy: { createdAt: 'asc' } });
+    res.json({ ...grn, batches: await withReceivedQuantity(grn.batches), corrections });
   } catch (err: any) {
     console.error('Failed to get GRN details:', err);
     res.status(500).json({ error: 'Failed to retrieve GRN details' });
@@ -221,6 +222,12 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
 
     if (batches.length === 0) {
       res.status(400).json({ error: 'None of the provided batch IDs were found' });
+      return;
+    }
+
+    const undone = batches.filter(b => b.receiptVoidedAt);
+    if (undone.length > 0) {
+      res.status(409).json({ error: `${undone.map(b => b.batchCode).join(', ')}: receipt undone, so it can't go on a GRN.` });
       return;
     }
 
@@ -486,6 +493,17 @@ router.get('/:id/print', requireAuth, requirePermission('inv.grn', 'ops.entry_ga
       { header: 'Notes', optional: true, cell: d => d.notes },
     ], grn.discrepancies);
 
+    // Quantities corrected after the GRN was issued; the lines above already show the corrected figures
+    const corrections = await prisma.receiptCorrection.findMany({ where: { grnId: grn.id }, orderBy: { createdAt: 'asc' } });
+    const amendments = corrections.length === 0 ? null : documentTable<typeof corrections[number]>([
+      { header: 'Date', width: '80px', cell: c => formatDate(c.createdAt) },
+      { header: 'Roll', width: '110px', cell: c => c.batchCode },
+      { header: 'Was', align: 'right', width: '80px', cell: c => qty(c.oldQuantity, c.uom) },
+      { header: 'Now', align: 'right', width: '80px', bold: true, cell: c => qty(c.newQuantity, c.uom) },
+      { header: 'Reason', cell: c => c.reason },
+      { header: 'By', width: '110px', cell: c => c.userName },
+    ], corrections);
+
     // Header details; anything not entered is left off the document
     const deliveryStatus = isPartialGrn
       ? '<span style="color: #b45309;">Partial (Balance remains open on PO)</span>'
@@ -689,6 +707,12 @@ router.get('/:id/print', requireAuth, requirePermission('inv.grn', 'ops.entry_ga
           ${table.foot}
         </tfoot>
       </table>
+      ${amendments ? `
+      <div style="font-weight: bold; font-size: 11.5px; margin: 6px 0 6px;">Amendments after issue</div>
+      <table class="data-table">
+        <thead>${amendments.head}</thead>
+        <tbody>${amendments.body}</tbody>
+      </table>` : ''}
       ${gateIssues ? `
       <div style="font-weight: bold; font-size: 11.5px; margin: 6px 0 6px;">Discrepancies reported at the gate</div>
       <table class="data-table">

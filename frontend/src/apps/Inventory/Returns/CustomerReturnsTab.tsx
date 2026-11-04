@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Search, Printer, CheckCircle2 } from 'lucide-react';
+import { Search, Printer, CheckCircle2, Ban } from 'lucide-react';
 import api from '../../../utils/api';
 import { apiError, openPrintPage } from '../../../utils/printPage';
 import { autoPrintReceivedLabel, printTSPL } from '../../../utils/printer';
 import TouchChoice from './TouchChoice';
+import CancelReturnModal from './CancelReturnModal';
+import { useAuth } from '../../../hooks/useAuth';
+import { hasPermission } from '../../../utils/roles';
 import { formatDate, formatDateTime } from '../../../utils/format';
 import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
 
@@ -17,6 +20,7 @@ interface SavedReturn { id: string; returnNumber: string; lines: { condition: st
 interface ListRow {
   id: string; returnNumber: string; createdAt: string; customerName: string; reason: string;
   dc: { challanNumber: string }; createdBy: { name: string }; lines: { quantity: number; condition: string; batch: { uom: string } }[];
+  cancelledAt?: string | null; cancelledByName?: string | null; cancelReason?: string | null;
 }
 
 export const CUSTOMER_REASONS: [string, string][] = [
@@ -36,6 +40,9 @@ export default function CustomerReturnsTab() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<SavedReturn | null>(null);
   const [list, setList] = useState<ListRow[]>([]);
+  const [cancelling, setCancelling] = useState<ListRow | null>(null);
+  const { user } = useAuth();
+  const canCancel = hasPermission(user, 'inv.adjustments');
   const [search, setSearch] = useState('');
 
   const loadList = (q = search) => api.get('/api/returns/customer', { params: { search: q || undefined } }).then(r => setList(r.data)).catch(() => {});
@@ -203,14 +210,22 @@ export default function CustomerReturnsTab() {
               <tbody>
                 {list.map(r => (
                   <tr key={r.id}>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{r.returnNumber}</td>
+                    <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                      {r.returnNumber}
+                      {r.cancelledAt && <div><span className="badge badge-danger" title={`${r.cancelledByName}: ${r.cancelReason}`}>Cancelled</span></div>}
+                    </td>
                     <td>{formatDateTime(r.createdAt)}</td>
                     <td>{r.customerName}</td>
                     <td style={{ fontFamily: 'monospace' }}>{r.dc.challanNumber}</td>
                     <td>{reasonLabel(r.reason)}</td>
                     <td>{r.lines.length}{r.lines.some(l => l.condition === 'DAMAGED') && <span className="badge badge-warning" style={{ marginLeft: 6 }}>damaged</span>}</td>
                     <td>{r.createdBy.name}</td>
-                    <td><button className="btn btn-ghost btn-sm" onClick={() => printReceipt(r.id)} title="Print receipt" aria-label="Print receipt" style={{ minWidth: 44, minHeight: 44 }}><Printer size={18} /></button></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => printReceipt(r.id)} title="Print receipt" aria-label="Print receipt" style={{ minWidth: 44, minHeight: 44 }}><Printer size={18} /></button>
+                      {canCancel && !r.cancelledAt && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => setCancelling(r)} title="Cancel this return" aria-label="Cancel this return" style={{ minWidth: 44, minHeight: 44, color: '#dc2626' }}><Ban size={18} /></button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -218,6 +233,11 @@ export default function CustomerReturnsTab() {
           </div>
         )}
       </div>
+
+      {cancelling && (
+        <CancelReturnModal kind="customer" ret={cancelling} onClose={() => setCancelling(null)}
+          onCancelled={() => { setCancelling(null); loadList(); }} />
+      )}
     </div>
   );
 }

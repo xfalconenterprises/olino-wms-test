@@ -30,10 +30,9 @@ import {
   FileCheck,
   Users,
   Search,
-  Trash2,
   ChevronRight,
-  FileSpreadsheet
-
+  FileSpreadsheet,
+  PencilLine
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
@@ -44,6 +43,8 @@ import DirectInwardImport from './DirectInwardImport';
 import ChoiceCard from '../../../components/Common/ChoiceCard';
 import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type GateDiscrepancy } from './DiscrepancyModal';
 import { QuickAddClientModal, QuickAddSupplierModal } from '../../../components/Common/QuickAddModals';
+import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } from '../../../components/Common/RollCorrection';
+import { useConfirm } from '../../../components/Common/ConfirmDialog';
 import '../../../styles/components.css';
 
 interface Supplier {
@@ -238,6 +239,10 @@ export default function EntryGatePage() {
     const timer = setTimeout(() => setRecentBatch(null), 10 * 1000);
     return () => clearTimeout(timer);
   }, [recentBatch]);
+
+  // A roll being fixed (wrong quantity or received by mistake), and what the list does afterwards
+  const [fixing, setFixing] = useState<{ roll: CorrectableRoll; after: (r: { undone: boolean; quantity: number }) => void } | null>(null);
+  const [confirmDialog, ask] = useConfirm();
 
   // Live session rolls (truck delivery feed)
   const [sessionRolls, setSessionRolls] = useState<ReceivedRoll[]>([]);
@@ -876,6 +881,16 @@ export default function EntryGatePage() {
       setInwardError('Please enter a valid physical quantity');
       return;
     }
+    // Compared with the rolls of the same item already received in this delivery
+    const sku = selectedItem.sku;
+    const sameItem = sessionRolls.filter(r => selectedPoOrder
+      ? r.poLine?.id === selectedPoOrder.lineId
+      : r.itemType === sku.itemType && (['brand', 'quality', 'shade', 'name', 'size', 'artNo'] as const).every(k => (r[k] ?? '') === (sku[k] ?? '')));
+    const warning = unusualQuantityMessage(qty, sameItem.map(r => r.quantity), sku.uom);
+    if (warning && !(await ask(warning))) {
+      setTimeout(() => qtyInputRef.current?.select(), 50);
+      return;
+    }
 
     setInwardSubmitting(true);
     try {
@@ -1240,6 +1255,20 @@ export default function EntryGatePage() {
       console.error(err);
     }
   };
+
+  const fixSessionRoll = (r: ReceivedRoll) => setFixing({
+    roll: { id: r.id, batchCode: r.batchCode, quantity: r.quantity, uom: r.uom },
+    after: () => {
+      loadSessionRolls(selectedSupplierId, invoiceRef);
+      if (selectedSupplierId) api.get(`/api/purchase-orders/supplier-inbound/${selectedSupplierId}/pending`).then(res => setSupplierData(res.data)).catch(() => {});
+    },
+  });
+  const fixDirectRoll = (b: any) => setFixing({
+    roll: { id: b.id, batchCode: b.batchCode, quantity: b.quantity, uom: b.uom || (b.itemType === 'FABRIC' ? 'METERS' : 'PCS') },
+    after: ({ undone, quantity }) => setDirectSessionBatches(prev => undone
+      ? prev.filter(x => x.id !== b.id)
+      : prev.map(x => (x.id === b.id ? { ...x, quantity } : x))),
+  });
 
   // The preview needs the login, so it is fetched and written into a new window
   const previewLabel = (batchCode: string) => {
@@ -2720,7 +2749,7 @@ export default function EntryGatePage() {
                                 <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
                                   {r.quantity} {unitLabel(r.uom || 'METERS')}
                                 </td>
-                                <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                                <td style={{ padding: '8px 10px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                                   <button
                                     type="button"
                                     className="btn btn-ghost btn-sm"
@@ -2729,6 +2758,15 @@ export default function EntryGatePage() {
                                     style={{ padding: 4 }}
                                   >
                                     <Printer size={13} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={() => fixSessionRoll(r)}
+                                    title="Fix this receipt (wrong quantity or received by mistake)"
+                                    style={{ padding: 4, color: '#b45309' }}
+                                  >
+                                    <PencilLine size={13} />
                                   </button>
                                 </td>
                               </tr>
@@ -2766,7 +2804,7 @@ export default function EntryGatePage() {
                             <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
                               {r.quantity} {unitLabel(r.uom || 'METERS')}
                             </td>
-                            <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                            <td style={{ padding: '8px 10px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                               <button
                                 type="button"
                                 className="btn btn-ghost btn-sm"
@@ -2775,6 +2813,15 @@ export default function EntryGatePage() {
                                 style={{ padding: 4 }}
                               >
                                 <Printer size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => fixSessionRoll(r)}
+                                title="Fix this receipt (wrong quantity or received by mistake)"
+                                style={{ padding: 4, color: '#b45309' }}
+                              >
+                                <PencilLine size={13} />
                               </button>
                             </td>
                           </tr>
@@ -4016,11 +4063,11 @@ export default function EntryGatePage() {
                               <button
                                 type="button"
                                 className="btn btn-ghost btn-sm"
-                                onClick={() => setDirectSessionBatches(prev => prev.filter(x => x.id !== b.id))}
-                                title="Remove from session list"
-                                style={{ padding: '4px 6px', color: '#ef4444' }}
+                                onClick={() => fixDirectRoll(b)}
+                                title="Fix this receipt (wrong quantity or received by mistake)"
+                                style={{ padding: '4px 6px', color: '#b45309' }}
                               >
-                                <Trash2 size={14} />
+                                <PencilLine size={14} />
                               </button>
                             </div>
                           </td>
@@ -4956,6 +5003,9 @@ export default function EntryGatePage() {
       {showQuickAddSupplierModal && (
         <QuickAddSupplierModal initialName={quickSupplierInitialName} onClose={() => setShowQuickAddSupplierModal(false)} onCreated={handleQuickSupplierCreated} />
       )}
+
+      {fixing && <RollCorrectionModal roll={fixing.roll} onClose={() => setFixing(null)} onDone={fixing.after} />}
+      {confirmDialog}
     </div>
   );
 }
