@@ -1,29 +1,31 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { UserModule } from '../utils/roles';
 
-// 30 min duration if gate-only
-const GATE_SESSION_DURATION_MS = 30 * 60 * 1000;
-const SESSION_WARNING_MS = 5 * 60 * 1000; // warn 5 min before expiry
+// Warehouse-only accounts (shared floor terminals) lock 45 minutes after sign-in or the last unlock.
+// The screen locks over the page instead of signing out, so work in progress is kept.
+const GATE_SESSION_DURATION_MS = 45 * 60 * 1000;
+const SESSION_WARNING_MS = 5 * 60 * 1000; // warn 5 min before it locks
 
 interface SessionState {
   minutesRemaining: number;
   showWarning: boolean;
-  isExpired: boolean;
+  isLocked: boolean;
 }
 
-const NO_LIMIT: SessionState = { minutesRemaining: Infinity, showWarning: false, isExpired: false };
+const NO_LIMIT: SessionState = { minutesRemaining: Infinity, showWarning: false, isLocked: false };
 
-export function useSession(modules: UserModule[] | null, onExpire: () => void) {
+/** Restarts the 45 minutes (Stay signed in, or after unlocking). Shared by every tab of the app. */
+export function restartSessionClock() {
+  localStorage.setItem('wms_login_at', String(Date.now()));
+}
+
+export function useSession(modules: UserModule[] | null) {
   const [state, setState] = useState<SessionState>(NO_LIMIT);
-
-  // The latest callback, kept out of the timer's dependencies: callers pass a new function on
-  // every render, and restarting the timer on each render would loop forever.
-  const onExpireRef = useRef(onExpire);
-  useEffect(() => { onExpireRef.current = onExpire; });
+  const [clock, setClock] = useState(0); // bumped to re-check at once after the clock restarts
 
   const extendSession = useCallback(() => {
-    localStorage.setItem('wms_login_at', String(Date.now()));
-    setState(NO_LIMIT);
+    restartSessionClock();
+    setClock(c => c + 1);
   }, []);
 
   useEffect(() => {
@@ -36,22 +38,20 @@ export function useSession(modules: UserModule[] | null, onExpire: () => void) {
     const tick = () => {
       const loginAt = parseInt(localStorage.getItem('wms_login_at') || '0');
       const remaining = GATE_SESSION_DURATION_MS - (Date.now() - loginAt);
-
-      if (remaining <= 0) {
-        setState({ minutesRemaining: 0, showWarning: false, isExpired: true });
-        onExpireRef.current();
-        return;
-      }
-
-      const next = { minutesRemaining: Math.ceil(remaining / 60_000), showWarning: remaining <= SESSION_WARNING_MS, isExpired: false };
+      const next: SessionState = remaining <= 0
+        ? { minutesRemaining: 0, showWarning: false, isLocked: true }
+        : { minutesRemaining: Math.ceil(remaining / 60_000), showWarning: remaining <= SESSION_WARNING_MS, isLocked: false };
       // Re-render only when something on screen would change
-      setState(prev => (prev.minutesRemaining === next.minutesRemaining && prev.showWarning === next.showWarning ? prev : next));
+      setState(prev => (prev.minutesRemaining === next.minutesRemaining && prev.showWarning === next.showWarning && prev.isLocked === next.isLocked ? prev : next));
     };
 
     tick(); // run immediately
     const interval = setInterval(tick, 10_000); // check every 10s
-    return () => clearInterval(interval);
-  }, [modules]);
+    // Unlocking or extending in another tab unlocks this one straight away
+    const onStorage = (e: StorageEvent) => { if (e.key === 'wms_login_at') tick(); };
+    window.addEventListener('storage', onStorage);
+    return () => { clearInterval(interval); window.removeEventListener('storage', onStorage); };
+  }, [modules, clock]);
 
   return { ...state, extendSession };
 }

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import argon2 from 'argon2';
 import prisma from '../../lib/prisma';
 import { MIN_PASSWORD_LENGTH, SESSION_DURATION, requireAuth, requireResetOrAuth, sessionCutoff, signToken } from '../../middleware/auth';
+import { END_MESSAGES, SESSION_HOURS, endAllSessions, endSession, openSession } from '../../utils/sessions';
 
 const router = Router();
 
@@ -107,8 +108,8 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response) => {
 
   console.log(`[AUTH] User '${user.username}' (${user.name}) logged in successfully [modules: ${user.modules.join(', ')}]`);
 
-  // A first-login token can only be used to set a new password
-  const token = signToken(user, user.mustResetPassword ? 'reset' : undefined);
+  // A first-login token can only be used to set a new password; a full login opens a device session
+  const token = user.mustResetPassword ? signToken(user, 'reset') : signToken(user, undefined, await openSession(user, req));
 
   res.json({
     ...(user.mustResetPassword && { mustResetPassword: true }),
@@ -178,8 +179,8 @@ router.post('/badge-login', loginRateLimiter, async (req: Request, res: Response
 
   console.log(`[AUTH-FLOOR] User '${user.username}' (${user.name}) logged in via badge '${cleanBadge}'`);
 
-  // A first-login token can only be used to set a new PIN
-  const token = signToken(user, user.mustResetPin ? 'reset' : undefined);
+  // A first-login token can only be used to set a new PIN; a full login opens a device session
+  const token = user.mustResetPin ? signToken(user, 'reset') : signToken(user, undefined, await openSession(user, req));
 
   res.json({
     ...(user.mustResetPin && { mustResetPin: true }),
@@ -212,12 +213,13 @@ router.post('/reset-initial-password', requireResetOrAuth, async (req: Request, 
       mustResetPassword: false,
       sessionsValidFrom: sessionCutoff(),
     },
-    select: USER_SELECT,
+    select: { ...USER_SELECT, maxSessions: true, sessionsValidFrom: true },
   });
+  await endAllSessions(updated.id, 'PASSWORD_CHANGED'); // devices signed in with the old password
 
   res.json({
     message: 'Password updated successfully',
-    token: signToken(updated),
+    token: signToken(updated, undefined, await openSession(updated, req)),
     expiresIn: SESSION_DURATION,
     user: userResponse(updated),
   });
@@ -245,15 +247,71 @@ router.post('/reset-initial-pin', requireResetOrAuth, async (req: Request, res: 
       mustResetPin: false,
       sessionsValidFrom: sessionCutoff(),
     },
-    select: USER_SELECT,
+    select: { ...USER_SELECT, maxSessions: true, sessionsValidFrom: true },
   });
+  await endAllSessions(updated.id, 'PASSWORD_CHANGED'); // devices signed in with the old PIN
 
   res.json({
     message: 'PIN updated successfully',
-    token: signToken(updated),
+    token: signToken(updated, undefined, await openSession(updated, req)),
     expiresIn: SESSION_DURATION,
     user: userResponse(updated),
   });
+});
+
+// POST /api/auth/logout — ends this device's session, so it leaves the user's device list
+router.post('/logout', requireAuth, async (req: Request, res: Response) => {
+  if (req.sessionId) await endSession(req.sessionId, 'LOGOUT');
+  res.json({ success: true });
+});
+
+// Wrong attempts to unlock a locked screen, per device; the last one signs the device out
+const failedUnlocks = new Map<string, number>();
+const MAX_UNLOCK_ATTEMPTS = 5;
+
+// POST /api/auth/unlock — the signed-in person unlocks their locked screen with their password or PIN.
+// Wrong answers are a 400 (the screen stays locked); after the last attempt the device is signed out.
+// It needs a running session, so it has its own attempt limit instead of using up the login one.
+router.post('/unlock', requireAuth, async (req: Request, res: Response) => {
+  const { password, pin } = req.body;
+  const user = await prisma.user.findUnique({ where: { id: req.user!.userId } });
+  if (!user) { res.status(401).json({ error: 'Your session has ended. Please sign in again.' }); return; }
+
+  const cleanPin = String(pin ?? '').trim();
+  let valid: boolean;
+  if (password) valid = await argon2.verify(user.passwordHash, String(password));
+  else if (cleanPin && !user.pinHash) { res.status(400).json({ error: 'No PIN is set for this account. Use your password.' }); return; }
+  else if (cleanPin && user.pinHash) valid = /^\d{6}$/.test(cleanPin) && await argon2.verify(user.pinHash, cleanPin);
+  else { res.status(400).json({ error: 'Enter your password or PIN.' }); return; }
+
+  const key = req.sessionId ?? `token:${user.id}`;
+  if (!valid) {
+    const count = (failedUnlocks.get(key) ?? 0) + 1;
+    if (count >= MAX_UNLOCK_ATTEMPTS) {
+      failedUnlocks.delete(key);
+      if (req.sessionId) await endSession(req.sessionId, 'UNLOCK_FAILED');
+      console.warn(`[AUTH] Device of '${user.username}' signed out after ${MAX_UNLOCK_ATTEMPTS} wrong unlock attempts`);
+      res.status(401).json({ error: END_MESSAGES.UNLOCK_FAILED });
+      return;
+    }
+    failedUnlocks.set(key, count);
+    const left = MAX_UNLOCK_ATTEMPTS - count;
+    res.status(400).json({ error: `${password ? 'Incorrect password' : 'Incorrect PIN'}. ${left} attempt${left === 1 ? '' : 's'} left before this device is signed out.` });
+    return;
+  }
+  failedUnlocks.delete(key);
+
+  // A fresh token for the same device, so a long shift never runs into the token's expiry
+  let sessionId = req.sessionId;
+  if (sessionId) {
+    await prisma.userSession.update({
+      where: { id: sessionId },
+      data: { expiresAt: new Date(Date.now() + SESSION_HOURS * 3_600_000), lastSeenAt: new Date() },
+    });
+  } else {
+    sessionId = await openSession(user, req);
+  }
+  res.json({ token: signToken(user, undefined, sessionId), expiresIn: SESSION_DURATION });
 });
 
 // GET /api/auth/me — validate token and return current user

@@ -239,3 +239,70 @@
   text-align: center;
   margin-top: var(--space-6);
 }
+
+/* ─── Lock screen: covers the app (kept underneath) until the same person unlocks ── */
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 3200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(10px);
+}
+.lock-screen-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 28px 24px;
+  border-radius: var(--radius-lg);
+  background: var(--color-white);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+.lock-screen-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 12px;
+  border-radius: 50%;
+  background: var(--color-brand-light);
+  color: var(--color-brand);
+}
+.lock-screen-card h2 { margin: 0 0 6px; font-size: 21px; font-weight: 700; }
+.lock-screen-who { margin: 0 0 4px; font-size: 15px; }
+.lock-screen-hint { margin: 0 0 18px; font-size: 13.5px; color: var(--color-text-muted); }
+.lock-screen-input {
+  width: 100%;
+  height: 52px;
+  font-size: 18px;
+  text-align: center;
+  letter-spacing: 2px;
+}
+.lock-screen-error {
+  margin-top: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-danger);
+}
+.lock-screen-unlock {
+  width: 100%;
+  height: 50px;
+  margin-top: 14px;
+  justify-content: center;
+  font-size: 16px;
+}
+.lock-screen-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+}
+.lock-screen-links .btn {
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+}

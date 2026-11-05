@@ -14,8 +14,45 @@ import {
   Eye,
   EyeOff
 } from 'lucide-react';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import '../../../styles/layout.css';
 import '../../../styles/components.css';
+
+// A password box with the usual eye button inside it, to show or hide what was typed
+function PasswordField({ id, value, onChange, placeholder, autoFocus }: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  autoFocus?: boolean;
+}) {
+  const [shown, setShown] = useState(false);
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        id={id}
+        type={shown ? 'text' : 'password'}
+        className="form-input"
+        placeholder={placeholder}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        required
+        autoFocus={autoFocus}
+        autoComplete="new-password"
+        style={{ height: 42, paddingRight: 46 }}
+      />
+      <button
+        type="button"
+        onClick={() => setShown(s => !s)}
+        aria-label={shown ? 'Hide password' : 'Show password'}
+        title={shown ? 'Hide password' : 'Show password'}
+        style={{ position: 'absolute', right: 2, top: '50%', transform: 'translateY(-50%)', width: 42, height: 38, border: 'none', background: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-muted)', cursor: 'pointer' }}
+      >
+        {shown ? <EyeOff size={18} /> : <Eye size={18} />}
+      </button>
+    </div>
+  );
+}
 
 export default function LoginPage() {
   const { login, badgeLogin, completePasswordReset, completePinReset } = useAuth();
@@ -38,8 +75,6 @@ export default function LoginPage() {
   // Password Reset Fields
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   // Terminal PIN Reset Fields
   const [resetPinStep, setResetPinStep] = useState<'ENTER_NEW' | 'CONFIRM_NEW'>('ENTER_NEW');
@@ -48,6 +83,12 @@ export default function LoginPage() {
 
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // Why this device was signed out (by an administrator, the device limit, ...), shown once
+  const [notice, setNotice] = useState('');
+  useEffect(() => {
+    const reason = sessionStorage.getItem('wms_signed_out');
+    if (reason) { setNotice(reason); sessionStorage.removeItem('wms_signed_out'); }
+  }, []);
 
   // References for terminal barcode scanner workflow
   const badgeInputRef = useRef<HTMLInputElement>(null);
@@ -118,9 +159,9 @@ export default function LoginPage() {
   };
 
   // Step 1: Proceed from Barcode Scan to 6-Digit PIN
-  const handleProceedToPin = (e?: React.FormEvent) => {
+  const handleProceedToPin = (e?: React.FormEvent, scanned = badgeCode) => {
     if (e) e.preventDefault();
-    const cleanBadge = badgeCode.trim().toUpperCase();
+    const cleanBadge = scanned.trim().toUpperCase();
     if (!cleanBadge) {
       setError('Please scan employee badge barcode or enter ID');
       badgeInputRef.current?.focus();
@@ -360,6 +401,12 @@ export default function LoginPage() {
           </div>
         )}
 
+        {notice && !error && (
+          <div className="alert alert-warning" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, fontSize: 13 }}>
+            <AlertCircle size={16} style={{ flexShrink: 0 }} />
+            <span>{notice}</span>
+          </div>
+        )}
         {error && (
           <div className="alert alert-danger" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, fontSize: 13 }}>
             <AlertCircle size={16} style={{ flexShrink: 0 }} />
@@ -467,6 +514,9 @@ export default function LoginPage() {
                       }}
                     />
                     <ScanLine size={18} style={{ position: 'absolute', left: 12, color: 'var(--color-brand)', pointerEvents: 'none' }} />
+                    <div style={{ marginLeft: 8 }}>
+                      <CameraScanButton size={42} title="Scan your badge with the camera" onScan={code => handleProceedToPin(undefined, code)} />
+                    </div>
                   </div>
                 </div>
 
@@ -739,52 +789,17 @@ export default function LoginPage() {
             </div>
 
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <label className="form-label" style={{ fontSize: 13, marginBottom: 0 }}>
-                  New Password <span className="required">*</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowNewPassword(!showNewPassword)}
-                  style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5 }}
-                >
-                  {showNewPassword ? <><EyeOff size={13} /> Hide</> : <><Eye size={13} /> Show</>}
-                </button>
-              </div>
-              <input
-                type={showNewPassword ? 'text' : 'password'}
-                className="form-input"
-                placeholder="Minimum 8 characters"
-                value={newPassword}
-                onChange={e => setNewPassword(e.target.value)}
-                required
-                autoFocus
-                style={{ height: 42 }}
-              />
+              <label className="form-label" style={{ fontSize: 13, marginBottom: 4 }} htmlFor="new-password">
+                New Password <span className="required">*</span>
+              </label>
+              <PasswordField id="new-password" placeholder="Minimum 8 characters" value={newPassword} onChange={setNewPassword} autoFocus />
             </div>
 
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <label className="form-label" style={{ fontSize: 13, marginBottom: 0 }}>
-                  Confirm New Password <span className="required">*</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11.5 }}
-                >
-                  {showConfirmPassword ? <><EyeOff size={13} /> Hide</> : <><Eye size={13} /> Show</>}
-                </button>
-              </div>
-              <input
-                type={showConfirmPassword ? 'text' : 'password'}
-                className="form-input"
-                placeholder="Re-enter new password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                required
-                style={{ height: 42 }}
-              />
+              <label className="form-label" style={{ fontSize: 13, marginBottom: 4 }} htmlFor="confirm-password">
+                Confirm New Password <span className="required">*</span>
+              </label>
+              <PasswordField id="confirm-password" placeholder="Re-enter new password" value={confirmPassword} onChange={setConfirmPassword} />
             </div>
 
             <button
@@ -804,7 +819,7 @@ export default function LoginPage() {
               type="button"
               className="btn btn-secondary"
               onClick={handleCancelReset}
-              style={{ height: 40, fontSize: 13 }}
+              style={{ height: 40, fontSize: 13, justifyContent: 'center' }}
             >
               Cancel & Back to Login
             </button>

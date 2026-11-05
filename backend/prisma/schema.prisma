@@ -65,6 +65,7 @@ model User {
   mustResetPassword Boolean  @default(true) @map("must_reset_password")
   mustResetPin      Boolean  @default(true) @map("must_reset_pin")
   sessionsValidFrom DateTime? @map("sessions_valid_from") // sessions started before this (password/PIN change) are signed out
+  maxSessions  Int?     @default(2) @map("max_sessions") // devices signed in at once (2 unless changed); null = no limit. A new sign-in beyond it ends the least recently used
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -82,8 +83,28 @@ model User {
   stockCountLocations  StockCountLocation[]
   customerReturns      CustomerReturn[]
   supplierReturns      SupplierReturn[]
+  sessions             UserSession[]
 
   @@map("users")
+}
+
+// One signed-in device. The login token carries its id; signing out a device (or a newer sign-in
+// beyond the user's device limit) ends it at once. Rows past their end are cleared after 30 days.
+model UserSession {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  device        String    // e.g. "Edge on Windows", read from the browser
+  ipAddress     String?   @map("ip_address")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  lastSeenAt    DateTime  @default(now()) @map("last_seen_at")
+  expiresAt     DateTime  @map("expires_at")
+  endedAt       DateTime? @map("ended_at")
+  endedReason   String?   @map("ended_reason") // SIGNED_OUT, LOGOUT, DEVICE_LIMIT, UNLOCK_FAILED
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_sessions")
 }
 
 // Unfinished Direct Inward work (general info, imported Excel items, lumps not yet on a GRN),

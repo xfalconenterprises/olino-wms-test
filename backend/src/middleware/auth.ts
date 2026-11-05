@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
+import { SESSION_HOURS, checkSession } from '../utils/sessions';
 
 export type UserModule = 'PURCHASE' | 'WAREHOUSE' | 'INVENTORY' | 'ADMINISTRATION';
 
@@ -10,6 +11,7 @@ export interface TokenPayload {
   userId: string;
   username: string;
   scope?: 'reset';
+  sid?: string;     // the signed-in device (user_sessions row); reset tokens have none
   iat?: number;
   exp?: number;
 }
@@ -28,11 +30,12 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthUser;
+      sessionId?: string;
     }
   }
 }
 
-export const SESSION_DURATION = '8h';
+export const SESSION_DURATION = `${SESSION_HOURS}h`;
 export const MIN_PASSWORD_LENGTH = 8;
 
 /** Sessions started before this moment end (set when a password or PIN is changed or reset). */
@@ -52,8 +55,8 @@ export function getJwtSecret(): string {
 // Fail at startup rather than on the first login
 getJwtSecret();
 
-export function signToken(user: { id: string; username: string }, scope?: 'reset'): string {
-  const payload: TokenPayload = { userId: user.id, username: user.username, ...(scope && { scope }) };
+export function signToken(user: { id: string; username: string }, scope?: 'reset', sessionId?: string): string {
+  const payload: TokenPayload = { userId: user.id, username: user.username, ...(scope && { scope }), ...(sessionId && { sid: sessionId }) };
   return jwt.sign(payload, getJwtSecret(), { expiresIn: SESSION_DURATION });
 }
 
@@ -115,8 +118,16 @@ async function authenticate(req: Request, res: Response, next: NextFunction, all
     res.status(401).json({ error: 'Unauthorized — user not found or deactivated' });
     return;
   }
+  // A device that was signed out (by an administrator, the device limit, a password change or a
+  // failed unlock) stops here, with the reason
+  if (decoded.sid) {
+    const session = await checkSession(decoded.sid, user.id);
+    if (!session.ok) { res.status(401).json({ error: session.message }); return; }
+    req.sessionId = decoded.sid;
+  }
+  // Logins from before devices were tracked end at a password/PIN change or Sign out all devices
   if (user.sessionsValidFrom && (decoded.iat ?? 0) < user.sessionsValidFrom.getTime() / 1000) {
-    res.status(401).json({ error: 'Your password or PIN was changed. Please sign in again.' });
+    res.status(401).json({ error: 'Your session has ended. Please sign in again.' });
     return;
   }
 

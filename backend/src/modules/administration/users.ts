@@ -3,6 +3,7 @@ import argon2 from 'argon2';
 import prisma from '../../lib/prisma';
 import { code128Png } from '../../utils/barcode';
 import { ownPasswordRefusal } from './cost-prices';
+import { activeSessionsWhere, endAllSessions, endSession, trimSessions } from '../../utils/sessions';
 import { requireAuth, requirePermission, userHasPermission, hasCostAccess, COST_PRICE_PERMISSION, MIN_PASSWORD_LENGTH, sessionCutoff, type AuthUser, type UserModule } from '../../middleware/auth';
 
 const router = Router();
@@ -60,8 +61,10 @@ router.get('/', requirePermission('admin.users', 'admin.dashboard'), async (req:
       permissions: true,
       mustResetPassword: true,
       mustResetPin: true,
+      maxSessions: true,
       isActive: true,
-      createdAt: true
+      createdAt: true,
+      _count: { select: { sessions: { where: { endedAt: null, expiresAt: { gt: new Date() } } } } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -78,6 +81,8 @@ router.get('/', requirePermission('admin.users', 'admin.dashboard'), async (req:
     permissions: u.permissions || [],
     mustResetPassword: u.mustResetPassword,
     mustResetPin: u.mustResetPin,
+    maxSessions: u.maxSessions,
+    activeSessions: u._count.sessions,
     isActive: u.isActive,
     createdAt: u.createdAt
   }));
@@ -112,12 +117,24 @@ router.get('/:id/badge-barcode', requirePermission('export.employee_barcodes'), 
 
 const USER_CREATED_SELECT = {
   id: true, name: true, username: true, phone: true, badgeCode: true, pinHash: true, modules: true, permissions: true,
-  mustResetPassword: true, mustResetPin: true, isActive: true, createdAt: true,
+  mustResetPassword: true, mustResetPin: true, maxSessions: true, isActive: true, createdAt: true,
 } as const;
+
+// Devices a user may be signed in on at once: blank = no limit, otherwise 1 to 20; new users get 2
+const DEFAULT_DEVICE_LIMIT = 2;
+const DEVICE_LIMIT_ERROR = 'Devices at the same time must be blank (no limit) or a number from 1 to 20.';
+function parseDeviceLimit(value: unknown): number | null | undefined {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= 20 ? n : undefined;
+}
 
 // POST /api/users
 router.post('/', requirePermission('admin.users'), async (req: Request, res: Response) => {
-  const { name, username, password, pin, modules, permissions, phone, confirmPassword } = req.body;
+  const { name, username, password, pin, modules, permissions, phone, confirmPassword, maxSessions } = req.body;
+
+  const deviceLimit = maxSessions === undefined ? DEFAULT_DEVICE_LIMIT : parseDeviceLimit(maxSessions);
+  if (deviceLimit === undefined) { res.status(400).json({ error: DEVICE_LIMIT_ERROR }); return; }
 
   if (!name || !username || !password || !Array.isArray(modules) || modules.length === 0) {
     res.status(400).json({ error: 'Name, username, password, and at least one module are required' });
@@ -163,6 +180,7 @@ router.post('/', requirePermission('admin.users'), async (req: Request, res: Res
     permissions: Array.isArray(permissions) ? permissions : [],
     mustResetPassword: true,
     mustResetPin: pinHash ? true : false,
+    maxSessions: deviceLimit,
   };
   // The Employee ID is assigned here. Two users saved at the same moment could get the same next
   // ID; the unique index refuses the second, which then takes the following number.
@@ -187,6 +205,7 @@ router.post('/', requirePermission('admin.users'), async (req: Request, res: Res
     permissions: user.permissions || [],
     mustResetPassword: user.mustResetPassword,
     mustResetPin: user.mustResetPin,
+    maxSessions: user.maxSessions,
     isActive: user.isActive,
     createdAt: user.createdAt
   });
@@ -195,7 +214,7 @@ router.post('/', requirePermission('admin.users'), async (req: Request, res: Res
 // PATCH /api/users/:id
 router.patch('/:id', requirePermission('admin.users'), async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, modules, permissions, isActive, password, pin, phone, confirmPassword } = req.body;
+  const { name, modules, permissions, isActive, password, pin, phone, confirmPassword, maxSessions } = req.body;
 
   // Safeguard: Prevent self-deactivation and lockout of the last active user manager
   if (isActive === false && req.user?.userId === id) {
@@ -252,6 +271,11 @@ router.patch('/:id', requirePermission('admin.users'), async (req: Request, res:
   if (Array.isArray(modules) && modules.length > 0) updateData.modules = modules as UserModule[];
   if (Array.isArray(permissions)) updateData.permissions = permissions;
   if (isActive !== undefined) updateData.isActive = isActive;
+  if (maxSessions !== undefined) {
+    const deviceLimit = parseDeviceLimit(maxSessions);
+    if (deviceLimit === undefined) { res.status(400).json({ error: DEVICE_LIMIT_ERROR }); return; }
+    updateData.maxSessions = deviceLimit;
+  }
   if (password) {
     if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
       res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long` });
@@ -293,10 +317,17 @@ router.patch('/:id', requirePermission('admin.users'), async (req: Request, res:
       permissions: true,
       mustResetPassword: true,
       mustResetPin: true,
+      maxSessions: true,
+      sessionsValidFrom: true,
       isActive: true,
       createdAt: true
     },
   });
+
+  // A new password or PIN, or deactivation, ends every device; a lower device limit ends the least recently used ones
+  if (updateData.sessionsValidFrom) await endAllSessions(user.id, 'PASSWORD_CHANGED');
+  else if (isActive === false) await endAllSessions(user.id, 'SIGNED_OUT');
+  else if (user.maxSessions) await trimSessions(user, user.maxSessions, 'DEVICE_LIMIT');
 
   res.json({
     id: user.id,
@@ -309,9 +340,43 @@ router.patch('/:id', requirePermission('admin.users'), async (req: Request, res:
     permissions: user.permissions || [],
     mustResetPassword: user.mustResetPassword,
     mustResetPin: user.mustResetPin,
+    maxSessions: user.maxSessions,
     isActive: user.isActive,
     createdAt: user.createdAt
   });
+});
+
+// ─── Signed-in devices ───────────────────────────────────────────────────────
+
+// GET /api/users/:id/sessions — the devices a user is signed in on now, most recently used first
+router.get('/:id/sessions', requirePermission('admin.users'), async (req: Request, res: Response) => {
+  const user = await prisma.user.findUnique({ where: { id: String(req.params.id) }, select: { id: true, sessionsValidFrom: true } });
+  if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+  const sessions = await prisma.userSession.findMany({
+    where: activeSessionsWhere(user.id, user.sessionsValidFrom),
+    orderBy: { lastSeenAt: 'desc' },
+    select: { id: true, device: true, ipAddress: true, createdAt: true, lastSeenAt: true },
+  });
+  res.json(sessions.map(s => ({ ...s, current: s.id === req.sessionId })));
+});
+
+// DELETE /api/users/:id/sessions/:sessionId — sign one device out
+router.delete('/:id/sessions/:sessionId', requirePermission('admin.users'), async (req: Request, res: Response) => {
+  const session = await prisma.userSession.findUnique({ where: { id: String(req.params.sessionId) }, select: { userId: true } });
+  if (!session || session.userId !== String(req.params.id)) { res.status(404).json({ error: 'Device not found' }); return; }
+  await endSession(String(req.params.sessionId), 'SIGNED_OUT');
+  res.json({ success: true });
+});
+
+// POST /api/users/:id/sign-out-all — sign the user out on every device (lost phone, someone leaving)
+router.post('/:id/sign-out-all', requirePermission('admin.users'), async (req: Request, res: Response) => {
+  const target = await prisma.user.findUnique({ where: { id: String(req.params.id) }, select: { id: true, username: true } });
+  if (!target) { res.status(404).json({ error: 'User not found' }); return; }
+  const ended = await endAllSessions(target.id, 'SIGNED_OUT');
+  // Also ends logins from before devices were tracked
+  await prisma.user.update({ where: { id: target.id }, data: { sessionsValidFrom: sessionCutoff() } });
+  console.log(`[AUTH] '${req.user!.username}' signed '${target.username}' out of all devices (${ended})`);
+  res.json({ success: true, ended });
 });
 
 export default router;

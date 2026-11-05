@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useSession } from '../../hooks/useSession';
+import LockScreen from './LockScreen';
 import { hasPermission, canAccessApp, COST_PRICE_PERMISSION, MODULE_LABELS, type UserModule, type AppName } from '../../utils/roles';
 import '../../styles/layout.css';
 
@@ -96,14 +97,8 @@ export default function Layout({ children }: { children: ReactNode }) {
     });
   };
 
-  const handleExpire = () => {
-    logout();
-  };
-
-  const { showWarning, minutesRemaining, extendSession } = useSession(
-    user?.modules as UserModule[] | null,
-    handleExpire
-  );
+  // Floor terminals lock when their time is up; the page stays as it is underneath
+  const { showWarning, minutesRemaining, extendSession, isLocked } = useSession(user?.modules as UserModule[] | null);
 
   if (!user) return null;
 
@@ -157,7 +152,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="app-shell">
+    // While locked nothing behind the lock screen can be clicked or typed into (not even by a scanner)
+    <div className="app-shell" inert={isLocked}>
       {/* ── Sidebar ── */}
       <aside className={`sidebar ${isCollapsed ? 'collapsed' : ''}`}>
         
@@ -287,12 +283,14 @@ export default function Layout({ children }: { children: ReactNode }) {
       {/* ── Session Warning ── */}
       {showWarning && (
         <div className="session-warning" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Clock size={16} /> Session expires in {minutesRemaining} min
+          <Clock size={16} /> Screen locks in {minutesRemaining} min
           <button className="btn btn-sm btn-secondary" onClick={extendSession}>
-            Stay Logged In
+            Keep working
           </button>
         </div>
       )}
+
+      {isLocked && <LockScreen user={user} onUnlocked={extendSession} onSignOut={logout} />}
     </div>
   );
 }

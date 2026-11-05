@@ -24,7 +24,8 @@ import {
   Package,
   ClipboardCheck,
   LayoutDashboard,
-  LockKeyhole
+  LockKeyhole,
+  MonitorSmartphone
 } from 'lucide-react';
 import type { UserModule } from '../../../utils/roles';
 import { 
@@ -40,6 +41,7 @@ import {
 import { useAuth } from '../../../hooks/useAuth';
 import { formatDate } from '../../../utils/format';
 import { apiErrorMessage, downloadFromApi } from '../../../utils/download';
+import UserDevicesModal from './UserDevicesModal';
 import '../../../styles/components.css';
 
 interface UserItem {
@@ -55,7 +57,12 @@ interface UserItem {
   permissions: string[];
   isActive: boolean;
   createdAt: string;
+  maxSessions?: number | null;   // devices at the same time; null = no limit
+  activeSessions?: number;       // devices signed in now
 }
+
+// Choices for "Devices at the same time" ('' = no limit)
+const DEVICE_LIMIT_OPTIONS = ['', '1', '2', '3', '5'];
 
 type ModalTab = 'PROFILE' | 'PERMISSIONS' | 'WAREHOUSE';
 
@@ -137,6 +144,8 @@ export default function UsersPage() {
   const [permissions, setPermissions] = useState<string[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string>('CUSTOM');
   const [isActive, setIsActive] = useState(true);
+  const [maxSessions, setMaxSessions] = useState('');
+  const [devicesFor, setDevicesFor] = useState<UserItem | null>(null);
   // Confidential cost access is kept apart from the module / tab permissions (and from '*')
   const [costAccess, setCostAccess] = useState(false);
   const [costPassword, setCostPassword] = useState('');
@@ -227,6 +236,7 @@ export default function UsersPage() {
     setPin('');
     setShowPinText(false);
     setIsActive(true);
+    setMaxSessions('2');   // every new user starts on 2 devices at the same time
     setModules([]);
     setPermissions([]);
     setCostAccess(false);
@@ -248,6 +258,7 @@ export default function UsersPage() {
     setPin('');
     setShowPinText(false);
     setIsActive(u.isActive);
+    setMaxSessions(u.maxSessions ? String(u.maxSessions) : '');
 
     const userPerms = (u.permissions || []).filter(k => k !== COST_PRICE_PERMISSION);
     setModules(u.modules || []);
@@ -447,6 +458,7 @@ export default function UsersPage() {
           modules,
           permissions: withCostAccess,
           isActive,
+          maxSessions: maxSessions ? Number(maxSessions) : null,
           ...(costChanged && { confirmPassword: costPassword }),
         };
         if (password) payload.password = password;
@@ -474,6 +486,7 @@ export default function UsersPage() {
           pin: finalPin,
           modules,
           permissions: withCostAccess,
+          maxSessions: maxSessions ? Number(maxSessions) : null,
           ...(costChanged && { confirmPassword: costPassword }),
         });
       }
@@ -908,6 +921,17 @@ export default function UsersPage() {
                             {exportingBadges === u.id ? <span className="spinner" /> : <Download size={13} />} Barcode
                           </button>
                         )}
+                        {hasPermission(me, 'admin.users') && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => setDevicesFor(u)}
+                            title="Devices this user is signed in on"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 9px', height: 32 }}
+                          >
+                            <MonitorSmartphone size={13} /> {u.activeSessions ?? 0}
+                          </button>
+                        )}
                         <button 
                           type="button"
                           className="btn btn-sm btn-secondary" 
@@ -1127,6 +1151,24 @@ export default function UsersPage() {
                           required={!editing}
                           style={{ height: 40 }}
                         />
+                      </div>
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: 13 }} htmlFor="user-max-sessions">Devices at the same time</label>
+                      <select
+                        id="user-max-sessions"
+                        className="form-select"
+                        value={maxSessions}
+                        onChange={e => setMaxSessions(e.target.value)}
+                        style={{ height: 40, maxWidth: 260 }}
+                      >
+                        {DEVICE_LIMIT_OPTIONS.map(v => (
+                          <option key={v} value={v}>{v === '' ? 'No limit' : `${v} device${v === '1' ? '' : 's'}${v === '2' ? ' (standard)' : ''}`}</option>
+                        ))}
+                      </select>
+                      <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                        Signing in on one more device signs out the device used least recently.
                       </div>
                     </div>
 
@@ -1628,6 +1670,7 @@ export default function UsersPage() {
         </div>
       )}
 
+      {devicesFor && <UserDevicesModal user={devicesFor} onClose={() => setDevicesFor(null)} onChanged={load} />}
     </div>
   );
 }

@@ -50,10 +50,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const startSession = useCallback((token: string, sessionUser: WmsUser) => {
+  // `method` lets the lock screen ask for the PIN when the person signed in with their badge
+  const startSession = useCallback((token: string, sessionUser: WmsUser, method: 'password' | 'badge') => {
     localStorage.setItem('wms_token', token);
     localStorage.setItem('wms_user', JSON.stringify(sessionUser));
     localStorage.setItem('wms_login_at', String(Date.now()));
+    localStorage.setItem('wms_login_method', method);
     setUser(sessionUser);
     navigate(getDefaultRoute(sessionUser));
   }, [navigate]);
@@ -63,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (data.mustResetPassword) {
       return { mustResetPassword: true, user: data.user, tempToken: data.token };
     }
-    startSession(data.token, data.user);
+    startSession(data.token, data.user, 'password');
     return { mustResetPassword: false, user: data.user };
   }, [startSession]);
 
@@ -72,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (data.mustResetPin) {
       return { mustResetPin: true, user: data.user, tempToken: data.token };
     }
-    startSession(data.token, data.user);
+    startSession(data.token, data.user, 'badge');
     return { mustResetPin: false, user: data.user };
   }, [startSession]);
 
@@ -82,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       { newPassword },
       { headers: { Authorization: `Bearer ${tempToken}` } }
     );
-    startSession(data.token, data.user);
+    startSession(data.token, data.user, 'password');
   }, [startSession]);
 
   const completePinReset = useCallback(async (newPin: string, tempToken: string) => {
@@ -91,13 +93,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       { newPin },
       { headers: { Authorization: `Bearer ${tempToken}` } }
     );
-    startSession(data.token, data.user);
+    startSession(data.token, data.user, 'badge');
   }, [startSession]);
 
   const logout = useCallback(() => {
+    // Ends this device's session on the server too, so it leaves the user's device list
+    const token = localStorage.getItem('wms_token');
+    if (token) api.post('/api/auth/logout', null, { headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
     localStorage.removeItem('wms_token');
     localStorage.removeItem('wms_user');
     localStorage.removeItem('wms_login_at');
+    localStorage.removeItem('wms_login_method');
     setUser(null);
     navigate('/login');
   }, [navigate]);

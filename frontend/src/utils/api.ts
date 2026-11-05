@@ -12,15 +12,17 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Login attempts report their own 401 errors on the login screen
-const LOGIN_PATHS = ['/api/auth/login', '/api/auth/badge-login'];
+// Login attempts report their own 401 errors on the login screen; signing out is already on its way there
+const LOGIN_PATHS = ['/api/auth/login', '/api/auth/badge-login', '/api/auth/logout'];
 
-// Handle 401 globally — clear token and redirect to login
+// Handle 401 globally — clear token and redirect to login, which says why (e.g. signed out by an administrator)
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     const isLoginAttempt = LOGIN_PATHS.includes(error.config?.url);
     if (error.response?.status === 401 && !isLoginAttempt) {
+      const reason = error.response?.data?.error;
+      if (typeof reason === 'string' && !reason.startsWith('Unauthorized')) sessionStorage.setItem('wms_signed_out', reason);
       localStorage.removeItem('wms_token');
       localStorage.removeItem('wms_user');
       window.location.href = '/login';
