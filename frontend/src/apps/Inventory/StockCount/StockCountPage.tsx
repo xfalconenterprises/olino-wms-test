@@ -7,6 +7,7 @@ import { hasPermission } from '../../../utils/roles';
 import { apiError } from '../../../utils/printPage';
 import { formatDateTime } from '../../../utils/format';
 import { allowsDecimals } from '../../../utils/units';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import '../../../styles/components.css';
 
 interface CountLocation { id: string; code: string; type: string; countedAt: string | null; countedBy: string | null; entryCount: number }
@@ -130,9 +131,9 @@ export default function StockCountPage() {
     setActive({ ...data.location, entries: data.entries });
   };
 
-  const scanItem = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const code = itemInput.trim().toUpperCase();
+  const scanItem = async (e?: React.FormEvent, scanned = itemInput) => {
+    e?.preventDefault();
+    const code = scanned.trim().toUpperCase();
     if (!code || !active) return;
     setError(''); setNotice('');
     try {
@@ -307,6 +308,7 @@ export default function StockCountPage() {
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input ref={locRef} autoFocus className="form-input" value={locInput} onChange={e => setLocInput(e.target.value)}
                       placeholder="e.g. A-B1-L1-P1" style={{ height: 42, fontSize: 15, fontFamily: 'monospace' }} />
+                    <CameraScanButton size={42} title="Scan the location with the camera" onScan={code => { setLocInput(code); openLocation(code); }} />
                     <button className="btn btn-secondary" type="submit"><ScanLine size={16} /></button>
                   </div>
                 </form>
@@ -348,8 +350,11 @@ export default function StockCountPage() {
                       ) : (
                         <form onSubmit={scanItem} style={{ marginBottom: 12 }}>
                           <label className="form-label">2. Scan each roll / box on this location</label>
-                          <input ref={itemRef} className="form-input" value={itemInput} onChange={e => setItemInput(e.target.value)}
-                            placeholder="Scan barcode" style={{ height: 42, fontSize: 15, fontFamily: 'monospace' }} />
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <input ref={itemRef} className="form-input" value={itemInput} onChange={e => setItemInput(e.target.value)}
+                              placeholder="Scan barcode" style={{ height: 42, fontSize: 15, fontFamily: 'monospace' }} />
+                            <CameraScanButton size={42} title="Scan the roll with the camera" onScan={code => scanItem(undefined, code)} />
+                          </div>
                         </form>
                       )
                     )}

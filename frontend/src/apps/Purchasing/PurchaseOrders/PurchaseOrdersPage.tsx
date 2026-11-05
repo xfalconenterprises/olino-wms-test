@@ -16,10 +16,6 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
-  Building2,
-  Tag,
-  Palette,
-  ExternalLink,
   Shirt,
   Package,
   Users,
@@ -28,7 +24,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { formatDate, formatDateTime } from '../../../utils/format';
-import { fabricCategoryLabel, formatTotals, unitLabel } from '../../../utils/units';
+import { allowsDecimals, fabricCategoryLabel, formatQty, formatTotals, unitLabel } from '../../../utils/units';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import '../../../styles/components.css';
@@ -118,6 +114,14 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 type ItemSortField = string;
+
+interface ItemColumn {
+  key: string;
+  label: string;
+  sort?: ItemSortField;
+  minWidth?: number;
+  cell: (item: FlattenedPOItem) => React.ReactNode;
+}
 
 interface PoDraftSummary {
   id: string;
@@ -356,10 +360,9 @@ export default function PurchaseOrdersPage() {
         return itemSortDirection === 'asc' ? aVal - bVal : bVal - aVal;
       }
 
-      if (itemSortField === 'orderedQty') {
-        aVal = a.orderedQty;
-        bVal = b.orderedQty;
-        return itemSortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+      if (itemSortField === 'orderedQty' || itemSortField === 'progress') {
+        const key = itemSortField as 'orderedQty' | 'progress';
+        return itemSortDirection === 'asc' ? a[key] - b[key] : b[key] - a[key];
       }
 
       if (itemSortField === 'shade' || itemSortField === 'artNo' || itemSortField === 'size') {
@@ -392,60 +395,79 @@ export default function PurchaseOrdersPage() {
     return itemSortDirection === 'asc' ? <ArrowUp size={13} color="var(--color-brand)" /> : <ArrowDown size={13} color="var(--color-brand)" />;
   };
 
-  const renderReachedBadge = (item: FlattenedPOItem) => {
-    if (item.reachedStatus === 'FULLY_REACHED') {
-      return (
-        <span style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-          padding: '3px 8px',
-          borderRadius: 4,
-          background: '#f0fdf4',
-          border: '1px solid #bbf7d0',
-          color: '#166534',
-          fontSize: 12,
-          fontWeight: 700,
-        }}>
-          <CheckCircle2 size={13} color="#16a34a" /> Reached &amp; In Stock
-        </span>
-      );
-    }
-    if (item.reachedStatus === 'PARTIALLY_REACHED') {
-      return (
-        <span style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-          padding: '3px 8px',
-          borderRadius: 4,
-          background: '#f0f9ff',
-          border: '1px solid #bae6fd',
-          color: '#0369a1',
-          fontSize: 12,
-          fontWeight: 700,
-        }}>
-          <AlertCircle size={13} color="#0284c7" /> Partially Reached ({Math.round(item.progress)}%)
-        </span>
-      );
-    }
+  // ── Items table: plain text throughout; the columns that identify an item depend on its category ──
+  const qtyNumber = (n: number, uom: string) => String(allowsDecimals(uom) ? Math.round(n * 100) / 100 : Math.round(n));
+  const mainText = (text: string, sub?: string) => (
+    <>
+      {text && <div style={{ fontWeight: 600, color: '#0f172a' }}>{text}</div>}
+      {sub && <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 1 }}>{sub}</div>}
+    </>
+  );
+  const plain = (text: string, mono = false) => text
+    ? <span style={{ color: '#1e293b', fontWeight: 500, ...(mono && { fontFamily: 'monospace' }) }}>{text}</span>
+    : null;
+
+  const clientCell = (item: FlattenedPOItem) => {
+    if (item.allocations.length === 0) return <span style={{ color: 'var(--color-text-muted)' }}>General Stock</span>;
+    // One client taking the whole line needs no figures; the Received column has them
+    const whole = item.allocations.length === 1 && Math.abs(item.allocations[0].allocatedQty - item.orderedQty) < 0.005;
+    return item.allocations.map(a => (
+      <div key={a.id} style={{ lineHeight: 1.5 }}>
+        <span style={{ fontWeight: 500, color: '#1e293b' }}>{a.clientName}</span>
+        {!whole && (
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 12, marginLeft: 6, whiteSpace: 'nowrap' }}>
+            {a.receivedQty > 0 ? `${qtyNumber(a.receivedQty, item.uom)} / ` : ''}{formatQty(a.allocatedQty, item.uom)}
+          </span>
+        )}
+      </div>
+    ));
+  };
+
+  const ARRIVAL = {
+    NOT_REACHED: { text: 'Not reached', color: '#b45309', bar: '#cbd5e1' },
+    PARTIALLY_REACHED: { text: 'Partly reached', color: '#0369a1', bar: '#0284c7' },
+    FULLY_REACHED: { text: 'Fully reached', color: '#15803d', bar: '#16a34a' },
+  } as const;
+  const receivedCell = (item: FlattenedPOItem) => {
+    const arrival = ARRIVAL[item.reachedStatus];
     return (
-      <span style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 5,
-        padding: '3px 8px',
-        borderRadius: 4,
-        background: '#fffbeb',
-        border: '1px solid #fde68a',
-        color: '#92400e',
-        fontSize: 12,
-        fontWeight: 700,
-      }}>
-        <Clock size={13} color="#d97706" /> Not Reached (Pending)
-      </span>
+      <>
+        <div style={{ whiteSpace: 'nowrap' }}>
+          <strong style={{ color: '#0f172a' }}>{qtyNumber(item.receivedQty, item.uom)}</strong>
+          <span style={{ color: 'var(--color-text-muted)' }}> / {formatQty(item.orderedQty, item.uom)}</span>
+        </div>
+        <div style={{ height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden', margin: '5px 0 4px' }}>
+          <div style={{ height: '100%', width: `${Math.min(item.progress, 100)}%`, background: arrival.bar }} />
+        </div>
+        <div style={{ fontSize: 11.5, fontWeight: 600, color: arrival.color }}>
+          {arrival.text}{item.reachedStatus === 'PARTIALLY_REACHED' ? ` · ${Math.floor(item.progress)}%` : ''}
+        </div>
+      </>
     );
   };
+
+  const identityColumns: ItemColumn[] = itemCategoryTab === 'FABRIC' ? [
+    { key: 'item', label: 'Brand / Quality', sort: 'brand', minWidth: 170, cell: i => mainText(i.brand, [i.quality, i.qualityName].filter(Boolean).join(' · ')) },
+    { key: 'shade', label: 'Shade', sort: 'shade', cell: i => plain(i.shade) },
+    { key: 'category', label: 'Fabric Type', sort: 'category', cell: i => plain(fabricCategoryLabel(i.category)) },
+  ] : itemCategoryTab === 'READY_MADE' ? [
+    { key: 'item', label: 'Item', sort: 'name', minWidth: 170, cell: i => mainText(i.name || i.brand, i.category) },
+    { key: 'shade', label: 'Color / Shade', sort: 'shade', cell: i => plain(i.shade) },
+    { key: 'artNo', label: 'Art No', sort: 'artNo', cell: i => plain(i.artNo, true) },
+    { key: 'size', label: 'Size', sort: 'size', cell: i => plain(i.size) },
+  ] : [
+    { key: 'category', label: 'Category', sort: 'category', cell: i => plain(i.category) },
+    { key: 'item', label: 'Item', sort: 'name', minWidth: 150, cell: i => mainText(i.name || i.quality) },
+    { key: 'shade', label: 'Color', sort: 'shade', cell: i => plain(i.shade) },
+    { key: 'size', label: 'Size / Spec', sort: 'size', cell: i => plain(i.size) },
+  ];
+  const itemColumns: ItemColumn[] = [
+    ...identityColumns,
+    { key: 'po', label: 'PO / Supplier', sort: 'poNumber', minWidth: 150, cell: i => mainText(i.poNumber, i.supplierName) },
+    { key: 'client', label: 'Client', minWidth: 150, cell: clientCell },
+    { key: 'received', label: 'Received', sort: 'progress', minWidth: 170, cell: receivedCell },
+    { key: 'expected', label: 'Expected', sort: 'expectedDate', cell: i => <span style={{ whiteSpace: 'nowrap', color: '#475569' }}>{formatDate(i.expectedDate)}</span> },
+  ];
 
   // Order Counts
   const totalCount = pos.length;
@@ -1021,523 +1043,36 @@ export default function PurchaseOrdersPage() {
             </div>
           ) : (
             <div className="table-wrapper">
-              {/* ─── 1. FABRIC TABLE ─────────────────────────────────── */}
-              {itemCategoryTab === 'FABRIC' && (
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 45, textAlign: 'center' }}>#</th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('brand')} title="Sort by Brand">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Tag size={13} color="var(--color-brand)" />
-                          <span>Brand</span>
-                          {renderSortIcon('brand')}
-                        </div>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 40, textAlign: 'center' }}>#</th>
+                    {itemColumns.map(col => (
+                      <th
+                        key={col.key}
+                        onClick={col.sort ? () => handleSortClick(col.sort!) : undefined}
+                        title={col.sort ? `Sort by ${col.label}` : undefined}
+                        style={{ cursor: col.sort ? 'pointer' : undefined, userSelect: 'none', whiteSpace: 'nowrap', minWidth: col.minWidth }}
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                          {col.label}
+                          {col.sort && renderSortIcon(col.sort)}
+                        </span>
                       </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('quality')} title="Sort by Quality">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Quality</span>
-                          {renderSortIcon('quality')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('shade')} title="Sort by Shade">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Palette size={13} color="var(--color-brand)" />
-                          <span>Shade</span>
-                          {renderSortIcon('shade')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('category')} title="Sort by Fabric Type">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Fabric Type</span>
-                          {renderSortIcon('category')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('poNumber')} title="Sort by PO#">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Purchase Order</span>
-                          {renderSortIcon('poNumber')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('supplierName')} title="Sort by Supplier">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Building2 size={13} />
-                          <span>Supplier</span>
-                          {renderSortIcon('supplierName')}
-                        </div>
-                      </th>
-                      <th style={{ minWidth: 160 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Users size={13} color="var(--color-brand)" />
-                          <span>Client Allocation</span>
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('orderedQty')} title="Sort by quantity">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Ordered vs Reached</span>
-                          {renderSortIcon('orderedQty')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('reachedStatus')} title="Sort by Arrival Status">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Has It Reached?</span>
-                          {renderSortIcon('reachedStatus')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('expectedDate')} title="Sort by Expected Date">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Expected Date</span>
-                          {renderSortIcon('expectedDate')}
-                        </div>
-                      </th>
-                      <th style={{ textAlign: 'right' }}>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAndSortedItems.map((item, idx) => (
-                      <tr key={item.lineId} className="hover-row" onClick={() => navigate(`/purchase-orders/${item.poId}/view`)} style={{ cursor: 'pointer' }}>
-                        <td style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
-                        <td>{item.brand && <span style={{ fontWeight: 700, color: '#0f172a' }}>{item.brand}</span>}</td>
-                        <td>
-                          {item.quality && <span style={{ fontWeight: 500, color: '#1e293b' }}>{item.quality}</span>}
-                          {item.qualityName && <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{item.qualityName}</div>}
-                        </td>
-                        <td>
-                          {item.shade && (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
-                              {item.shade}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          {fabricCategoryLabel(item.category) && (
-                            <span style={{ display: 'inline-flex', padding: '2px 8px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', fontSize: 11.5, fontWeight: 600 }}>
-                              {fabricCategoryLabel(item.category)}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <span style={{ fontWeight: 700, color: 'var(--color-brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            {item.poNumber}
-                            <ExternalLink size={11} style={{ opacity: 0.6 }} />
-                          </span>
-                        </td>
-                        <td><div style={{ fontWeight: 500, fontSize: 13, color: '#334155' }}>{item.supplierName}</div></td>
-                        <td>
-                          {item.allocations && item.allocations.length > 0 ? (
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                              {item.allocations.map((a, aIdx) => (
-                                <span
-                                  key={aIdx}
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    fontSize: 11,
-                                    padding: '2px 6px',
-                                    borderRadius: 4,
-                                    background: a.receivedQty >= a.allocatedQty ? '#f0fdf4' : '#eff6ff',
-                                    color: a.receivedQty >= a.allocatedQty ? '#166534' : '#1e40af',
-                                    border: `1px solid ${a.receivedQty >= a.allocatedQty ? '#bbf7d0' : '#bfdbfe'}`
-                                  }}
-                                  title={`${a.clientName}: ${a.receivedQty}/${a.allocatedQty} ${unitLabel(item.uom)}`}
-                                >
-                                  <Users size={10} />
-                                  <strong>{a.clientName}:</strong> {a.allocatedQty} {unitLabel(item.uom)}
-                                  {a.receivedQty > 0 && <span style={{ opacity: 0.75 }}>({a.receivedQty} {unitLabel(item.uom)} in)</span>}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>General Stock</span>
-                          )}
-                        </td>
-                        <td style={{ minWidth: 150 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-                            <span style={{ fontWeight: 700, color: item.reachedStatus === 'FULLY_REACHED' ? '#166534' : '#0f172a' }}>
-                              {item.receivedQty} {unitLabel(item.uom)}
-                            </span>
-                            <span style={{ color: '#64748b' }}>/ {item.orderedQty} {unitLabel(item.uom)}</span>
-                          </div>
-                          <div style={{ width: '100%', height: 5, background: '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
-                            <div style={{
-                              height: '100%',
-                              background: item.reachedStatus === 'FULLY_REACHED' ? '#16a34a' : item.reachedStatus === 'PARTIALLY_REACHED' ? '#0284c7' : '#cbd5e1',
-                              width: `${Math.min(item.progress, 100)}%`,
-                            }} />
-                          </div>
-                        </td>
-                        <td>{renderReachedBadge(item)}</td>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: '#64748b' }}>
-                            <Calendar size={13} />
-                            {formatDate(item.expectedDate)}
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            onClick={e => { e.stopPropagation(); navigate(`/purchase-orders/${item.poId}/view`); }}
-                            style={{ padding: '3px 8px', height: 28, fontSize: 11.5 }}
-                          >
-                            View PO
-                          </button>
-                        </td>
-                      </tr>
                     ))}
-                  </tbody>
-                </table>
-              )}
-
-              {/* ─── 2. READY-MADE TABLE ─────────────────────────────── */}
-              {itemCategoryTab === 'READY_MADE' && (
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 45, textAlign: 'center' }}>#</th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('name')} title="Sort by Item Name">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Shirt size={13} color="var(--color-brand)" />
-                          <span>Item Name</span>
-                          {renderSortIcon('name')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('category')} title="Sort by Fabric Type">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Fabric Type</span>
-                          {renderSortIcon('category')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('shade')} title="Sort by Color / Shade">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Palette size={13} color="var(--color-brand)" />
-                          <span>Color / Shade</span>
-                          {renderSortIcon('shade')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('artNo')} title="Sort by Art No">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Art No</span>
-                          {renderSortIcon('artNo')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('size')} title="Sort by Size">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Size</span>
-                          {renderSortIcon('size')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('poNumber')} title="Sort by PO#">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Purchase Order</span>
-                          {renderSortIcon('poNumber')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('supplierName')} title="Sort by Supplier">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Building2 size={13} />
-                          <span>Supplier</span>
-                          {renderSortIcon('supplierName')}
-                        </div>
-                      </th>
-                      <th style={{ minWidth: 160 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Users size={13} color="var(--color-brand)" />
-                          <span>Client Allocation</span>
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('orderedQty')} title="Sort by Pieces">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Ordered vs Reached (Pcs)</span>
-                          {renderSortIcon('orderedQty')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('reachedStatus')} title="Sort by Arrival Status">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Has It Reached?</span>
-                          {renderSortIcon('reachedStatus')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('expectedDate')} title="Sort by Expected Date">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Expected Date</span>
-                          {renderSortIcon('expectedDate')}
-                        </div>
-                      </th>
-                      <th style={{ textAlign: 'right' }}>Action</th>
+                    <th style={{ width: 28 }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredAndSortedItems.map((item, idx) => (
+                    <tr key={item.lineId} className="hover-row" onClick={() => navigate(`/purchase-orders/${item.poId}/view`)} style={{ cursor: 'pointer' }} title="Open the purchase order">
+                      <td style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
+                      {itemColumns.map(col => <td key={col.key}>{col.cell(item)}</td>)}
+                      <td style={{ color: '#94a3b8', textAlign: 'right' }}><ChevronRight size={16} /></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAndSortedItems.map((item, idx) => (
-                      <tr key={item.lineId} className="hover-row" onClick={() => navigate(`/purchase-orders/${item.poId}/view`)} style={{ cursor: 'pointer' }}>
-                        <td style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
-                        <td><span style={{ fontWeight: 700, color: '#0f172a' }}>{item.name || item.brand}</span></td>
-                        <td>{item.category && <span style={{ fontWeight: 500, color: '#1e293b' }}>{item.category}</span>}</td>
-                        <td>
-                          {item.shade && (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
-                              {item.shade}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          {item.artNo ? (
-                            <span style={{ fontFamily: 'monospace', fontSize: 11.5, background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, border: '1px solid #e2e8f0', fontWeight: 600 }}>
-                              {item.artNo}
-                            </span>
-                          ) : null}
-                        </td>
-                        <td>
-                          {item.size && (
-                            <span style={{ display: 'inline-flex', padding: '2px 6px', borderRadius: 4, background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: 11.5, fontWeight: 700 }}>
-                              {item.size}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <span style={{ fontWeight: 700, color: 'var(--color-brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            {item.poNumber}
-                            <ExternalLink size={11} style={{ opacity: 0.6 }} />
-                          </span>
-                        </td>
-                        <td><div style={{ fontWeight: 500, fontSize: 13, color: '#334155' }}>{item.supplierName}</div></td>
-                        <td>
-                          {item.allocations && item.allocations.length > 0 ? (
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                              {item.allocations.map((a, aIdx) => (
-                                <span
-                                  key={aIdx}
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    fontSize: 11,
-                                    padding: '2px 6px',
-                                    borderRadius: 4,
-                                    background: a.receivedQty >= a.allocatedQty ? '#f0fdf4' : '#eff6ff',
-                                    color: a.receivedQty >= a.allocatedQty ? '#166534' : '#1e40af',
-                                    border: `1px solid ${a.receivedQty >= a.allocatedQty ? '#bbf7d0' : '#bfdbfe'}`
-                                  }}
-                                  title={`${a.clientName}: ${a.receivedQty}/${a.allocatedQty} pcs`}
-                                >
-                                  <Users size={10} />
-                                  <strong>{a.clientName}:</strong> {a.allocatedQty} pcs
-                                  {a.receivedQty > 0 && <span style={{ opacity: 0.75 }}>({a.receivedQty} in)</span>}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>General Stock</span>
-                          )}
-                        </td>
-                        <td style={{ minWidth: 150 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-                            <span style={{ fontWeight: 700, color: item.reachedStatus === 'FULLY_REACHED' ? '#166534' : '#0f172a' }}>
-                              {item.receivedQty} pcs
-                            </span>
-                            <span style={{ color: '#64748b' }}>/ {item.orderedQty} pcs</span>
-                          </div>
-                          <div style={{ width: '100%', height: 5, background: '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
-                            <div style={{
-                              height: '100%',
-                              background: item.reachedStatus === 'FULLY_REACHED' ? '#16a34a' : item.reachedStatus === 'PARTIALLY_REACHED' ? '#0284c7' : '#cbd5e1',
-                              width: `${Math.min(item.progress, 100)}%`,
-                            }} />
-                          </div>
-                        </td>
-                        <td>{renderReachedBadge(item)}</td>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: '#64748b' }}>
-                            <Calendar size={13} />
-                            {formatDate(item.expectedDate)}
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            onClick={e => { e.stopPropagation(); navigate(`/purchase-orders/${item.poId}/view`); }}
-                            style={{ padding: '3px 8px', height: 28, fontSize: 11.5 }}
-                          >
-                            View PO
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-
-              {/* ─── 3. ACCESSORIES TABLE ───────────────────────────── */}
-              {itemCategoryTab === 'ACCESSORY' && (
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 45, textAlign: 'center' }}>#</th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('category')} title="Sort by Category">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Package size={13} color="var(--color-brand)" />
-                          <span>Category</span>
-                          {renderSortIcon('category')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('name')} title="Sort by Accessory Item">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Accessory Item</span>
-                          {renderSortIcon('name')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('shade')} title="Sort by Color">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Palette size={13} color="var(--color-brand)" />
-                          <span>Color</span>
-                          {renderSortIcon('shade')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('size')} title="Sort by Size">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Size / Spec</span>
-                          {renderSortIcon('size')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('poNumber')} title="Sort by PO#">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Purchase Order</span>
-                          {renderSortIcon('poNumber')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('supplierName')} title="Sort by Supplier">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Building2 size={13} />
-                          <span>Supplier</span>
-                          {renderSortIcon('supplierName')}
-                        </div>
-                      </th>
-                      <th style={{ minWidth: 160 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Users size={13} color="var(--color-brand)" />
-                          <span>Client Allocation</span>
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('orderedQty')} title="Sort by Quantity">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Ordered vs Reached (Units)</span>
-                          {renderSortIcon('orderedQty')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('reachedStatus')} title="Sort by Arrival Status">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Has It Reached?</span>
-                          {renderSortIcon('reachedStatus')}
-                        </div>
-                      </th>
-                      <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSortClick('expectedDate')} title="Sort by Expected Date">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span>Expected Date</span>
-                          {renderSortIcon('expectedDate')}
-                        </div>
-                      </th>
-                      <th style={{ textAlign: 'right' }}>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAndSortedItems.map((item, idx) => (
-                      <tr key={item.lineId} className="hover-row" onClick={() => navigate(`/purchase-orders/${item.poId}/view`)} style={{ cursor: 'pointer' }}>
-                        <td style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
-                        <td>
-                          <span style={{ display: 'inline-flex', padding: '2px 8px', borderRadius: 4, background: '#f1f5f9', color: '#334155', border: '1px solid #e2e8f0', fontSize: 12, fontWeight: 700 }}>
-                            {item.category || 'Accessory'}
-                          </span>
-                        </td>
-                        <td><span style={{ fontWeight: 600, color: '#0f172a' }}>{item.name || item.quality}</span></td>
-                        <td>
-                          {item.shade && (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: 4, background: '#f1f5f9', border: '1px solid #e2e8f0', fontSize: 12.5, fontWeight: 600, color: '#0f172a' }}>
-                              {item.shade}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          {item.size && (
-                            <span style={{ display: 'inline-flex', padding: '2px 6px', borderRadius: 4, background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: 11.5, fontWeight: 700 }}>
-                              {item.size}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <span style={{ fontWeight: 700, color: 'var(--color-brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            {item.poNumber}
-                            <ExternalLink size={11} style={{ opacity: 0.6 }} />
-                          </span>
-                        </td>
-                        <td><div style={{ fontWeight: 500, fontSize: 13, color: '#334155' }}>{item.supplierName}</div></td>
-                        <td>
-                          {item.allocations && item.allocations.length > 0 ? (
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                              {item.allocations.map((a, aIdx) => (
-                                <span
-                                  key={aIdx}
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    fontSize: 11,
-                                    padding: '2px 6px',
-                                    borderRadius: 4,
-                                    background: a.receivedQty >= a.allocatedQty ? '#f0fdf4' : '#eff6ff',
-                                    color: a.receivedQty >= a.allocatedQty ? '#166534' : '#1e40af',
-                                    border: `1px solid ${a.receivedQty >= a.allocatedQty ? '#bbf7d0' : '#bfdbfe'}`
-                                  }}
-                                  title={`${a.clientName}: ${a.receivedQty}/${a.allocatedQty} ${unitLabel(item.uom)}`}
-                                >
-                                  <Users size={10} />
-                                  <strong>{a.clientName}:</strong> {a.allocatedQty} {unitLabel(item.uom)}
-                                  {a.receivedQty > 0 && <span style={{ opacity: 0.75 }}>({a.receivedQty} in)</span>}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>General Stock</span>
-                          )}
-                        </td>
-                        <td style={{ minWidth: 150 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-                            <span style={{ fontWeight: 700, color: item.reachedStatus === 'FULLY_REACHED' ? '#166534' : '#0f172a' }}>
-                              {item.receivedQty} {unitLabel(item.uom)}
-                            </span>
-                            <span style={{ color: '#64748b' }}>/ {item.orderedQty} {unitLabel(item.uom)}</span>
-                          </div>
-                          <div style={{ width: '100%', height: 5, background: '#f1f5f9', borderRadius: 3, overflow: 'hidden' }}>
-                            <div style={{
-                              height: '100%',
-                              background: item.reachedStatus === 'FULLY_REACHED' ? '#16a34a' : item.reachedStatus === 'PARTIALLY_REACHED' ? '#0284c7' : '#cbd5e1',
-                              width: `${Math.min(item.progress, 100)}%`,
-                            }} />
-                          </div>
-                        </td>
-                        <td>{renderReachedBadge(item)}</td>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: '#64748b' }}>
-                            <Calendar size={13} />
-                            {formatDate(item.expectedDate)}
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            onClick={e => { e.stopPropagation(); navigate(`/purchase-orders/${item.poId}/view`); }}
-                            style={{ padding: '3px 8px', height: 28, fontSize: 11.5 }}
-                          >
-                            View PO
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </>

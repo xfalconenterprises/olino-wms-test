@@ -29,10 +29,13 @@ export async function recordAllocationReceipt(
     allocations.find(a => a.receivedQty + 0.001 < a.allocatedQty) ||
     allocations[allocations.length - 1];
 
-  await tx.poLineAllocation.update({
+  const updated = await tx.poLineAllocation.update({
     where: { id: target.id },
     data: { receivedQty: { increment: qty } },
   });
+  // Added-up decimals drift (2273.8999…); this update holds the row lock, so tidy it in place
+  const tidy = Math.round(updated.receivedQty * 1000) / 1000;
+  if (tidy !== updated.receivedQty) await tx.poLineAllocation.update({ where: { id: target.id }, data: { receivedQty: tidy } });
 
   if (target.clientName.trim().toLowerCase() === GENERAL_STOCK) return null;
   return { clientId: target.clientId, clientName: target.clientName };

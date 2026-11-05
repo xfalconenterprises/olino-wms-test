@@ -20,6 +20,7 @@
   flex-direction: column;
   flex-shrink: 0;
   overflow-y: auto;
+  overflow-x: hidden; /* the sidebar never scrolls sideways; long text is cut short instead */
   transition: width 0.2s ease;
 }
 

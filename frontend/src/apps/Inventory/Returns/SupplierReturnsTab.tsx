@@ -7,6 +7,7 @@ import { formatDateTime } from '../../../utils/format';
 import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
 import TouchChoice from './TouchChoice';
 import CancelReturnModal from './CancelReturnModal';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 
@@ -54,9 +55,9 @@ export default function SupplierReturnsTab() {
   const mismatch = (b: Scanned) =>
     !!supplier && !!b.supplier && (b.supplier.id ? b.supplier.id !== supplier.id : b.supplier.name.toLowerCase() !== supplier.name.toLowerCase());
 
-  const addScan = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const code = scan.trim().toUpperCase();
+  const addScan = async (e?: React.FormEvent, scanned = scan) => {
+    e?.preventDefault();
+    const code = scanned.trim().toUpperCase();
     if (!code) return;
     setError(''); setSaved(null);
     if (lines.some(l => l.batch.batchCode === code)) { setError(`${code} is already in this return.`); setScan(''); return; }
@@ -149,6 +150,7 @@ export default function SupplierReturnsTab() {
               <label className="form-label">Scan rolls / boxes to return</label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input ref={scanRef} className="form-input" value={scan} onChange={e => setScan(e.target.value)} placeholder="Scan barcode" style={{ fontFamily: 'monospace', minHeight: 48 }} />
+                <CameraScanButton title="Scan the roll with the camera" onScan={code => addScan(undefined, code)} />
                 <button className="btn btn-secondary" type="submit" aria-label="Add" style={{ minWidth: 56, minHeight: 48 }}><ScanLine size={20} /></button>
               </div>
             </form>

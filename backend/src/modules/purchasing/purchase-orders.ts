@@ -478,10 +478,15 @@ router.post('/supplier-inbound/receive-roll', requirePermission('ops.entry_gate'
 
       // Update PO Line and PO Status if matched
       if (matchedLine) {
-        const updatedLine = await tx.purchaseOrderLine.update({
+        let updatedLine = await tx.purchaseOrderLine.update({
           where: { id: matchedLine.id },
           data: { receivedQty: { increment: qty } }
         });
+        // Added-up decimals drift (2273.8999…); this update holds the row lock, so tidy it in place
+        const tidy = Math.round(updatedLine.receivedQty * 1000) / 1000;
+        if (tidy !== updatedLine.receivedQty) {
+          updatedLine = await tx.purchaseOrderLine.update({ where: { id: matchedLine.id }, data: { receivedQty: tidy } });
+        }
 
         // Check overall PO status
         const allLines = await tx.purchaseOrderLine.findMany({
@@ -800,7 +805,10 @@ async function resolveLineAllocations(lines: any[], targetClient: unknown):
     if (new Set(ids).size !== ids.length) return `Line ${i + 1}: each client can be allocated only once per line.`;
     perLine.set(l, out);
   }
-  return { target: target?.name ?? null, perLine };
+  // The order has a client only when every line goes wholly to it; a split order has none
+  const whole = target && [...perLine].every(([l, out]) => out.length === 1 && out[0].clientId === target.id
+    && Math.abs(out[0].allocatedQty - parseFloat(l.orderedQty)) < 0.005);
+  return { target: whole ? target.name : null, perLine };
 }
 
 /** Cost prices typed on the lines (undefined = left blank), or a message for the user. */
@@ -1169,6 +1177,19 @@ router.patch('/:id', requirePermission('po.create'), async (req: Request, res: R
     },
   });
   res.json(po);
+});
+
+// PATCH /api/purchase-orders/:id/open-invoice — fix the supplier invoice on the rolls still waiting for their GRN
+router.patch('/:id/open-invoice', requirePermission('ops.entry_gate'), async (req: Request, res: Response) => {
+  const invoiceRef = String(req.body?.invoiceRef ?? '').trim().slice(0, 60);
+  if (!invoiceRef) return void res.status(400).json({ error: 'Enter the supplier invoice number' });
+
+  const { count } = await prisma.itemBatch.updateMany({
+    where: { poLine: { poId: req.params.id as string }, grnId: null, receiptVoidedAt: null },
+    data: { invoiceRef },
+  });
+  if (!count) return void res.status(400).json({ error: 'No rolls are waiting for a GRN on this order' });
+  res.json({ invoiceRef, rolls: count });
 });
 
 // POST /api/purchase-orders/:id/lines/:lineId/receive — log batches for a line

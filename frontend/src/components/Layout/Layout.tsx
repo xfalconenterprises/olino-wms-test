@@ -13,9 +13,8 @@ import {
   Users, 
   Power, 
   ShoppingCart, 
-  Plus, 
-  LayoutGrid, 
-  ChevronLeft, 
+  Plus,
+  ChevronLeft,
   ChevronRight, 
   Clock,
   SlidersHorizontal,
@@ -123,9 +122,13 @@ export default function Layout({ children }: { children: ReactNode }) {
   } else if (currentPath.startsWith('/dashboard') || currentPath.startsWith('/reports') || currentPath.startsWith('/export-log') || currentPath.startsWith('/users') || currentPath.startsWith('/locations') || currentPath.startsWith('/suppliers') || currentPath.startsWith('/clients') || currentPath.startsWith('/items') || currentPath.startsWith('/cost-prices')) {
     currentApp = 'ADMINISTRATION';
   } else if (currentPath.startsWith('/settings')) {
-    const hasWarehouse = canAccessApp.WAREHOUSE(user);
-    const hasAdmin = canAccessApp.ADMINISTRATION(user);
-    currentApp = hasWarehouse && !hasAdmin ? 'WAREHOUSE' : 'ADMINISTRATION';
+    // Printer Settings is an everyday floor tool listed in both the Warehouse and Admin menus:
+    // stay in the menu it was opened from, otherwise show it under Warehouse
+    const fromApp = (location.state as { fromApp?: AppName } | null)?.fromApp;
+    const warehousePrinter = canAccessApp.WAREHOUSE(user) && hasPermission(user, 'ops.printer');
+    currentApp = fromApp === 'ADMINISTRATION' && canAccessApp.ADMINISTRATION(user)
+      ? 'ADMINISTRATION'
+      : warehousePrinter || !canAccessApp.ADMINISTRATION(user) ? 'WAREHOUSE' : 'ADMINISTRATION';
   }
 
   // Filter nav items for the current app based on assigned granular permissions
@@ -160,18 +163,18 @@ export default function Layout({ children }: { children: ReactNode }) {
         
         {/* Brand Logo & Controls */}
         <div style={{
-          padding: isCollapsed ? '16px 8px' : '14px 16px',
+          padding: isCollapsed ? '16px 8px' : '12px 10px 12px 14px',
           borderBottom: '1px solid var(--color-border)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: isCollapsed ? 'center' : 'space-between',
           flexDirection: isCollapsed ? 'column' : 'row',
-          gap: isCollapsed ? 12 : 0
+          gap: isCollapsed ? 12 : 6
         }}>
           <button
             type="button"
             onClick={() => navigate('/select-module')}
-            title="Go to Home / Module Selection"
+            title="Switch module"
             style={{
               background: 'none',
               border: 'none',
@@ -179,42 +182,28 @@ export default function Layout({ children }: { children: ReactNode }) {
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center'
+              justifyContent: isCollapsed ? 'center' : 'flex-start',
+              // The logo fills the header beside the collapse button
+              flex: isCollapsed ? undefined : 1,
+              minWidth: 0
             }}
           >
-            <img 
-              src="/logo.png" 
-              alt="Company Logo" 
-              style={{ 
-                maxHeight: isCollapsed ? '28px' : '44px', 
-                maxWidth: isCollapsed ? '48px' : '155px', 
-                objectFit: 'contain', 
-                transition: 'all 0.2s' 
-              }} 
+            <img
+              src="/logo.png"
+              alt="Company Logo"
+              style={{
+                width: isCollapsed ? undefined : '100%',
+                maxHeight: isCollapsed ? '28px' : '64px',
+                maxWidth: isCollapsed ? '48px' : undefined,
+                objectFit: 'contain',
+                objectPosition: 'left center',
+                transition: 'all 0.2s'
+              }}
             />
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexDirection: isCollapsed ? 'column' : 'row' }}>
-            <button 
-              type="button"
-              className="btn btn-ghost btn-icon" 
-              onClick={() => navigate('/select-module')}
-              title="Home / Switch Module"
-              style={{
-                padding: 6,
-                width: 32,
-                height: 32,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 'var(--radius-sm)',
-                color: 'var(--color-brand)'
-              }}
-            >
-              <LayoutGrid size={18} />
-            </button>
-
-            <button 
+            <button
               type="button"
               className="btn btn-ghost btn-icon" 
               onClick={toggleCollapsed}
@@ -251,6 +240,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                 )}
                 <NavLink
                   to={item.path}
+                  state={{ fromApp: currentApp }}
                   title={isCollapsed ? item.label : undefined}
                   className={() =>
                     `sidebar-nav-item${isItemActive(item.path) ? ' active' : ''} ${isCollapsed ? 'collapsed' : ''}`
@@ -266,11 +256,12 @@ export default function Layout({ children }: { children: ReactNode }) {
 
         <div className="sidebar-footer" style={{ padding: isCollapsed ? '12px 8px' : '12px 16px', display: 'flex', justifyContent: isCollapsed ? 'center' : 'flex-start' }}>
           <div className="sidebar-user" style={{ flexDirection: isCollapsed ? 'column' : 'row', gap: isCollapsed ? 8 : 12, width: '100%', justifyContent: isCollapsed ? 'center' : 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {/* Shrinks so a long name is cut short instead of pushing Logout out of view */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: isCollapsed ? undefined : 1, minWidth: 0 }}>
               <div className="sidebar-user-avatar">{initials}</div>
               {!isCollapsed && (
                 <div className="sidebar-user-info">
-                  <div className="sidebar-user-name truncate">{user.name}</div>
+                  <div className="sidebar-user-name truncate" title={user.name}>{user.name}</div>
                   <div className="sidebar-user-role" title={modules.map(m => MODULE_LABELS[m]).join(', ')}>
                     {modules.length === 1 ? MODULE_LABELS[modules[0]] : `${modules.length} Modules`}
                   </div>

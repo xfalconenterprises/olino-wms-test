@@ -370,10 +370,10 @@ router.post('/', requireAuth, requirePermission('ops.entry_gate'), async (req: R
         },
       });
 
-      // Link batches to this GRN; roll back if another GRN claimed any of them meanwhile
+      // Link batches to this GRN, carrying its invoice; roll back if another GRN claimed any of them meanwhile
       const linked = await tx.itemBatch.updateMany({
         where: { id: { in: batches.map(b => b.id) }, grnId: null },
-        data: { grnId: createdGrn.id },
+        data: { grnId: createdGrn.id, ...(createdGrn.invoiceRef && { invoiceRef: createdGrn.invoiceRef }) },
       });
       if (linked.count !== batches.length) {
         throw new Error('Some rolls were finalized on another GRN at the same time. Refresh and try again.');

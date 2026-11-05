@@ -16,7 +16,10 @@ import {
   FileCheck,
   Users,
   AlertCircle,
-  PencilLine
+  PencilLine,
+  Lock,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate } from '../../../utils/format';
@@ -24,8 +27,6 @@ import { allowsDecimals, fabricCategoryLabel, formatTotals, unitLabel, unitName 
 import SpecLine from '../../../components/Common/SpecLine';
 import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } from '../../../components/Common/RollCorrection';
 import { useConfirm } from '../../../components/Common/ConfirmDialog';
-import { useAuth } from '../../../hooks/useAuth';
-import { hasPermission } from '../../../utils/roles';
 import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type DiscrepancyItem, type GateDiscrepancy } from './DiscrepancyModal';
 import '../../../styles/components.css';
 
@@ -49,7 +50,7 @@ interface POLine {
   name?: string | null;
   artNo?: string | null;
   uom?: string | null;
-  batches: { id: string; batchCode: string; quantity: number; grnId?: string | null }[];
+  batches: { id: string; batchCode: string; quantity: number; grnId?: string | null; invoiceRef?: string | null }[];
   allocations?: {
     id: string;
     clientId: string;
@@ -110,18 +111,20 @@ export default function ReceivePOPage() {
   const [recentBatch, setRecentBatch] = useState<{ id?: string; batchCode: string; quantity: number } | null>(null);
   const [fixingRoll, setFixingRoll] = useState<CorrectableRoll | null>(null);
   const [confirmDialog, ask] = useConfirm();
-  const { user } = useAuth();
-  // After the GRN is issued only a supervisor can correct a roll
-  const canCorrectAfterGrn = hasPermission(user, 'inv.adjustments');
 
   // Line search & sorting state — PO Order default
   const [lineSearch, setLineSearch] = useState('');
   const [lineSort, setLineSort] = useState<'default' | 'pending' | 'shade' | 'brand'>('default');
+  // PO lines whose received rolls are unfolded
+  const [openLots, setOpenLots] = useState<string[]>([]);
 
   // Finalize GRN & Print Modal State
   const [showGrnFinalizeModal, setShowGrnFinalizeModal] = useState(false);
   const [grnRemarks, setGrnRemarks] = useState('');
   const [issuingGrn, setIssuingGrn] = useState(false);
+  const [editingInvoice, setEditingInvoice] = useState(false);
+  const [invoiceDraft, setInvoiceDraft] = useState('');
+  const [savingInvoice, setSavingInvoice] = useState(false);
 
   // Discrepancies reported at the gate for this PO, not yet on a GRN (the next GRN carries them)
   const [showDiscrepancyModal, setShowDiscrepancyModal] = useState(false);
@@ -179,8 +182,14 @@ export default function ReceivePOPage() {
     return allBatches.some(b => !b.grnId);
   }, [allBatches]);
 
+  // Once a roll is received under an invoice, that invoice holds for every roll until their GRN is finalized
+  const lockedInvoice = useMemo(() => allBatches.find(b => !b.grnId && b.invoiceRef)?.invoiceRef || '', [allBatches]);
+  useEffect(() => { if (lockedInvoice) setInvoiceRef(lockedInvoice); }, [lockedInvoice]);
+
   const hasGrn = Boolean(po?.grns && po.grns.length > 0);
   const latestGrn = hasGrn ? po!.grns![0] : null;
+  // The GRN list shows the invoice column only when some GRN has one
+  const anyGrnInvoice = (po?.grns || []).some((g: any) => g.invoiceRef);
 
   // Fully finalized means: all received batches have a GRN, at least one batch exists, and order is completely received
   const isPoFullyFinalized = Boolean(
@@ -316,6 +325,9 @@ export default function ReceivePOPage() {
       const response = await api.get(`/api/grn/${grn.id}/print`, { responseType: 'text' });
       viewer.show(response.data);
       setShowGrnFinalizeModal(false);
+      // The next delivery on this PO comes with its own invoice
+      setInvoiceRef('');
+      setGrnRemarks('');
       // Refresh PO data to update issued GRNs
       try {
         const updatedPoRes = await api.get(`/api/purchase-orders/${id}`);
@@ -328,6 +340,24 @@ export default function ReceivePOPage() {
       alert(err.response?.data?.error || 'Failed to issue Goods Receipt Note');
     } finally {
       setIssuingGrn(false);
+    }
+  };
+
+  // Fixes a mistyped invoice on every roll still waiting for its GRN
+  const saveInvoiceChange = async () => {
+    const next = invoiceDraft.trim();
+    if (!po || !next) return;
+    setSavingInvoice(true);
+    try {
+      await api.patch(`/api/purchase-orders/${po.id}/open-invoice`, { invoiceRef: next });
+      setInvoiceRef(next);
+      setEditingInvoice(false);
+      const { data } = await api.get(`/api/purchase-orders/${po.id}`);
+      setPo(data);
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to change the invoice number');
+    } finally {
+      setSavingInvoice(false);
     }
   };
 
@@ -394,7 +424,8 @@ export default function ReceivePOPage() {
   const fixRoll = (roll: { id: string; batchCode: string; quantity: number; grnId?: string | null }, uom?: string | null) => {
     setFixingRoll({ ...roll, uom, grnNumber: po?.grns?.find((g: any) => g.id === roll.grnId)?.grnNumber });
   };
-  const canFix = (roll: { grnId?: string | null }) => !roll.grnId || canCorrectAfterGrn;
+  // Rolls on a GRN are final here; a supervisor corrects them from the GRN page
+  const canFix = (roll: { grnId?: string | null }) => !roll.grnId;
 
   // Figures change after a correction; the page stays where it is
   const afterCorrection = () => {
@@ -648,49 +679,72 @@ export default function ReceivePOPage() {
           }} />
         </div>
 
-        {/* Received Lots chips under card */}
-        {line.batches && line.batches.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, paddingTop: 10, borderTop: '1px dashed var(--color-border-subtle)', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>
-              Inwarded Lots ({line.batches.length}):
-            </span>
-            {line.batches.map(b => (
-              <span
-                key={b.id}
+        {/* Received lots, folded away until asked for — a line can have a hundred */}
+        {line.batches && line.batches.length > 0 && (() => {
+          const lotsOpen = openLots.includes(line.id);
+          const lotButton = { border: 'none', background: 'none', cursor: 'pointer', width: 34, height: 34, borderRadius: 6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 } as const;
+          return (
+            <div onClick={e => e.stopPropagation()} style={{ marginTop: 12, paddingTop: 10, borderTop: '1px dashed var(--color-border-subtle)', cursor: 'default' }}>
+              <button
+                type="button"
+                onClick={() => setOpenLots(prev => lotsOpen ? prev.filter(id => id !== line.id) : [...prev, line.id])}
+                aria-expanded={lotsOpen}
                 style={{
-                  fontSize: 12,
-                  background: '#f8fafc',
-                  border: '1px solid var(--color-border)',
-                  padding: '3px 8px',
-                  borderRadius: 4,
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: 6
+                  gap: 7,
+                  height: 36,
+                  padding: '0 12px',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 6,
+                  background: lotsOpen ? '#f5f3ff' : '#f8fafc',
+                  color: '#334155',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: 'pointer'
                 }}
               >
-                <code style={{ fontWeight: 700 }}>{b.batchCode}</code> · {formatQty(b.quantity)} {lineUnit}
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); printLabel(b.batchCode); }}
-                  style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'var(--color-brand)' }}
-                  title="Reprint barcode label"
-                >
-                  <Printer size={13} />
-                </button>
-                {canFix(b) && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); fixRoll(b, line.uom); }}
-                    style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: '#b45309' }}
-                    title="Fix this receipt (wrong quantity or received by mistake)"
-                  >
-                    <PencilLine size={13} />
-                  </button>
-                )}
-              </span>
-            ))}
-          </div>
-        )}
+                {lotsOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                Inwarded Lots ({line.batches.length})
+              </button>
+              {lotsOpen && (
+                <div style={{ marginTop: 10, maxHeight: 340, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 6 }}>
+                  {line.batches.map(b => (
+                    <div
+                      key={b.id}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 2px 2px 10px', background: '#f8fafc', border: '1px solid var(--color-border)', borderRadius: 6, fontSize: 12.5 }}
+                    >
+                      <code style={{ fontWeight: 700, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.batchCode}</code>
+                      <strong style={{ whiteSpace: 'nowrap' }}>{formatQty(b.quantity)} {lineUnit}</strong>
+                      <button
+                        type="button"
+                        onClick={() => printLabel(b.batchCode)}
+                        style={{ ...lotButton, color: 'var(--color-brand)' }}
+                        title="Reprint barcode label"
+                      >
+                        <Printer size={16} />
+                      </button>
+                      {canFix(b) ? (
+                        <button
+                          type="button"
+                          onClick={() => fixRoll(b, line.uom)}
+                          style={{ ...lotButton, color: '#b45309' }}
+                          title="Fix this receipt (wrong quantity or received by mistake)"
+                        >
+                          <PencilLine size={16} />
+                        </button>
+                      ) : (
+                        <span style={{ ...lotButton, cursor: 'default', color: 'var(--color-text-muted)' }} title={`On ${po.grns?.find((g: any) => g.id === b.grnId)?.grnNumber || 'a GRN'}: finalized`}>
+                          <Lock size={14} />
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -859,6 +913,39 @@ export default function ReceivePOPage() {
               <strong style={{ fontSize: 14, color: '#0f172a', display: 'block', paddingTop: 6 }}>
                 {invoiceRef || latestGrn?.invoiceRef}
               </strong>
+            ) : editingInvoice ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={invoiceDraft}
+                  onChange={e => setInvoiceDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') saveInvoiceChange(); }}
+                  autoFocus
+                  style={{ height: 38, fontSize: 13.5, fontWeight: 600, width: 160 }}
+                />
+                <button type="button" className="btn btn-primary" onClick={saveInvoiceChange} disabled={savingInvoice || !invoiceDraft.trim()} style={{ height: 38 }}>
+                  {savingInvoice ? <span className="spinner" /> : 'Save'}
+                </button>
+                <button type="button" className="btn btn-secondary" onClick={() => setEditingInvoice(false)} disabled={savingInvoice} style={{ height: 38 }}>
+                  Cancel
+                </button>
+              </div>
+            ) : lockedInvoice ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <strong style={{ fontSize: 14, color: '#0f172a', display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Used for every roll until the GRN is finalized">
+                  <Lock size={14} color="var(--color-text-muted)" /> {lockedInvoice}
+                </strong>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => { setInvoiceDraft(lockedInvoice); setEditingInvoice(true); }}
+                  style={{ height: 36, padding: '0 12px', fontSize: 12.5, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                  title="Fix a mistyped invoice number on the rolls not yet on a GRN"
+                >
+                  <PencilLine size={13} /> Change
+                </button>
+              </div>
             ) : (
               <input
                 type="text"
@@ -1724,7 +1811,7 @@ export default function ReceivePOPage() {
                 <tr style={{ background: '#ffffff', borderBottom: '1px solid var(--color-border)' }}>
                   <th style={{ width: 140 }}>GRN Number</th>
                   <th style={{ width: 120 }}>Intake Date</th>
-                  <th>Supplier Invoice</th>
+                  {anyGrnInvoice && <th>Supplier Invoice</th>}
                   <th style={{ textAlign: 'center', width: 85 }}>Rolls/Pcs</th>
                   <th style={{ textAlign: 'right', width: 120 }}>Quantity</th>
                   <th>Received By</th>
@@ -1742,13 +1829,11 @@ export default function ReceivePOPage() {
                     <td style={{ color: 'var(--color-text-muted)', fontSize: 12 }}>
                       {formatDate(g.createdAt)}
                     </td>
-                    <td>
-                      {g.invoiceRef ? (
-                        <span style={{ fontWeight: 600, color: '#334155' }}>{g.invoiceRef}</span>
-                      ) : (
-                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                      )}
-                    </td>
+                    {anyGrnInvoice && (
+                      <td>
+                        {g.invoiceRef && <span style={{ fontWeight: 600, color: '#334155' }}>{g.invoiceRef}</span>}
+                      </td>
+                    )}
                     <td style={{ textAlign: 'center', fontWeight: 600 }}>
                       {g.totalRolls}
                     </td>
@@ -1938,27 +2023,19 @@ export default function ReceivePOPage() {
                 </div>
               </div>
 
-              {/* Invoice & Remarks */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-                <div>
-                  <label className="form-label" style={{ fontSize: 12, fontWeight: 700 }}>
-                    Supplier Invoice No.
-                  </label>
-                  {isPoFullyFinalized ? (
-                    <strong style={{ fontSize: 13.5, color: '#0f172a', display: 'block', paddingTop: 6 }}>
-                      {invoiceRef || latestGrn?.invoiceRef}
+              {/* Invoice (entered only at the top of the page, shown here) & Remarks */}
+              <div style={{ display: 'grid', gridTemplateColumns: invoiceRef.trim() ? '1fr 1fr' : '1fr', gap: 12, marginBottom: 16 }}>
+                {invoiceRef.trim() && (
+                  <div>
+                    <label className="form-label" style={{ fontSize: 12, fontWeight: 700 }}>
+                      Supplier Invoice No.
+                    </label>
+                    <strong style={{ fontSize: 13.5, color: '#0f172a', display: 'inline-flex', alignItems: 'center', gap: 6, paddingTop: 6 }}>
+                      <Lock size={13} color="var(--color-text-muted)" />
+                      {invoiceRef.trim()}
                     </strong>
-                  ) : (
-                    <input
-                      type="text"
-                      className="form-input"
-                      placeholder="Enter invoice no..."
-                      value={invoiceRef}
-                      onChange={e => setInvoiceRef(e.target.value)}
-                      style={{ height: 38, fontSize: 13 }}
-                    />
-                  )}
-                </div>
+                  </div>
+                )}
                 <div>
                   <label className="form-label" style={{ fontSize: 12, fontWeight: 700 }}>
                     Gate / Receiving Remarks

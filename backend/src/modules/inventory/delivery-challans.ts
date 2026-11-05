@@ -7,7 +7,7 @@ import { awaitingGrn } from '../../utils/received';
 import { formatDate, istDateKey } from '../../utils/format';
 import { escapeHtml, companyLogoDataUri } from '../../utils/html';
 import { filledMeta } from '../../utils/print-document';
-import { fabricCategoryLabel, totalsByUnit, unitName } from '../../utils/units';
+import { fabricCategoryLabel, totalsByUnit, unitLabel, unitName } from '../../utils/units';
 
 const router = Router();
 
@@ -518,7 +518,7 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
     itemType: string;
     totalQuantity: number;
     unitCount: number;   // rolls (fabric) or packs dispatched, cut pieces included
-    cutCount: number;    // of which cut from a roll / pack
+    pieces: number[];    // quantity of each roll / pack, in scan order
     unit: string;
   }> = {};
 
@@ -552,14 +552,14 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
         itemType,
         totalQuantity: 0,
         unitCount: 0,
-        cutCount: 0,
+        pieces: [],
         unit: uomStr,
       };
     }
 
     groupedProducts[key].totalQuantity += line.quantity;
     groupedProducts[key].unitCount += 1;
-    if (line.isPartialCut) groupedProducts[key].cutCount += 1;
+    groupedProducts[key].pieces.push(line.quantity);
   }
   // Grand total per unit: meters, kg and pieces are never added together
   const grandTotal = totalsByUnit((dc.lines || []).map(l => ({ uom: l.batch.uom, quantity: l.quantity })))
@@ -580,7 +580,10 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
   for (let i = 0; i < productList.length; i++) {
     const p = productList[i];
     const isFabric = p.itemType === 'FABRIC';
-    const cutNote = p.cutCount ? `incl. ${p.cutCount} cut ${p.cutCount === 1 ? 'piece' : 'pieces'}` : '';
+    // Each roll's quantity, so the customer can check them: "100 + 120 + 310 + 210 m"
+    const breakdown = p.pieces.length > 1
+      ? `${p.pieces.map(q => parseFloat(q.toFixed(2))).join(' + ')} ${escapeHtml(unitLabel(p.unit))}`
+      : '';
 
     // Only the details that were entered are printed
     const mainTitle = escapeHtml(p.name || [[p.brand, p.quality].filter(Boolean).join(' · '), p.qualityName ? `(${p.qualityName})` : ''].filter(Boolean).join(' ')
@@ -599,13 +602,11 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
           <div style="font-weight: bold; font-size: 11.5px;">
             ${mainTitle}
           </div>
-          <div style="font-size: 10.5px; color: #333333; margin-top: 2px;">
-            ${details}
-          </div>
+          ${details ? `<div style="font-size: 10.5px; color: #333333; margin-top: 2px;">${details}</div>` : ''}
+          ${breakdown ? `<div style="font-size: 9.5px; color: #555555; margin-top: 2px;">${breakdown}</div>` : ''}
         </td>
         <td style="text-align: center; font-weight: bold; font-size: 11.5px; white-space: nowrap;">
           ${packages(p.unitCount, isFabric)}
-          ${cutNote ? `<div style="font-size: 9.5px; font-weight: normal; color: #333333;">${cutNote}</div>` : ''}
         </td>
         <td style="text-align: right; font-weight: bold; font-size: 11.5px; white-space: nowrap;">
           ${parseFloat(p.totalQuantity.toFixed(2))} ${escapeHtml(unitName(p.unit))}

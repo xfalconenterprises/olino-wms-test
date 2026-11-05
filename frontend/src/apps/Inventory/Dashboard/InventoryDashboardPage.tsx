@@ -177,6 +177,56 @@ interface BatchTransaction {
   toLocation?: { code: string };
 }
 
+// What a ledger entry did to the item, in words: "Received", "Put away", "Dispatched"…
+function describeMovement(tx: BatchTransaction, unit: string): { label: string; tone: string; text: string } {
+  const q = `${Math.round(tx.quantityMoved * 1000) / 1000} ${unit}`;
+  const on = tx.referenceId ? ` on ${tx.referenceId}` : '';
+  const out = tx.type === 'STOCK_OUT';
+  const cut = tx.type === 'PARTIAL_CUT';
+  switch (tx.referenceType) {
+    case 'CUSTOMER_RETURN':
+      return { label: 'Customer return', tone: 'badge-info', text: `${q} returned by the customer${on}` };
+    case 'RECEIPT_CORRECTION':
+      return tx.notes?.startsWith('Receipt undone')
+        ? { label: 'Receipt undone', tone: 'badge-danger', text: `Receipt of ${q} undone` }
+        : { label: 'Receipt corrected', tone: 'badge-warning', text: `${out ? '−' : '+'}${q} to the received quantity` };
+    case 'SUPERVISOR_ADJUSTMENT':
+      return { label: 'Stock adjusted', tone: 'badge-warning', text: `${out ? '−' : '+'}${q}` };
+    case 'STOCK_COUNT':
+      return tx.type === 'INTERNAL_TRANSFER'
+        ? { label: 'Stock count', tone: 'badge-neutral', text: 'Location updated by the count' }
+        : { label: 'Stock count', tone: 'badge-warning', text: `${q} ${out ? 'removed' : 'added'} after the count` };
+    case 'DELIVERY_CHALLAN':
+      return cut
+        ? { label: 'Cut & dispatched', tone: 'badge-warning', text: `${q} cut and dispatched${on}` }
+        : { label: 'Dispatched', tone: 'badge-brand', text: `${q} dispatched${on}` };
+    case 'SUPPLIER_RETURN':
+      return { label: 'Returned to supplier', tone: 'badge-danger', text: `${q} ${cut ? 'cut and ' : ''}sent back to the supplier${on}` };
+    case 'RETURN_CANCELLED':
+      return out
+        ? { label: 'Return cancelled', tone: 'badge-neutral', text: `${q} taken back out of stock${on}` }
+        : { label: 'Return cancelled', tone: 'badge-info', text: `${q} back in stock${on}` };
+    case 'PUT_AWAY':
+      return { label: 'Put away', tone: 'badge-info', text: `${q} placed${tx.toLocation?.code ? ` on ${tx.toLocation.code}` : ''}` };
+    case 'QC_INSPECTION':
+      return { label: 'QC hold', tone: 'badge-warning', text: 'Put on quality hold' };
+    case 'QC_APPROVAL':
+      return { label: 'QC approved', tone: 'badge-success', text: 'Quality approved' };
+    case 'CLIENT_REALLOCATION':
+      return { label: 'Client changed', tone: 'badge-neutral', text: 'Client earmark changed' };
+  }
+  if (tx.type === 'STOCK_IN') {
+    return { label: 'Received', tone: 'badge-success', text: `${q} received${tx.referenceType === 'PURCHASE_ORDER' ? on.replace(' on ', ' against ') : ''}` };
+  }
+  if (tx.type === 'INTERNAL_TRANSFER') {
+    const route = tx.toLocation?.code ? ` from ${tx.fromLocation?.code || 'the dock'} to ${tx.toLocation.code}` : '';
+    return { label: 'Relocated', tone: 'badge-neutral', text: `${q} moved${route}` };
+  }
+  return cut
+    ? { label: 'Cut', tone: 'badge-warning', text: `${q} cut` }
+    : { label: 'Stock out', tone: 'badge-danger', text: `${q} out` };
+}
+
 export default function InventoryDashboardPage() {
   const [viewMode, setViewMode] = useState<'AGGREGATED' | 'GRANULAR'>('AGGREGATED');
   const [loading, setLoading] = useState(false);
@@ -524,7 +574,7 @@ export default function InventoryDashboardPage() {
     selectedClientFilter,
   ].filter(Boolean).join(' · ');
 
-  const skuRollupColSpan = categoryTab === 'FABRIC' ? 7 : 9;
+  const skuRollupColSpan = categoryTab === 'FABRIC' ? 6 : 8;
 
   return (
     <div style={{ maxWidth: '100%', margin: '0 auto', paddingBottom: 40 }}>
@@ -852,9 +902,7 @@ export default function InventoryDashboardPage() {
                   <th>Quality Grade</th>
                   <th>Color / Shade</th>
                   <th>In Stock</th>
-                  <th>Lumps Count (Full vs Cut)</th>
-                  <th>Physical Shelves</th>
-                </tr>
+                  <th>Lumps Count (Full vs Cut)</th>                </tr>
               ) : categoryTab === 'READY_MADE' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -864,9 +912,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Size</th>
                   <th>In Stock (Pieces)</th>
-                  <th>Packs / Cartons</th>
-                  <th>Physical Shelves</th>
-                </tr>
+                  <th>Packs / Cartons</th>                </tr>
               ) : categoryTab === 'ACCESSORY' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -876,9 +922,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Size / Art No</th>
                   <th>In Stock (Units)</th>
-                  <th>Packs / Boxes</th>
-                  <th>Physical Shelves</th>
-                </tr>
+                  <th>Packs / Boxes</th>                </tr>
               ) : (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -888,9 +932,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Category / Size</th>
                   <th>Total In Stock</th>
-                  <th>Lumps / Packs</th>
-                  <th>Physical Shelves</th>
-                </tr>
+                  <th>Lumps / Packs</th>                </tr>
               )}
             </thead>
             <tbody>
@@ -1004,23 +1046,7 @@ export default function InventoryDashboardPage() {
                           </td>
                         </>
                       )}
-
-                      <td>
-                        {s.locations && s.locations.length > 0 ? (
-                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                            {s.locations.slice(0, 3).map((loc, li) => (
-                              <span key={li} className="badge badge-secondary" style={{ fontSize: 11 }}>
-                                <MapPin size={10} style={{ marginRight: 2 }} /> {loc}
-                              </span>
-                            ))}
-                            {s.locations.length > 3 && (
-                              <span className="badge badge-neutral" style={{ fontSize: 11 }}>+{s.locations.length - 3} more</span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="badge" style={{ background: '#fef3c7', color: '#b45309', fontSize: 11 }}>Unassigned</span>
-                        )}
-                      </td>
+                      {/* No shelf column: an item spans many rolls on many shelves; each roll's shelf shows when expanded */}
                     </tr>
 
                     {/* Accordion Child Table */}
@@ -1621,20 +1647,22 @@ export default function InventoryDashboardPage() {
                     <div style={{ padding: 20, textAlign: 'center' }}><span className="spinner" /></div>
                   ) : batchHistory.length > 0 ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      {batchHistory.map((tx, ti) => (
+                      {batchHistory.map((tx, ti) => {
+                        const movement = describeMovement(tx, dUnit);
+                        return (
                         <div key={tx.id || ti} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', borderLeft: '2px solid var(--color-brand)', paddingLeft: 12, position: 'relative' }}>
                           <div style={{ flex: 1 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span className={`badge ${tx.type === 'STOCK_IN' ? 'badge-success' : tx.type === 'PARTIAL_CUT' ? 'badge-warning' : 'badge-secondary'}`} style={{ fontSize: 10 }}>
-                                {tx.type.replace('_', ' ')}
+                              <span className={`badge ${movement.tone}`} style={{ fontSize: 10 }}>
+                                {movement.label}
                               </span>
                               <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
                                 {formatDateTime(tx.createdAt)}
                               </span>
                             </div>
                             <div style={{ fontSize: 12.5, fontWeight: 600, marginTop: 4 }}>
-                              {tx.type === 'PARTIAL_CUT' ? `Cut ${tx.quantityMoved} ${dUnit}` : `${tx.quantityMoved} ${dUnit} moved`}
-                              {tx.previousQuantity !== null && tx.newQuantity !== null && (
+                              {movement.text}
+                              {tx.previousQuantity !== null && tx.newQuantity !== null && tx.previousQuantity !== tx.newQuantity && (
                                 <span style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 400, marginLeft: 6 }}>
                                   ({tx.previousQuantity} &rarr; {tx.newQuantity} {dUnit})
                                 </span>
@@ -1647,12 +1675,13 @@ export default function InventoryDashboardPage() {
                             )}
                             {tx.operator?.name && (
                               <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                                Operator: {tx.operator.name}
+                                By {tx.operator.name}
                               </div>
                             )}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)', textAlign: 'center', padding: 12 }}>

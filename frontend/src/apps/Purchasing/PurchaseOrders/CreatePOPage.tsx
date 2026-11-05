@@ -18,6 +18,14 @@ interface SupplierOption {
   phone: string | null;
 }
 
+// A saved line whose only allocation is its full quantity for the order's client
+const wholeForOrderClient = (line: any, orderClient?: string | null): boolean => {
+  const allocs = line.allocations || [];
+  return Boolean(orderClient) && allocs.length === 1
+    && String(allocs[0].clientName || '').trim().toLowerCase() === String(orderClient).trim().toLowerCase()
+    && Math.abs(Number(allocs[0].allocatedQty) - Number(line.orderedQty)) < 0.005;
+};
+
 export default function CreatePOPage() {
   const { id } = useParams();
   const isEditMode = Boolean(id);
@@ -197,7 +205,8 @@ export default function CreatePOPage() {
             id: l.id,
             costPrice: '',
             hasCost: Boolean(l.hasCost),
-            allocations: (l.allocations || []).map((a: any) => ({
+            // An item wholly for the order's client is not a split
+            allocations: wholeForOrderClient(l, po.targetClient) ? [] : (l.allocations || []).map((a: any) => ({
               clientId: a.clientId || undefined,
               clientName: a.clientName || '',
               allocatedQty: (a.allocatedQty || '').toString(),
@@ -261,6 +270,8 @@ export default function CreatePOPage() {
   }, [clientsList, clientInput]);
 
   const isNewClient = Boolean(clientInput.trim() && !matchedClient);
+  // Once any item is split between clients, the order no longer has one client
+  const clientSplit = lines.some(l => (l.allocations || []).length > 0);
 
   // Filter suppliers as user types in the input
   const filteredSuppliers = useMemo(() => {
@@ -311,7 +322,12 @@ export default function CreatePOPage() {
     const currentTotalAlloc = currentAlloc.reduce((sum, a) => sum + (parseFloat(a.allocatedQty) || 0), 0);
     const remaining = Math.max(0, parseFloat((totalOrdered - currentTotalAlloc).toFixed(2)));
 
-    newLines[lineIdx].allocations = [
+    // Splitting an item that was going to the order's client starts from that client
+    const orderClient = currentAlloc.length === 0 ? matchedClient : null;
+    newLines[lineIdx].allocations = orderClient ? [
+      { clientId: orderClient.id, clientName: orderClient.name, allocatedQty: totalOrdered > 0 ? totalOrdered.toString() : '', notes: '' },
+      { clientName: '', allocatedQty: '', notes: '' },
+    ] : [
       ...currentAlloc,
       {
         clientName: '',
@@ -417,7 +433,8 @@ export default function CreatePOPage() {
       return; 
     }
 
-    const masterClient = form.targetClient?.trim() || '';
+    // With the client field locked by a split, unsplit items go to the chosen client only if it is in the master
+    const masterClient = clientSplit ? (matchedClient?.name || '') : (form.targetClient?.trim() || '');
     const matchedMasterClient = masterClient
       ? clientsList.find(c => c.name.toLowerCase() === masterClient.toLowerCase())
       : undefined;
@@ -660,7 +677,7 @@ export default function CreatePOPage() {
                       <span style={{ color: '#cbd5e1' }}>•</span>
                       <span><strong>Delivery:</strong> {formatDate(form.expectedDate)}</span>
                       <span style={{ color: '#cbd5e1' }}>•</span>
-                      <span><strong>Client:</strong> {form.targetClient ? <strong style={{ color: '#1e40af' }}>{form.targetClient}</strong> : 'General Stock'}</span>
+                      <span><strong>Client:</strong> {clientSplit ? 'Split per item' : form.targetClient ? <strong style={{ color: '#1e40af' }}>{form.targetClient}</strong> : 'General Stock'}</span>
                     </div>
                   )}
                 </div>
@@ -831,6 +848,15 @@ export default function CreatePOPage() {
                       Client <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(Optional)</span>
                     </label>
 
+                    {clientSplit ? (
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, height: 40, padding: '0 12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', background: '#f1f5f9', color: '#334155', fontSize: 13.5, fontWeight: 600 }}
+                        title="Remove the item splits to choose one client for the whole order"
+                      >
+                        <LockKeyhole size={15} color="var(--color-text-muted)" />
+                        <Users size={15} color="var(--color-brand)" /> Split between clients per item
+                      </div>
+                    ) : (<>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
                         <Search size={16} style={{ position: 'absolute', left: 12, color: 'var(--color-text-muted)', pointerEvents: 'none' }} />
@@ -981,9 +1007,10 @@ export default function CreatePOPage() {
                         </button>
                       </div>
                     )}
+                    </>)}
 
                     {/* Registered Client Badge */}
-                    {matchedClient && (
+                    {matchedClient && !clientSplit && (
                       <div style={{
                         marginTop: 6,
                         padding: '4px 10px',
@@ -1003,9 +1030,11 @@ export default function CreatePOPage() {
                     )}
 
                     <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 4 }}>
-                      {form.targetClient 
-                        ? `Whole order will be earmarked for ${form.targetClient}. Leave blank for General Stock.`
-                        : 'Empty = General Stock. You can also split individual lines below.'}
+                      {clientSplit
+                        ? `Clients are set on each item. Items not split go to ${matchedClient?.name || 'General Stock'}. Remove the item splits to change this.`
+                        : form.targetClient
+                          ? `Whole order will be earmarked for ${form.targetClient}. Leave blank for General Stock.`
+                          : 'Empty = General Stock. You can also split individual lines below.'}
                     </div>
                   </div>
 

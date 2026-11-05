@@ -18,6 +18,7 @@ import {
   ArrowRightLeft
 } from 'lucide-react';
 import SpecLine from '../../../components/Common/SpecLine';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import '../../../styles/components.css';
 
 interface LocationSlot {
@@ -185,8 +186,8 @@ export default function PutAwayPage() {
   const getUnitLabel = (item: { uom?: string | null; itemType?: string }) => unitLabel(uomOf(item));
 
   // ─── Step 1: Confirm Location ──────────────────────────────────────────────
-  const handleScanLocation = async () => {
-    const loc = locationInput.trim().toUpperCase();
+  const handleScanLocation = async (scanned = locationInput) => {
+    const loc = scanned.trim().toUpperCase();
     if (!loc) return;
 
     setIsSubmitting(true);
@@ -206,8 +207,8 @@ export default function PutAwayPage() {
   };
 
   // ─── Step 2: Confirm Batch ─────────────────────────────────────────────────
-  const handleScanBatch = async () => {
-    const bCode = batchInput.trim().toUpperCase();
+  const handleScanBatch = async (scanned = batchInput) => {
+    const bCode = scanned.trim().toUpperCase();
     if (!bCode) return;
 
     setIsSubmitting(true);
@@ -508,16 +509,20 @@ export default function PutAwayPage() {
             <div className="putaway-scan-icon"><ScanLine size={30} /></div>
             <h2>Scan the shelf barcode</h2>
             <p>Rack position like <code>A-B1-L1-P1</code>, or floor spot like <code>FR-01</code></p>
-            <input
-              ref={locationInputRef}
-              className="form-input putaway-input"
-              placeholder="Shelf barcode"
-              aria-label="Shelf barcode"
-              value={locationInput}
-              onChange={e => setLocationInput(e.target.value.toUpperCase())}
-              autoComplete="off"
-              autoFocus
-            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                ref={locationInputRef}
+                className="form-input putaway-input"
+                placeholder="Shelf barcode"
+                aria-label="Shelf barcode"
+                value={locationInput}
+                onChange={e => setLocationInput(e.target.value.toUpperCase())}
+                autoComplete="off"
+                autoFocus
+              />
+              <CameraScanButton size={60} title="Scan the shelf with the camera"
+                onScan={code => { setLocationInput(code.toUpperCase()); handleScanLocation(code); }} />
+            </div>
             <button type="submit" className="btn btn-primary putaway-go" disabled={isSubmitting || !locationInput.trim()}>
               {isSubmitting ? <span className="spinner" /> : <><Check size={18} /> Confirm shelf</>}
             </button>
@@ -530,16 +535,20 @@ export default function PutAwayPage() {
             <div className="putaway-scan-icon"><ScanLine size={30} /></div>
             <h2>Scan the roll barcode</h2>
             <p>The barcode label on the roll, pack or box</p>
-            <input
-              ref={batchInputRef}
-              className="form-input putaway-input"
-              placeholder="Roll barcode"
-              aria-label="Roll barcode"
-              value={batchInput}
-              onChange={e => setBatchInput(e.target.value.toUpperCase())}
-              autoComplete="off"
-              autoFocus
-            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                ref={batchInputRef}
+                className="form-input putaway-input"
+                placeholder="Roll barcode"
+                aria-label="Roll barcode"
+                value={batchInput}
+                onChange={e => setBatchInput(e.target.value.toUpperCase())}
+                autoComplete="off"
+                autoFocus
+              />
+              <CameraScanButton size={60} title="Scan the roll with the camera"
+                onScan={code => { setBatchInput(code.toUpperCase()); handleScanBatch(code); }} />
+            </div>
             <button type="submit" className="btn btn-primary putaway-go" disabled={isSubmitting || !batchInput.trim()}>
               {isSubmitting ? <span className="spinner" /> : <><Check size={18} /> Confirm roll</>}
             </button>

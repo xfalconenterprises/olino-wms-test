@@ -51,12 +51,6 @@ export function totalsByUnit(rows: { uom?: string | null; quantity: number }[]):
     .sort((a, b) => (ORDER.indexOf(a[0]) + 1 || 99) - (ORDER.indexOf(b[0]) + 1 || 99));
 }
 
-/** e.g. "120.5 m + 34.2 kg" (or "120.5 Meters + 34.2 Kg" with long names). */
-export function formatTotals(rows: { uom?: string | null; quantity: number }[], long = false): string {
-  const parts = totalsByUnit(rows).map(([u, q]) => `${q} ${long ? unitName(u) : unitLabel(u)}`);
-  return parts.join(' + ') || '0';
-}
-
 /** Fabric type code as people read it: PLAIN_SHIRTING → "Plain Shirting". */
 export function fabricCategoryLabel(code?: string | null): string {
   if (!code) return '';

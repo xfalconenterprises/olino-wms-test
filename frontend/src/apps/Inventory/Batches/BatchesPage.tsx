@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { formatDate } from '../../../utils/format';
 import { formatTotals, unitLabel, uomOf } from '../../../utils/units';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import '../../../styles/components.css';
 
 interface PendingBatch {
@@ -276,16 +277,19 @@ export default function BatchesPage() {
 
       {/* Sub-Filters Toolbar for Dock Queue */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-        <div style={{ position: 'relative', width: 340 }}>
-          <Search size={16} color="var(--color-text-muted)" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
-          <input
-            type="text"
-            className="form-input"
-            placeholder="Search Batch, Brand, Shade, Art No, PO..."
-            value={dockSearch}
-            onChange={e => setDockSearch(e.target.value)}
-            style={{ paddingLeft: 36, width: '100%', height: 38 }}
-          />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ position: 'relative', width: 340 }}>
+            <Search size={16} color="var(--color-text-muted)" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
+            <input
+              type="text"
+              className="form-input"
+              placeholder="Search Batch, Brand, Shade, Art No, PO..."
+              value={dockSearch}
+              onChange={e => setDockSearch(e.target.value)}
+              style={{ paddingLeft: 36, width: '100%', height: 38 }}
+            />
+          </div>
+          <CameraScanButton size={44} title="Find a roll with the camera" onScan={setDockSearch} />
         </div>
 
         <div style={{ display: 'flex', gap: 6 }}>
@@ -484,16 +488,19 @@ export default function BatchesPage() {
               {/* Target Location Input */}
               <div className="form-group" style={{ marginBottom: 14 }}>
                 <label className="form-label" style={{ fontWeight: 600 }}>Target Shelf Code *</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="e.g. A-B1-L1-P1 or FR-01"
-                  value={targetLocationCode}
-                  onChange={e => setTargetLocationCode(e.target.value.toUpperCase())}
-                  required
-                  autoFocus
-                  style={{ textTransform: 'uppercase', fontFamily: 'monospace', fontWeight: 600 }}
-                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g. A-B1-L1-P1 or FR-01"
+                    value={targetLocationCode}
+                    onChange={e => setTargetLocationCode(e.target.value.toUpperCase())}
+                    required
+                    autoFocus
+                    style={{ textTransform: 'uppercase', fontFamily: 'monospace', fontWeight: 600 }}
+                  />
+                  <CameraScanButton size={44} title="Scan the shelf with the camera" onScan={code => setTargetLocationCode(code.toUpperCase())} />
+                </div>
                 <span className="form-hint" style={{ fontSize: 11 }}>Scan rack location barcode or type location identifier</span>
               </div>
 

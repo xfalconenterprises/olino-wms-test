@@ -5,6 +5,7 @@ import { apiError, openPrintPage } from '../../../utils/printPage';
 import { autoPrintReceivedLabel, printTSPL } from '../../../utils/printer';
 import TouchChoice from './TouchChoice';
 import CancelReturnModal from './CancelReturnModal';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import { formatDate, formatDateTime } from '../../../utils/format';
@@ -48,12 +49,12 @@ export default function CustomerReturnsTab() {
   const loadList = (q = search) => api.get('/api/returns/customer', { params: { search: q || undefined } }).then(r => setList(r.data)).catch(() => {});
   useEffect(() => { loadList(''); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const find = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!dcInput.trim()) return;
+  const find = async (e?: React.FormEvent, scanned = dcInput) => {
+    e?.preventDefault();
+    if (!scanned.trim()) return;
     setError(''); setSaved(null);
     try {
-      const { data } = await api.get(`/api/returns/customer/lookup/${encodeURIComponent(dcInput.trim())}`);
+      const { data } = await api.get(`/api/returns/customer/lookup/${encodeURIComponent(scanned.trim())}`);
       setLookup(data);
       setRows(Object.fromEntries(data.lines.map((l: DcLine) => [l.dcLineId, { qty: '', condition: 'GOOD', notes: '' }])));
       setReason(''); setRemarks('');
@@ -127,6 +128,7 @@ export default function CustomerReturnsTab() {
           <form onSubmit={find} style={{ display: 'flex', gap: 8, marginBottom: lookup ? 16 : 0, flexWrap: 'wrap' }}>
             <input className="form-input" value={dcInput} onChange={e => setDcInput(e.target.value)} placeholder="Scan or type the delivery challan number, e.g. DC-2026-0012"
               style={{ flex: '1 1 320px', minHeight: 48, fontFamily: 'monospace' }} autoFocus />
+            <CameraScanButton title="Scan the challan with the camera" onScan={code => { setDcInput(code); find(undefined, code); }} />
             <button className="btn btn-primary" type="submit" style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 48 }}><Search size={18} /> Find challan</button>
           </form>
 

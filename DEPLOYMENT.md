@@ -2,7 +2,8 @@
 
 Olino WMS runs as **one Node.js process** that serves both the screens and the API on a single
 port. PostgreSQL runs on the same machine and is reachable **only from that machine**. Warehouse
-PCs, tablets and scanners open `http://<server-ip>:4000` in a browser.
+PCs, tablets and scanners open `http://<server-ip>:4000` in a browser (the touch screens run Edge
+in kiosk mode).
 
 ```
  Warehouse PCs / tablets ──LAN──►  :4000  Node (screens + /api)  ──localhost──►  PostgreSQL :5432
@@ -10,18 +11,18 @@ PCs, tablets and scanners open `http://<server-ip>:4000` in a browser.
                                               └──LAN──► TSC label printers :9100
 ```
 
-Docker is used **only on development machines**. The server runs PostgreSQL natively.
+The server is a Linux machine (`olinowms1`). The app lives in `/opt/olino-wms` and runs as the
+systemd service `olino-wms`. Docker is used **only on development machines**.
 
 ---
 
-## 1. Server prerequisites (Windows)
+## 1. Server prerequisites
 
 | Software | Version | Notes |
 |---|---|---|
-| Node.js | 22 LTS or newer | Install with the defaults (adds `node` / `npm` to PATH). |
-| PostgreSQL | 16 | EnterpriseDB Windows installer. Remember the `postgres` superuser password. |
-| Git | any | Or copy the project folder over another way. |
-| NSSM | 2.24 | <https://nssm.cc> — runs the app as a Windows service. |
+| Node.js | 22 LTS or newer | e.g. from NodeSource: `node -v` must show v22+. |
+| PostgreSQL | 16 | `sudo apt install postgresql-16` (or the distribution's package). |
+| Git | any | To pull new versions. |
 
 Give the server a **fixed IP address** on the LAN (DHCP reservation or static), so the
 warehouse devices can always find it.
@@ -32,52 +33,40 @@ warehouse devices can always find it.
 
 ### 2.1 Listen on localhost only
 
-Edit `C:\Program Files\PostgreSQL\16\data\postgresql.conf`:
+In `/etc/postgresql/16/main/postgresql.conf`:
 
 ```conf
 listen_addresses = 'localhost'
 ```
 
-> The Windows installer sets this to `'*'` (all network cards) by default. Change it.
-
 ### 2.2 Allow local connections only, with passwords
 
-Edit `C:\Program Files\PostgreSQL\16\data\pg_hba.conf`. Keep **only** these non-comment lines:
+In `/etc/postgresql/16/main/pg_hba.conf`, keep **only** these non-comment lines:
 
 ```conf
-# TYPE  DATABASE  USER  ADDRESS        METHOD
-local   all       all                  scram-sha-256
-host    all       all   127.0.0.1/32   scram-sha-256
-host    all       all   ::1/128        scram-sha-256
+# TYPE  DATABASE  USER      ADDRESS        METHOD
+local   all       postgres                 peer
+local   all       all                      scram-sha-256
+host    all       all       127.0.0.1/32   scram-sha-256
+host    all       all       ::1/128        scram-sha-256
 ```
 
-Delete any line with `0.0.0.0/0`, `::/0`, a LAN range such as `192.168.x.x/24`, or the method `trust`.
+Delete any line with `0.0.0.0/0`, `::/0`, a LAN range such as `192.168.x.x/24`, or the method
+`trust`. Then `sudo systemctl restart postgresql`.
 
-Restart PostgreSQL: `services.msc` → **postgresql-x64-16** → Restart, or in an admin PowerShell:
+Port 5432 must **not** be opened in the firewall.
 
-```powershell
-Restart-Service postgresql-x64-16
-```
-
-### 2.3 Firewall: do NOT open 5432
-
-There must be **no** inbound firewall rule for port 5432. Check:
-
-```powershell
-Get-NetFirewallPortFilter | Where-Object LocalPort -eq 5432 | Get-NetFirewallRule
-```
-
-If anything is listed, remove it (`Remove-NetFirewallRule -Name <Name>`).
-
-### 2.4 Create a dedicated database user
+### 2.3 Create a dedicated database user
 
 Generate a password made only of letters and digits, so it needs no escaping inside a URL:
 
-```powershell
+```bash
 node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 ```
 
-Open **SQL Shell (psql)** as `postgres` and run (replace the password):
+```bash
+sudo -u postgres psql
+```
 
 ```sql
 CREATE ROLE olino_app LOGIN PASSWORD 'PASTE_GENERATED_PASSWORD_HERE';
@@ -91,19 +80,16 @@ superuser and cannot see other databases.
 
 ## 3. Install the application
 
-Example location: `C:\olino-wms`.
-
-```powershell
-cd C:\
-git clone <repository-url> olino-wms
-cd C:\olino-wms
+```bash
+sudo git clone <repository-url> /opt/olino-wms
+cd /opt/olino-wms
 ```
 
-### 3.1 Configure `backend\.env`
+### 3.1 Configure `backend/.env`
 
-```powershell
-copy backend\.env.example backend\.env
-notepad backend\.env
+```bash
+cp backend/.env.example backend/.env
+nano backend/.env
 ```
 
 ```env
@@ -119,101 +105,90 @@ NODE_ENV=production
 - `JWT_SECRET` is **required**. The app refuses to start without it. Changing it later logs
   everyone out, which is harmless.
 - `.env` is never committed to git. Keep a copy of it somewhere safe.
+- If a reverse proxy (e.g. Nginx) is ever put in front on this machine, add `HOST=127.0.0.1`
+  so the app is reachable only through the proxy.
 
 ### 3.2 Install, build, create tables, create the admin
 
-```powershell
+```bash
 npm run install:all     # installs backend + frontend packages
-npm run build           # builds the screens (frontend\dist) and the server (backend\dist)
+npm run build           # builds the screens (frontend/dist) and the server (backend/dist)
 npm run db:migrate      # creates / updates the database tables
 npm run db:seed         # creates the first admin account (only if none exists)
 ```
 
-> Do not set `NODE_ENV=production` as a *system* environment variable before
-> `npm run install:all`. npm would then skip the build tools that `npm run build` needs.
-> Setting it inside `backend\.env` is correct.
+> Don't export `NODE_ENV=production` in the shell before `npm run install:all`; npm would then
+> skip the build tools that `npm run build` needs. Setting it inside `backend/.env` is correct.
 
-### 3.3 Test run
-
-```powershell
-npm start
-```
-
-Open `http://localhost:4000` on the server. Log in with:
-
-| | |
-|---|---|
-| Username | `admin` |
-| Password | `admin123` |
-| Badge / PIN | `EMP-0001` / `112233` |
-
-You are asked to choose a new password (and a new PIN at the first badge login) straight away.
-Then create the real user accounts under **Administration → Users**.
-
-Press `Ctrl+C` to stop the test run.
+First login: username `admin`, password `admin123` (badge `EMP-0001`, PIN `112233`). You are
+asked to choose a new password (and a new PIN at the first badge login) straight away. Then
+create the real user accounts under **Administration → Users & Roles**.
 
 ---
 
-## 4. Run as a Windows service
+## 4. Run as a systemd service
 
-Admin PowerShell (adjust paths if Node or the app live elsewhere):
+`/etc/systemd/system/olino-wms.service`:
 
-```powershell
-mkdir C:\olino-wms\logs
+```ini
+[Unit]
+Description=Olino WMS
+After=network.target postgresql.service
+Requires=postgresql.service
 
-nssm install OlinoWMS "C:\Program Files\nodejs\node.exe" "dist\index.js"
-nssm set OlinoWMS AppDirectory "C:\olino-wms\backend"
-nssm set OlinoWMS AppStdout "C:\olino-wms\logs\app.log"
-nssm set OlinoWMS AppStderr "C:\olino-wms\logs\app.log"
-nssm set OlinoWMS AppRotateFiles 1
-nssm set OlinoWMS AppRotateBytes 10485760
-nssm set OlinoWMS Start SERVICE_AUTO_START
-nssm set OlinoWMS DependOnService postgresql-x64-16
-nssm start OlinoWMS
+[Service]
+WorkingDirectory=/opt/olino-wms/backend
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=5
+# Run as a normal account that owns /opt/olino-wms, never as root
+User=olino
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-`AppDirectory` must be the `backend` folder. That is where the app reads `.env` and stores
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now olino-wms
+```
+
+`WorkingDirectory` must be the `backend` folder. That is where the app reads `.env` and stores
 `printer-config.json` (the Printer Settings page).
 
-The service starts on boot, after PostgreSQL, and restarts automatically if it crashes.
-Useful commands: `nssm restart OlinoWMS`, `nssm stop OlinoWMS`, `nssm edit OlinoWMS`.
+Useful commands: `sudo systemctl restart olino-wms`, `sudo systemctl status olino-wms`,
+`journalctl -u olino-wms -f` (live log: one line per API call, plus any errors).
 
 ---
 
 ## 5. Open the app port on the LAN
 
-Open **only** the app port, and only on private networks:
+Open **only** the app port, and only to the warehouse network, e.g. with ufw:
 
-```powershell
-New-NetFirewallRule -DisplayName "Olino WMS" -Direction Inbound -Protocol TCP `
-  -LocalPort 4000 -Action Allow -Profile Domain,Private
+```bash
+sudo ufw allow from 192.168.0.0/16 to any port 4000 proto tcp
 ```
-
-Make sure the server's network connection is set to **Private**, not Public
-(Settings → Network & internet → the connection → Network profile type).
-
-Warehouse devices now use `http://<server-ip>:4000`.
 
 **Label printers:** the server sends labels to the TSC printers on TCP 9100. The printers must
 be on the same LAN with fixed **private** IP addresses (192.168.x.x, 10.x.x.x or
-172.16–31.x.x). The app refuses other addresses. Add them under
-**Administration → Printer Settings**.
+172.16–31.x.x). The app refuses other addresses. Add them under **Printer Settings**.
 
 ---
 
 ## 6. Updating to a new version
 
-```powershell
-cd C:\olino-wms
-nssm stop OlinoWMS
+```bash
+cd /opt/olino-wms
+pg_dump -h localhost -U olino_app -F c -f ~/olino_wms_before_update.dump olino_wms   # safety copy
 git pull
 npm run install:all
 npm run build
 npm run db:migrate
-nssm start OlinoWMS
+sudo systemctl restart olino-wms
 ```
 
-`db:migrate` only applies new migrations. It never deletes existing data.
+`db:migrate` only applies new migrations (folders under `backend/prisma/migrations/`). It never
+deletes existing data. An applied migration is never edited; every schema change gets a new one.
 
 ---
 
@@ -222,25 +197,31 @@ nssm start OlinoWMS
 Back up the database every night, and copy the backups **off the server** (NAS, USB drive,
 another PC).
 
-`C:\olino-wms\backup.ps1`:
+`/opt/olino-wms/backup.sh` (make it executable with `chmod +x`):
 
-```powershell
-$env:PGPASSWORD = 'PASTE_GENERATED_PASSWORD_HERE'
-$dir = 'D:\olino-backups'
-New-Item -ItemType Directory -Force $dir | Out-Null
-$file = Join-Path $dir ("olino_wms_" + (Get-Date -Format 'yyyy-MM-dd_HHmm') + ".dump")
-& 'C:\Program Files\PostgreSQL\16\bin\pg_dump.exe' -h localhost -U olino_app -F c -f $file olino_wms
-Copy-Item C:\olino-wms\backend\printer-config.json $dir -ErrorAction SilentlyContinue
+```bash
+#!/bin/sh
+export PGPASSWORD='PASTE_GENERATED_PASSWORD_HERE'
+dir=/var/backups/olino
+mkdir -p "$dir"
+pg_dump -h localhost -U olino_app -F c -f "$dir/olino_wms_$(date +%Y-%m-%d_%H%M).dump" olino_wms
+cp /opt/olino-wms/backend/printer-config.json "$dir/" 2>/dev/null
 # keep 30 days
-Get-ChildItem $dir -Filter *.dump | Where-Object LastWriteTime -lt (Get-Date).AddDays(-30) | Remove-Item
+find "$dir" -name '*.dump' -mtime +30 -delete
 ```
 
-Schedule it with Task Scheduler (daily, "Run whether user is logged on or not").
+Schedule it nightly with `crontab -e`:
 
-**Restore** into an empty database (stop the service first):
+```
+30 23 * * * /opt/olino-wms/backup.sh
+```
 
-```powershell
-& 'C:\Program Files\PostgreSQL\16\bin\pg_restore.exe' -h localhost -U olino_app -d olino_wms --clean --if-exists <file.dump>
+**Restore** into the database (stop the service first):
+
+```bash
+sudo systemctl stop olino-wms
+pg_restore -h localhost -U olino_app -d olino_wms --clean --if-exists <file.dump>
+sudo systemctl start olino-wms
 ```
 
 Test a restore once on another machine, so you know the backups actually work.
@@ -249,9 +230,9 @@ Test a restore once on another machine, so you know the backups actually work.
 
 ## 8. Development machine (Docker only here)
 
-```powershell
+```bash
 docker compose up -d                  # PostgreSQL 16 in a container (docker-compose.yml)
-copy backend\.env.example backend\.env  # defaults already match docker-compose.yml
+cp backend/.env.example backend/.env  # defaults already match docker-compose.yml
 npm run install:all
 npm run db:migrate
 npm run db:seed
@@ -260,7 +241,7 @@ npm run dev                           # API on :4000 + screens with hot reload
 
 Open **http://localhost:3000**. The dev screens forward `/api` calls to the API on port 4000.
 
-When you change `backend/prisma/schema.prisma`, create a migration with
+When you change `backend/prisma/schema.prisma`, create a **new** migration with
 `cd backend` then `npx prisma migrate dev --name <what-changed>`, and commit the new folder
 under `backend/prisma/migrations/`.
 
@@ -273,8 +254,9 @@ http://localhost:4000.
 
 | Symptom | Check |
 |---|---|
-| Service stops immediately | `C:\olino-wms\logs\app.log`. Usually a missing `JWT_SECRET` or a wrong `DATABASE_URL` in `backend\.env`. |
+| Service stops immediately | `journalctl -u olino-wms -n 50`. Usually a missing `JWT_SECRET` or a wrong `DATABASE_URL` in `backend/.env`. |
 | `password authentication failed` | The password in `DATABASE_URL` must match the `CREATE ROLE` password exactly. |
-| Works on the server, not on other PCs | Firewall rule for 4000 is missing, or the network profile is Public. |
+| 500 errors mentioning a missing column after an update | `npm run db:migrate` was not run. Run it, then restart the service. |
+| Works on the server, not on other PCs | Port 4000 is not open in the firewall for the LAN. |
 | Browser shows "Cannot GET /" | The log says "Frontend build not found". Run `npm run build`, then restart the service. |
 | Printer not reachable | Ping the printer from the server. Its IP must be private, and port 9100 must be open on the printer. |

@@ -45,6 +45,7 @@ import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrep
 import { QuickAddClientModal, QuickAddSupplierModal } from '../../../components/Common/QuickAddModals';
 import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } from '../../../components/Common/RollCorrection';
 import { useConfirm } from '../../../components/Common/ConfirmDialog';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import '../../../styles/components.css';
 
 interface Supplier {
@@ -258,6 +259,22 @@ export default function EntryGatePage() {
   const [scanError, setScanError] = useState('');
   const [scanning, setScanning] = useState(false);
 
+  // Opens a PO from its number: typed, from a handheld scanner, or read by the camera
+  const openPoByNumber = async (typed: string) => {
+    const q = typed.trim().toUpperCase();
+    if (!q) return;
+    setScanError('');
+    setScanning(true);
+    try {
+      const res = await api.get(`/api/purchase-orders/by-number/${encodeURIComponent(q)}`);
+      navigate(`/entry-gate/${res.data.id}`);
+    } catch {
+      setScanError(`Purchase Order "${q}" not found.`);
+    } finally {
+      setScanning(false);
+    }
+  };
+
   // Direct Inward General Information State
   const [clientsList, setClientsList] = useState<any[]>([]);
   const [directSupplierInput, setDirectSupplierInput] = useState('');
@@ -415,6 +432,9 @@ export default function EntryGatePage() {
       printGrnVoucher(newGrn.id);
       setSessionRolls([]);
       setDiscrepancies([]);
+      // The next delivery comes with its own invoice
+      setInvoiceRef('');
+      setGrnRemarks('');
 
       // Refresh pending items from supplier to keep balances up to date
       if (selectedSupplierId) {
@@ -2960,21 +2980,7 @@ export default function EntryGatePage() {
               </div>
             )}
 
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              const q = scanInput.trim().toUpperCase();
-              if (!q) return;
-              setScanError('');
-              setScanning(true);
-              try {
-                const res = await api.get(`/api/purchase-orders/by-number/${encodeURIComponent(q)}`);
-                navigate(`/entry-gate/${res.data.id}`);
-              } catch {
-                setScanError(`Purchase Order "${q}" not found.`);
-              } finally {
-                setScanning(false);
-              }
-            }}>
+            <form onSubmit={e => { e.preventDefault(); openPoByNumber(scanInput); }}>
               <div style={{ display: 'flex', gap: 10, maxWidth: 420, margin: '0 auto' }}>
                 <div style={{ position: 'relative', flex: 1 }}>
                   <input
@@ -3023,6 +3029,9 @@ export default function EntryGatePage() {
                     </button>
                   )}
                 </div>
+
+                <CameraScanButton size={46} disabled={scanning} title="Scan the PO with the camera"
+                  onScan={code => { setScanInput(code); openPoByNumber(code); }} />
 
                 <button
                   type="submit"

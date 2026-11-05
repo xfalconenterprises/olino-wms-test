@@ -15,12 +15,13 @@ import {
   Layers, 
   ShoppingCart, 
   AlertTriangle,
-  ExternalLink,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Check,
   Eye
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import api from '../../../utils/api';
 import { formatDate } from '../../../utils/format';
 import { useAuth } from '../../../hooks/useAuth';
@@ -1103,15 +1104,14 @@ export default function SuppliersTrackingPage() {
                                     {isExpanded ? 'Hide Line Items' : `Verify PO Lines (${po.lines?.length || 0} Items)`}
                                   </button>
 
-                                  <a 
-                                    href={`/purchase-orders/${po.id}/view`} 
-                                    target="_blank" 
-                                    rel="noreferrer"
+                                  {/* Same window: a new tab has no way back in kiosk mode */}
+                                  <Link
+                                    to={`/purchase-orders/${po.id}/view`}
                                     style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--color-brand)', textDecoration: 'none', fontWeight: 600 }}
                                   >
                                     <span>Full PO Contract</span>
-                                    <ExternalLink size={12} />
-                                  </a>
+                                    <ChevronRight size={12} />
+                                  </Link>
                                 </div>
 
                                 {/* Expanded PO Verification Lines */}

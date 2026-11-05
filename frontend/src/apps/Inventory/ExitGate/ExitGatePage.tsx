@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../../../utils/api';
 import { openPrintPage } from '../../../utils/printPage';
 import { useAuth } from '../../../hooks/useAuth';
@@ -27,6 +28,7 @@ import { printTSPL } from '../../../utils/printer';
 import { formatDateTime } from '../../../utils/format';
 import { allowsDecimals, formatQty, formatTotals, unitLabel, uomOf } from '../../../utils/units';
 import { QuickAddClientModal } from '../../../components/Common/QuickAddModals';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import '../../../styles/components.css';
 
 interface DeliveryChallan {
@@ -228,9 +230,9 @@ export default function ExitGatePage() {
     }
   };
 
-  const handleScan = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const code = scanCode.trim().toUpperCase();
+  const handleScan = async (e?: React.FormEvent, scanned = scanCode) => {
+    e?.preventDefault();
+    const code = scanned.trim().toUpperCase();
     if (!code || !activeDC) return;
     setScanError('');
     setScanning(true);
@@ -495,9 +497,9 @@ export default function ExitGatePage() {
                   <button className="btn btn-secondary" onClick={handlePrintPartialLabels} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Printer size={16} /> Print Remainder Labels ({partialCutCount})
                   </button>
-                  <a href="/put-away" className="btn btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6, textDecoration: 'none', background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0' }}>
+                  <Link to="/put-away" className="btn btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6, textDecoration: 'none', background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0' }}>
                     <MapPin size={15} /> Put Away Remainder Rolls &rarr;
-                  </a>
+                  </Link>
                 </>
               )}
             </div>
@@ -540,10 +542,12 @@ export default function ExitGatePage() {
                 }}
                 autoFocus
               />
-              <button 
-                type="submit" 
-                className="btn btn-primary" 
-                disabled={scanning || !scanCode.trim()} 
+              <CameraScanButton disabled={scanning} title="Scan the roll with the camera"
+                onScan={code => { setScanCode(code); setScanError(''); handleScan(undefined, code); }} />
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={scanning || !scanCode.trim()}
                 style={{ height: 48, padding: '0 24px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}
               >
                 {scanning ? <span className="spinner" /> : <Plus size={18} />} {scanning ? 'Scanning...' : 'Add Item'}

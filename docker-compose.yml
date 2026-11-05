@@ -1,5 +1,4 @@
-version: '3.9'
-
+# PostgreSQL for development machines only; the server runs PostgreSQL natively (see DEPLOYMENT.md)
 services:
   postgres:
     image: postgres:16-alpine

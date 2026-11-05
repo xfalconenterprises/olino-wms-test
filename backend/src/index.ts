@@ -55,7 +55,8 @@ app.use('/api/direct-inward/draft', express.json({ limit: '2mb' }));
 app.use(express.json());
 
 // ─── Request Logging Middleware ─────────────────────────────────────────────
-app.use((req, res, next) => {
+// API calls only; the screens' own files (scripts, fonts, logo) would just fill the log
+app.use('/api', (req, res, next) => {
   const start = Date.now();
   const { method, originalUrl } = req;
 

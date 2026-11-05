@@ -353,11 +353,20 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
         data: { batchId: batch.id, type: 'STOCK_IN', quantityMoved: meterVal, operatorId: req.user!.userId },
       });
 
-      const line = await tx.purchaseOrderLine.update({
+      let line = await tx.purchaseOrderLine.update({
         where: { id: poLineId },
         data: { receivedQty: { increment: meterVal } },
         include: { po: { include: { lines: true } } },
       });
+      // Added-up decimals drift (2273.8999…); this update holds the row lock, so tidy it in place
+      const tidy = Math.round(line.receivedQty * 1000) / 1000;
+      if (tidy !== line.receivedQty) {
+        line = await tx.purchaseOrderLine.update({
+          where: { id: poLineId },
+          data: { receivedQty: tidy },
+          include: { po: { include: { lines: true } } },
+        });
+      }
 
       const po = line.po;
       const allReceived = po.lines.every((l: any) => l.receivedQty >= l.orderedQty);
