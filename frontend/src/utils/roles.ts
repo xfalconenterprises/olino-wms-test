@@ -70,7 +70,7 @@ export const PERMISSION_GROUPS: {
     title: 'Inventory Module',
     description: 'Stock management, movements, audit logs and stock balance',
     permissions: [
-      { key: 'inv.dashboard',         label: 'Global Dashboard',            description: 'Executive stock snapshot, SKU rollup, item passport', app: 'INVENTORY', path: '/inventory/dashboard' },
+      { key: 'inv.dashboard',         label: 'Inventory Dashboard',         description: 'Executive stock snapshot, SKU rollup, item passport', app: 'INVENTORY', path: '/inventory/dashboard' },
       { key: 'inv.audit_log',          label: 'Audit Log & History',         description: 'Chronological timeline of all roll movements & cuts', app: 'INVENTORY', path: '/inventory/audit-log' },
       { key: 'inv.grn',                label: 'Goods Receipt Notes (GRN)',   description: 'View official inward stock receipt documents', app: 'INVENTORY', path: '/inventory/grn' },
       { key: 'inv.delivery_challans',  label: 'Delivery Challans (DC)',      description: 'Generate and review dispatch gate passes', app: 'INVENTORY', path: '/inventory/delivery-challans' },
@@ -99,19 +99,23 @@ export const PERMISSION_GROUPS: {
 
 // Every download in the system. Not a module: these are ticked one by one and only full access
 // ('*') includes them, so opening a screen never brings the right to take its data away.
-export const EXPORT_PERMISSIONS: { key: string; label: string; description: string }[] = [
-  { key: 'export.stock',             label: 'Global Dashboard Stock',    description: 'Excel of stock from the Global Dashboard' },
-  { key: 'export.delivery_challans', label: 'Delivery Challans',         description: 'Delivery challan register' },
-  { key: 'export.suppliers',         label: 'Suppliers Tracking',        description: 'Stock by supplier mill' },
-  { key: 'export.clients',           label: 'Clients Tracking',          description: 'Dispatches by client' },
-  { key: 'export.report_throughput', label: 'Report: Periodic Throughput', description: 'Inward and outward for a period' },
-  { key: 'export.report_shipments',  label: 'Report: Customer Shipments', description: 'Delivery challans by customer' },
-  { key: 'export.report_stock_master', label: 'Report: Stock Master',    description: 'Full stock list by product type' },
-  { key: 'export.report_suppliers',  label: 'Report: Supplier Performance', description: 'Supplier order and delivery figures' },
-  { key: 'export.report_capacity',   label: 'Report: Rack & Space Capacity', description: 'Rack usage and free space' },
-  { key: 'export.locations',         label: 'Location Barcodes',         description: 'Location lists and barcodes for label designers' },
-  { key: 'export.employee_barcodes', label: 'Employee Barcodes',         description: 'Employee ID barcode images' },
-  { key: 'export.log',               label: 'View Export Log',           description: 'See who exported stock and what they took' },
+// Grouped on the Users screen by the module whose screen has the download
+export const EXPORT_MODULES = ['Inventory', 'Administration · Reports', 'Administration'] as const;
+
+export const EXPORT_PERMISSIONS: { key: string; label: string; description: string; module: typeof EXPORT_MODULES[number] }[] = [
+  { key: 'export.stock',             label: 'Inventory Dashboard Stock', description: 'Excel of stock from the Inventory Dashboard', module: 'Inventory' },
+  { key: 'export.delivery_challans', label: 'Delivery Challans',         description: 'Delivery challan register', module: 'Inventory' },
+  { key: 'export.suppliers',         label: 'Suppliers Tracking',        description: 'Stock by supplier mill', module: 'Inventory' },
+  { key: 'export.report_throughput', label: 'Report: Periodic Throughput', description: 'Inward and outward for a period', module: 'Administration · Reports' },
+  { key: 'export.report_shipments',  label: 'Report: Customer Shipments', description: 'Delivery challans by customer', module: 'Administration · Reports' },
+  { key: 'export.report_stock_master', label: 'Report: Stock Master',    description: 'Full stock list by product type', module: 'Administration · Reports' },
+  { key: 'export.report_suppliers',  label: 'Report: Supplier Performance', description: 'Supplier order and delivery figures', module: 'Administration · Reports' },
+  { key: 'export.report_capacity',   label: 'Report: Rack & Space Capacity', description: 'Rack usage and free space', module: 'Administration · Reports' },
+  { key: 'export.report_year_end',   label: 'Report: Year-End Stock', description: 'Stock statement and client dispatch for a year or chosen dates', module: 'Administration · Reports' },
+  { key: 'export.clients',           label: 'Clients Tracking',          description: 'Dispatches by client', module: 'Administration' },
+  { key: 'export.locations',         label: 'Location Barcodes',         description: 'Location lists and barcodes for label designers', module: 'Administration' },
+  { key: 'export.employee_barcodes', label: 'Employee Barcodes',         description: 'Employee ID barcode images', module: 'Administration' },
+  { key: 'export.log',               label: 'View Export Log',           description: 'See who exported stock and what they took', module: 'Administration' },
 ];
 
 // Confidential cost prices: granted only by name. Full access ('*') and module fallbacks do not

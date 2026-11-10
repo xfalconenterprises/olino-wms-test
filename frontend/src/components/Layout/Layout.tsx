@@ -56,7 +56,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Printer Settings', path: '/settings/printer',   icon: Printer,      permission: 'ops.printer',    app: 'WAREHOUSE', section: 'Hardware' },
 
   // ─── 3. Inventory Module (Supervisory Control) ───────────────────────────
-  { label: 'Global Dashboard',   path: '/inventory/dashboard',          icon: LayoutDashboard,   permission: 'inv.dashboard',         app: 'INVENTORY', section: 'Master Inventory' },
+  { label: 'Inventory Dashboard', path: '/inventory/dashboard',          icon: LayoutDashboard,   permission: 'inv.dashboard',         app: 'INVENTORY', section: 'Master Inventory' },
   { label: 'Audit Log',          path: '/inventory/audit-log',          icon: ArrowRightLeft,    permission: 'inv.audit_log',         app: 'INVENTORY', section: 'Tracking & Movements' },
   { label: 'Goods Receipt Notes', path: '/inventory/grn',               icon: FileCheck,         permission: 'inv.grn',               app: 'INVENTORY' },
   { label: 'Delivery Challans',  path: '/inventory/delivery-challans',  icon: FileText,          permission: 'inv.delivery_challans', app: 'INVENTORY' },

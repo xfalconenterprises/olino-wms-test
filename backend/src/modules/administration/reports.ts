@@ -1,8 +1,11 @@
 import { Router, Request, Response } from 'express';
+import type { Prisma } from '@prisma/client';
 import { istDateKey, istDayEnd, istDayStart } from '../../utils/format';
+import { pageOf, pageReply } from '../../utils/paging';
 import prisma from '../../lib/prisma';
-import { requireAuth, requirePermission } from '../../middleware/auth';
-import { unitLabel, unitName } from '../../utils/units';
+import { requireAuth, requirePermission, hasCostAccess, type AuthUser } from '../../middleware/auth';
+import { totalsByUnit, unitLabel, unitName } from '../../utils/units';
+import { ownPasswordRefusal } from './cost-prices';
 
 const router = Router();
 
@@ -244,28 +247,41 @@ router.get('/periodic', requirePermission('admin.reports'), async (req: Request,
 });
 
 // ─── 2. Customer Shipments & Delivery Challans Tracker ─────────────────────────
+// With ?limit a page ({ rows, total, hasMore }); ?type=FABRIC|READY_MADE keeps challans carrying that kind
 router.get('/customer-shipments', requirePermission('admin.reports', 'inv.delivery_challans'), async (req: Request, res: Response) => {
-  const { search, from, to } = req.query;
+  const { from, to } = req.query;
+  const search = String(req.query.search || '').trim();
+  const type = String(req.query.type || '');
+  const page = pageOf(req.query);
+  const contains = (value: string) => ({ contains: value, mode: 'insensitive' as const });
+
+  const where: Prisma.DeliveryChallanWhereInput = {
+    status: 'DISPATCHED',
+    ...(search && {
+      OR: [
+        { challanNumber: contains(search) },
+        { customerName: contains(search) },
+        { destination: contains(search) },
+        { createdBy: { name: contains(search) } },
+        { lines: { some: { batch: { OR: [
+          { batchCode: contains(search) }, { brand: contains(search) }, { quality: contains(search) }, { shade: contains(search) }, { name: contains(search) },
+        ] } } } },
+      ],
+    }),
+    ...(type === 'FABRIC' && { lines: { some: { batch: { itemType: 'FABRIC' } } } }),
+    ...(type === 'READY_MADE' && { lines: { some: { batch: { itemType: { not: 'FABRIC' } } } } }),
+    ...(from || to
+      ? {
+          createdAt: {
+            ...(from && { gte: new Date(from as string) }),
+            ...(to && { lte: new Date(to as string) }),
+          },
+        }
+      : {}),
+  };
 
   const challans = await prisma.deliveryChallan.findMany({
-    where: {
-      status: 'DISPATCHED',
-      ...(search && {
-        OR: [
-          { challanNumber: { contains: search as string, mode: 'insensitive' } },
-          { customerName: { contains: search as string, mode: 'insensitive' } },
-          { destination: { contains: search as string, mode: 'insensitive' } },
-        ],
-      }),
-      ...(from || to
-        ? {
-            createdAt: {
-              ...(from && { gte: new Date(from as string) }),
-              ...(to && { lte: new Date(to as string) }),
-            },
-          }
-        : {}),
-    },
+    where,
     include: {
       createdBy: { select: { name: true } },
       lines: {
@@ -274,7 +290,8 @@ router.get('/customer-shipments', requirePermission('admin.reports', 'inv.delive
         },
       },
     },
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    ...(page && { take: page.take, skip: page.skip }),
   });
 
   const result = challans.map((dc: any) => {
@@ -336,7 +353,8 @@ router.get('/customer-shipments', requirePermission('admin.reports', 'inv.delive
     };
   });
 
-  res.json(result);
+  if (!page) { res.json(result); return; }
+  res.json(pageReply(result, await prisma.deliveryChallan.count({ where }), page));
 });
 
 // ─── 3. Stock Inventory Master Report ──────────────────────────────────────────
@@ -546,5 +564,190 @@ router.get('/location-map', requirePermission('admin.reports'), async (_req: Req
 
   res.json(result);
 });
+
+// ─── 6. Year-End Stock Statement (the business's own years) ────────────────────────
+// Every change to a roll's quantity is a movement (in: STOCK_IN; out: STOCK_OUT, PARTIAL_CUT), so a
+// roll's movements add up to its stock. For a period: opening stock is everything before its first day,
+// the period's movements are split by what they were, and closing = opening + those movements.
+// Years are the business's own, not the financial year: the current year is ended on any date, and the
+// next one starts the day after. The first year starts on the first stock record.
+
+interface ItemKey {
+  itemType: string; category: string | null; brand: string | null; quality: string | null; qualityName: string | null;
+  shade: string | null; size: string | null; name: string | null; artNo: string | null; uom: string;
+}
+
+const round3 = (n: number) => Math.round((Number(n) || 0) * 1000) / 1000;
+
+const dayKey = (d: Date) => d.toISOString().slice(0, 10);            // a DATE column → YYYY-MM-DD
+const asDate = (key: string) => new Date(`${key}T00:00:00.000Z`);    // YYYY-MM-DD → a DATE column
+const isDayKey = (v: unknown): v is string =>
+  typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(asDate(v).getTime()) && dayKey(asDate(v)) === v;
+const nextDay = (key: string) => { const d = asDate(key); d.setUTCDate(d.getUTCDate() + 1); return dayKey(d); };
+const ddmmyyyy = (key: string) => key.split('-').reverse().join('-');
+
+// A year-end can be undone (a wrong date) for this many days after it was made
+const UNDO_DAYS = 15;
+const undoUntil = (endedAt: Date) => new Date(endedAt.getTime() + UNDO_DAYS * 86_400_000);
+
+// Ending or undoing a year is kept to full administrators and cost-price holders
+const canEndYears = (user: AuthUser) => (user.permissions || []).includes('*') || hasCostAccess(user);
+
+/** The ended years (newest first) and the day the current year started. */
+async function stockYears() {
+  const ended = await prisma.stockYear.findMany({ orderBy: { endsOn: 'desc' } });
+  const [first] = await prisma.$queryRaw<{ first: Date | null }[]>`SELECT MIN("createdAt") AS first FROM transactions`;
+  const firstDay = first.first ? istDateKey(first.first) : istDateKey();
+  return { ended, currentStarts: ended.length ? nextDay(dayKey(ended[0].endsOn)) : firstDay };
+}
+
+/** Stock movement per item, and what each client was sent, from the first day to the last (IST, inclusive). */
+async function stockStatement(fromKey: string, toKey: string) {
+  const start = istDayStart(fromKey)!;
+  const end = istDayEnd(toKey)!;
+
+  const movements = await prisma.$queryRaw<(ItemKey & {
+    opening: number; received: number; customerReturns: number; dispatched: number; supplierReturns: number; adjustments: number;
+  })[]>`
+    WITH m AS (
+      SELECT t."batchId", t."createdAt",
+        CASE WHEN t.type = 'STOCK_IN' THEN t."quantityMoved" ELSE -t."quantityMoved" END AS delta,
+        CASE
+          WHEN t."referenceType" = 'DELIVERY_CHALLAN' THEN 'dispatched'
+          WHEN t."referenceType" = 'SUPPLIER_RETURN' THEN 'supplierReturns'
+          WHEN t."referenceType" = 'RETURN_CANCELLED' AND t.type = 'STOCK_IN' THEN 'supplierReturns'   -- a return to supplier undone
+          WHEN t."referenceType" IN ('CUSTOMER_RETURN', 'RETURN_CANCELLED') THEN 'customerReturns'    -- incl. a customer return undone
+          WHEN t."referenceType" IN ('SUPERVISOR_ADJUSTMENT', 'STOCK_COUNT') THEN 'adjustments'
+          WHEN t.type = 'STOCK_IN' OR t."referenceType" = 'RECEIPT_CORRECTION' THEN 'received'
+          ELSE 'adjustments'
+        END AS bucket
+      FROM transactions t
+      WHERE t."createdAt" <= ${end} AND t.type <> 'INTERNAL_TRANSFER'
+    )
+    SELECT b."itemType" AS "itemType", b.category, b.brand, b.quality, b.quality_name AS "qualityName", b.shade, b.size,
+           b.name, b."artNo" AS "artNo", b.uom,
+           SUM(CASE WHEN m."createdAt" < ${start} THEN m.delta ELSE 0 END) AS opening,
+           SUM(CASE WHEN m."createdAt" >= ${start} AND m.bucket = 'received' THEN m.delta ELSE 0 END) AS received,
+           SUM(CASE WHEN m."createdAt" >= ${start} AND m.bucket = 'customerReturns' THEN m.delta ELSE 0 END) AS "customerReturns",
+           SUM(CASE WHEN m."createdAt" >= ${start} AND m.bucket = 'dispatched' THEN m.delta ELSE 0 END) AS dispatched,
+           SUM(CASE WHEN m."createdAt" >= ${start} AND m.bucket = 'supplierReturns' THEN m.delta ELSE 0 END) AS "supplierReturns",
+           SUM(CASE WHEN m."createdAt" >= ${start} AND m.bucket = 'adjustments' THEN m.delta ELSE 0 END) AS adjustments
+    FROM m JOIN item_batches b ON b.id = m."batchId"
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10`;
+
+  // Out-movements are shown as the amount that went out (dispatched 120, not -120)
+  const items = movements.map(r => {
+    const opening = round3(r.opening);
+    const received = round3(r.received);
+    const customerReturns = round3(r.customerReturns);
+    const dispatched = round3(-r.dispatched);
+    const supplierReturns = round3(-r.supplierReturns);
+    const adjustments = round3(r.adjustments);
+    const closing = round3(opening + received + customerReturns - dispatched - supplierReturns + adjustments);
+    return { ...pickKey(r), opening, received, customerReturns, dispatched, supplierReturns, adjustments, closing };
+  })
+    .filter(i => [i.opening, i.received, i.customerReturns, i.dispatched, i.supplierReturns, i.adjustments, i.closing].some(v => Math.abs(v) >= 0.0005))
+    .sort((a, b) => [a.itemType, a.brand || a.name || '', a.quality || '', a.shade || ''].join('|')
+      .localeCompare([b.itemType, b.brand || b.name || '', b.quality || '', b.shade || ''].join('|'), undefined, { numeric: true }));
+
+  // What each client was sent in the period, per item
+  const sent = await prisma.$queryRaw<(ItemKey & { customerName: string; quantity: number; challans: bigint })[]>`
+    SELECT dc."customerName" AS "customerName", b."itemType" AS "itemType", b.category, b.brand, b.quality, b.quality_name AS "qualityName",
+           b.shade, b.size, b.name, b."artNo" AS "artNo", b.uom, SUM(l.quantity) AS quantity, COUNT(DISTINCT dc.id) AS challans
+    FROM delivery_challan_lines l
+    JOIN delivery_challans dc ON dc.id = l."dcId"
+    JOIN item_batches b ON b.id = l."batchId"
+    WHERE dc.status = 'DISPATCHED' AND dc.is_deleted = false AND dc."dispatchedAt" BETWEEN ${start} AND ${end}
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11`;
+  const challanCounts = await prisma.$queryRaw<{ customerName: string; challans: bigint }[]>`
+    SELECT "customerName" AS "customerName", COUNT(*) AS challans FROM delivery_challans
+    WHERE status = 'DISPATCHED' AND is_deleted = false AND "dispatchedAt" BETWEEN ${start} AND ${end}
+    GROUP BY 1`;
+  const clients = challanCounts
+    .map(c => ({
+      customerName: c.customerName,
+      challans: Number(c.challans),
+      totals: totalsByUnit(sent.filter(s => s.customerName === c.customerName).map(s => ({ uom: s.uom, quantity: s.quantity }))),
+      items: sent.filter(s => s.customerName === c.customerName)
+        .map(s => ({ ...pickKey(s), quantity: round3(s.quantity), challans: Number(s.challans) }))
+        .sort((a, b) => b.quantity - a.quantity),
+    }))
+    .sort((a, b) => a.customerName.localeCompare(b.customerName));
+
+  return { items, clients };
+}
+
+// GET /api/reports/year-end?from=YYYY-MM-DD&to=YYYY-MM-DD — the current year (from the day after the last
+// year-end, to today) unless dates are given; any ended year is just its own dates
+router.get('/year-end', requirePermission('admin.reports'), async (req: Request, res: Response) => {
+  const today = istDateKey();
+  const { ended, currentStarts } = await stockYears();
+  const from = isDayKey(req.query.from) ? req.query.from : currentStarts;
+  // A year ended today leaves the current year starting tomorrow: shown as that one (still empty) day
+  const to = isDayKey(req.query.to) && req.query.to < today ? req.query.to : (!isDayKey(req.query.from) && from > today ? from : today);
+  if (from > to) { res.status(400).json({ error: 'The first day must be on or before the last day.' }); return; }
+
+  const { items, clients } = await stockStatement(from, to);
+  res.json({
+    from,
+    to,
+    toToday: to === today,   // closing is the stock on hand today
+    currentYear: { from: currentStarts, to: currentStarts > today ? currentStarts : today },
+    currentStarted: currentStarts <= today,   // a year ended today leaves nothing to end until tomorrow
+    endedYears: ended.map(y => ({ id: y.id, from: dayKey(y.startsOn), to: dayKey(y.endsOn), endedByName: y.endedByName, endedAt: y.createdAt })),
+    canEndYear: canEndYears(req.user!),
+    // Only the latest year-end can be undone, and only for a while after it was made
+    latestUndoUntil: ended.length && undoUntil(ended[0].createdAt).getTime() > Date.now() ? undoUntil(ended[0].createdAt) : null,
+    items,
+    clients,
+  });
+});
+
+// POST /api/reports/year-end/end { endsOn, password } — ends the current year on that day; the next starts the day after
+router.post('/year-end/end', requirePermission('admin.reports'), async (req: Request, res: Response) => {
+  if (!canEndYears(req.user!)) { res.status(403).json({ error: 'You cannot end the year.' }); return; }
+  const endsOn = req.body?.endsOn;
+  if (!isDayKey(endsOn)) { res.status(400).json({ error: 'Choose the last day of the year.' }); return; }
+  if (endsOn > istDateKey()) { res.status(400).json({ error: 'A year cannot end on a future date.' }); return; }
+  const { currentStarts } = await stockYears();
+  if (endsOn < currentStarts) {
+    res.status(400).json({ error: `This year began on ${ddmmyyyy(currentStarts)}, so it must end on or after that day.` });
+    return;
+  }
+  // Confirmed with the person's own password
+  const refusal = await ownPasswordRefusal(req.user!.userId, req.user!.username, req.body?.password);
+  if (refusal) { res.status(refusal.status).json({ error: refusal.error, code: 'CONFIRM_PASSWORD' }); return; }
+  try {
+    const year = await prisma.stockYear.create({
+      data: { startsOn: asDate(currentStarts), endsOn: asDate(endsOn), endedById: req.user!.userId, endedByName: req.user!.name },
+    });
+    console.log(`[YEAR-END] '${req.user!.username}' ended the year ${currentStarts} to ${endsOn}`);
+    res.status(201).json({ id: year.id, from: currentStarts, to: endsOn });
+  } catch (err: any) {
+    if (err?.code === 'P2002') { res.status(409).json({ error: 'That year has just been ended. Refresh to see it.' }); return; }
+    throw err;
+  }
+});
+
+// DELETE /api/reports/year-end/latest — undoes the most recent year-end (a wrong date); that year joins the current one again
+router.delete('/year-end/latest', requirePermission('admin.reports'), async (req: Request, res: Response) => {
+  if (!canEndYears(req.user!)) { res.status(403).json({ error: 'You cannot undo a year-end.' }); return; }
+  const latest = await prisma.stockYear.findFirst({ orderBy: { endsOn: 'desc' } });
+  if (!latest) { res.status(404).json({ error: 'No year has been ended yet.' }); return; }
+  if (undoUntil(latest.createdAt).getTime() <= Date.now()) {
+    res.status(400).json({ error: `A year-end can be undone only within ${UNDO_DAYS} days of ending it.` });
+    return;
+  }
+  await prisma.stockYear.delete({ where: { id: latest.id } });
+  console.log(`[YEAR-END] '${req.user!.username}' undid the year-end of ${dayKey(latest.endsOn)}`);
+  res.json({ from: dayKey(latest.startsOn), to: dayKey(latest.endsOn) });
+});
+
+function pickKey(r: ItemKey): ItemKey {
+  return {
+    itemType: r.itemType || 'FABRIC', category: r.category, brand: r.brand, quality: r.quality, qualityName: r.qualityName,
+    shade: r.shade, size: r.size, name: r.name, artNo: r.artNo, uom: r.uom,
+  };
+}
 
 export default router;

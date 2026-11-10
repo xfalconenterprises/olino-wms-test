@@ -12,7 +12,8 @@ import {
   Search,
   Send,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  CalendarRange
 } from 'lucide-react';
 import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
 import { useAuth } from '../../../hooks/useAuth';
@@ -33,9 +34,10 @@ function FabricQty({ meters, kg = 0 }: { meters: number; kg?: number }) {
     </>
   );
 }
+import YearEndReport from './YearEndReport';
 import '../../../styles/components.css';
 
-type ReportTab = 'PERIODIC' | 'SHIPMENTS' | 'STOCK_MASTER' | 'SUPPLIERS' | 'CAPACITY';
+type ReportTab = 'PERIODIC' | 'SHIPMENTS' | 'STOCK_MASTER' | 'SUPPLIERS' | 'CAPACITY' | 'YEAR_END';
 type PeriodType = 'daily' | 'monthly' | 'yearly';
 type ProductFilterType = 'ALL' | 'FABRIC' | 'SHOES' | 'SOCKS';
 
@@ -259,6 +261,7 @@ export default function ReportsPage() {
           { key: 'STOCK_MASTER', label: 'Stock Master Inventory', icon: Package },
           { key: 'SUPPLIERS', label: 'Supplier Performance', icon: Truck },
           { key: 'CAPACITY', label: 'Rack & Space Capacity', icon: Building2 },
+          { key: 'YEAR_END', label: 'Year-End Stock', icon: CalendarRange },
         ].map(tab => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.key;
@@ -850,6 +853,9 @@ export default function ReportsPage() {
       )}
 
       {/* ─── TAB 5: RACK & SPACE CAPACITY ─────────────────────────────────────── */}
+      {/* ─── TAB 6: YEAR-END STOCK STATEMENT (April–March) ───────────────────────── */}
+      {activeTab === 'YEAR_END' && <YearEndReport />}
+
       {activeTab === 'CAPACITY' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>

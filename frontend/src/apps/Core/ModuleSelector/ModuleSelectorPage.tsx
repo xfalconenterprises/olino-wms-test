@@ -68,7 +68,7 @@ export default function ModuleSelectorPage() {
     {
       id: 'INVENTORY',
       label: 'Inventory',
-      desc: 'Global dashboard, audit log, adjustments, aging, GRNs',
+      desc: 'Inventory dashboard, audit log, adjustments, aging, GRNs',
       icon: ClipboardCheck,
       path: getInventoryPath(),
       show: canAccessApp.INVENTORY(user)

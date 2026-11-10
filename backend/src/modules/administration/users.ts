@@ -153,6 +153,12 @@ router.post('/', requirePermission('admin.users'), async (req: Request, res: Res
   const cleanPhone = parsePhone(phone);
   if (!cleanPhone) { res.status(400).json({ error: 'Enter a 10-digit mobile number.' }); return; }
 
+  // The sign-in box treats EMP-0001-style entries as Employee IDs (then asks for the PIN)
+  if (/^emp-\d+$/i.test(String(username).trim())) {
+    res.status(400).json({ error: 'Usernames like EMP-0001 are kept for Employee IDs. Choose another username.' });
+    return;
+  }
+
   const existingUsername = await prisma.user.findUnique({ where: { username } });
   if (existingUsername) {
     res.status(409).json({ error: 'Username already exists' });

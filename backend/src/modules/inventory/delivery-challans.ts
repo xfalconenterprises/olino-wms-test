@@ -26,10 +26,11 @@ export function reservedForOther(
   return same ? null : (batch.clientName?.trim() || 'another client');
 }
 
-// GET /api/delivery-challans — List all DCs
-router.get('/', requireAuth, requirePermission('ops.exit_gate'), async (_req: Request, res: Response) => {
+// GET /api/delivery-challans — List DCs; ?status=DRAFT gives only the open ones (Stock Out)
+router.get('/', requireAuth, requirePermission('ops.exit_gate'), async (req: Request, res: Response) => {
+  const status = req.query.status === 'DRAFT' || req.query.status === 'DISPATCHED' ? req.query.status : undefined;
   const challans = await prisma.deliveryChallan.findMany({
-    where: { isDeleted: false },
+    where: { isDeleted: false, ...(status && { status }) },
     orderBy: { createdAt: 'desc' },
     include: {
       createdBy: { select: { name: true } },

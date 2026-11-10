@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
-import api from '../../../utils/api';
+import { useState } from 'react';
 import { ArrowRightLeft, ArrowDownToLine, ArrowUpFromLine, Scissors, Search, RefreshCw, MapPin, X } from 'lucide-react';
 import { formatDateTime, istDayEndISO, istDayStartISO } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { unitLabel, uomOf } from '../../../utils/units';
+import { useDebounced, usePagedList } from '../../../hooks/usePagedList';
+import LoadMore from '../../../components/Common/LoadMore';
 import '../../../styles/components.css';
 
 interface Tx {
@@ -44,47 +45,20 @@ const isPutAway = (tx: Tx) => {
 };
 
 export default function AuditLogPage() {
-  const [txs, setTxs] = useState<Tx[]>([]);
-  const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [search, setSearch] = useState('');
 
-  const load = () => {
-    setLoading(true);
-    const params: any = {};
-    if (typeFilter) {
-      params.type = typeFilter;
-    }
-
-    if (startDate) params.from = istDayStartISO(startDate);
-    if (endDate) params.to = istDayEndISO(endDate);
-
-    api.get('/api/transactions', { params })
-      .then(r => setTxs(r.data))
-      .catch(e => console.error(e))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, [typeFilter, startDate, endDate]);
-
-  const filteredTxs = txs.filter(tx => {
-    if (typeFilter === 'PUT_AWAY' && (!isPutAway(tx) || tx.type !== 'INTERNAL_TRANSFER')) return false;
-    if (typeFilter === 'RELOCATION' && (isPutAway(tx) || tx.type !== 'INTERNAL_TRANSFER')) return false;
-
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return (
-      (tx.batch?.batchCode || '').toLowerCase().includes(q) ||
-      (tx.batch?.brand || '').toLowerCase().includes(q) ||
-      (tx.batch?.shade || '').toLowerCase().includes(q) ||
-      (tx.batch?.quality || '').toLowerCase().includes(q) ||
-      (tx.batch?.name || '').toLowerCase().includes(q) ||
-      (tx.operator?.name || '').toLowerCase().includes(q) ||
-      (tx.notes && tx.notes.toLowerCase().includes(q))
-    );
+  // The whole history, newest first, 50 at a time; type, dates and search are applied by the server
+  const txs = usePagedList<Tx>('/api/transactions', {
+    type: typeFilter || undefined,
+    from: startDate ? istDayStartISO(startDate) : undefined,
+    to: endDate ? istDayEndISO(endDate) : undefined,
+    search: useDebounced(search.trim()) || undefined,
   });
+  const loading = txs.loading;
+  const load = txs.reload;
 
   return (
     <div>
@@ -145,7 +119,7 @@ export default function AuditLogPage() {
       {/* Audit Table */}
       {loading ? (
         <div className="loading-center"><span className="spinner spinner-lg" /></div>
-      ) : filteredTxs.length === 0 ? (
+      ) : txs.rows.length === 0 ? (
         <div className="table-wrapper">
           <div className="empty-state">
             <div className="empty-state-icon"><ArrowRightLeft size={48} className="text-muted" /></div>
@@ -168,7 +142,7 @@ export default function AuditLogPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredTxs.map(tx => {
+              {txs.rows.map(tx => {
                 const unit = unitLabel(uomOf(tx.batch));
 
                 return (
@@ -226,6 +200,7 @@ export default function AuditLogPage() {
               })}
             </tbody>
           </table>
+          <LoadMore shown={txs.rows.length} total={txs.total} hasMore={txs.hasMore} loading={txs.loadingMore} onMore={txs.loadMore} noun="entries" />
         </div>
       )}
     </div>

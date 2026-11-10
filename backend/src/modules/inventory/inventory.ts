@@ -4,6 +4,7 @@ import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
 import { Prisma } from '@prisma/client';
+import { pageOf, pageReply } from '../../utils/paging';
 
 const router = Router();
 router.use(requireAuth);
@@ -338,7 +339,8 @@ router.get('/skus/batches', requirePermission('inv.dashboard'), async (req: Requ
 });
 
 // ─── GET /api/inventory/batches — Granular Detailed View ───────────────────────
-async function findBatches(query: Request['query'], takeLimit?: number) {
+// The rolls matching the Granular view's filters
+function batchesWhere(query: Request['query']) {
   const { search, brand, quality, shade, status, location, itemType, unassigned, startDate, endDate, client } = query;
 
   const where: any = {};
@@ -420,7 +422,16 @@ async function findBatches(query: Request['query'], takeLimit?: number) {
       some: { location: { code: { contains: String(location), mode: 'insensitive' } } }
     };
   }
+  return where;
+}
 
+// Granular view sort: ?sort=code|quantity|date&dir=asc|desc (newest first unless asked)
+const BATCH_SORT: Record<string, string> = { code: 'batchCode', quantity: 'quantity', date: 'createdAt' };
+
+async function findBatches(query: Request['query'], takeLimit?: number, skip = 0) {
+  const where = batchesWhere(query);
+  const sortField = BATCH_SORT[String(query.sort || '')] ?? 'createdAt';
+  const sortDir: Prisma.SortOrder = query.dir === 'asc' ? 'asc' : 'desc';
   const batches = await prisma.itemBatch.findMany({
     where,
     include: {
@@ -439,8 +450,9 @@ async function findBatches(query: Request['query'], takeLimit?: number) {
         }
       },
     },
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ [sortField]: sortDir }, { id: 'desc' }],
     take: takeLimit,
+    skip,
   });
 
   const formattedBatches = batches.map(b => {
@@ -471,11 +483,13 @@ async function findBatches(query: Request['query'], takeLimit?: number) {
   return formattedBatches;
 }
 
+// With ?limit&offset a page ({ rows, total, hasMore }); otherwise the newest 500 as before
 router.get('/batches', requirePermission('inv.dashboard'), async (req: Request, res: Response) => {
-  const { limit } = req.query;
   try {
-    const takeLimit = limit ? Math.min(1000, parseInt(String(limit), 10) || 500) : 500;
-    res.json(await findBatches(req.query, takeLimit));
+    const page = pageOf(req.query);
+    if (!page) { res.json(await findBatches(req.query, 500)); return; }
+    const [rows, total] = await Promise.all([findBatches(req.query, page.take, page.skip), prisma.itemBatch.count({ where: batchesWhere(req.query) })]);
+    res.json(pageReply(rows, total, page));
   } catch (err: any) {
     console.error('Inventory batches query error:', err);
     res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });

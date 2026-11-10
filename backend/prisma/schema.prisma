@@ -421,6 +421,20 @@ model CostPriceLog {
   @@map("cost_price_logs")
 }
 
+// A stock year the business has ended (its own year, not the financial year). It began the day after
+// the previous year ended, or on the first stock record; the current year runs from the day after the
+// latest end. The Year-End Stock report works on these.
+model StockYear {
+  id          String   @id @default(uuid())
+  startsOn    DateTime @db.Date @map("starts_on")
+  endsOn      DateTime @unique @db.Date @map("ends_on")
+  endedById   String   @map("ended_by_id")
+  endedByName String   @map("ended_by_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("stock_years")
+}
+
 // The secret code word that turns a cost into letters on the label (one row). Labels add 2 decoy
 // letters before the code and 1 after, chosen by the system for each roll.
 model CostCodeSettings {

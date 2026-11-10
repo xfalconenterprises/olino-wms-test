@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, 
   Layers, 
@@ -33,6 +33,8 @@ import ExportColumnsModal from './ExportColumnsModal';
 import type { ExportChoice } from './ExportColumnsModal';
 import { ROLL_EXPORT_COLUMNS, SKU_EXPORT_COLUMNS } from './inventoryExport';
 import { fabricCategoryLabel, unitLabel, uomOf } from '../../../utils/units';
+import { PAGE_SIZE } from '../../../hooks/usePagedList';
+import LoadMore from '../../../components/Common/LoadMore';
 import '../../../styles/components.css';
 
 interface SKUChildBatch {
@@ -265,6 +267,9 @@ export default function InventoryDashboardPage() {
   // Data
   const [skus, setSkus] = useState<AggregatedSKU[]>([]);
   const [batches, setBatches] = useState<BatchRecord[]>([]);
+  // Granular rolls come 50 at a time; the page beyond those is fetched by Load more
+  const [batchPage, setBatchPage] = useState({ total: 0, hasMore: false, loadingMore: false });
+  const granularRequest = useRef(0);
 
   // Item Passport Drawer
   const [selectedBatch, setSelectedBatch] = useState<BatchRecord | null>(null);
@@ -315,10 +320,13 @@ export default function InventoryDashboardPage() {
     }).catch(() => {});
   }, []);
 
+  // Sorting by code, quantity or date is done by the server over every roll; by shelf, among those loaded
+  const granularSortKey = viewMode === 'GRANULAR' && sortField !== 'location' ? `${sortField}-${sortAsc}` : '';
+
   // Fetch data on filter change
   useEffect(() => {
     fetchData();
-  }, [viewMode, categoryTab, debouncedSearch, status, debouncedBrand, debouncedQuality, debouncedShade, debouncedLocationCode, selectedClientFilter, startDate, endDate]);
+  }, [viewMode, categoryTab, debouncedSearch, status, debouncedBrand, debouncedQuality, debouncedShade, debouncedLocationCode, selectedClientFilter, startDate, endDate, granularSortKey]);
 
   const filterParams = () => {
     const params = new URLSearchParams();
@@ -340,6 +348,17 @@ export default function InventoryDashboardPage() {
     return params;
   };
 
+  const granularParams = (offset: number) => {
+    const params = filterParams();
+    params.append('limit', String(PAGE_SIZE));
+    params.append('offset', String(offset));
+    if (sortField !== 'location') {
+      params.append('sort', sortField);
+      params.append('dir', sortAsc ? 'asc' : 'desc');
+    }
+    return params;
+  };
+
   const fetchData = async () => {
     setLoading(true);
     setError(null);
@@ -350,14 +369,31 @@ export default function InventoryDashboardPage() {
         const res = await api.get(`/api/inventory/skus?${params.toString()}`);
         setSkus(Array.isArray(res.data) ? res.data : []);
       } else {
-        const res = await api.get(`/api/inventory/batches?${params.toString()}`);
-        setBatches(Array.isArray(res.data) ? res.data : []);
+        const id = ++granularRequest.current;
+        const res = await api.get(`/api/inventory/batches?${granularParams(0).toString()}`);
+        if (id !== granularRequest.current) return;
+        setBatches(res.data.rows || []);
+        setBatchPage({ total: res.data.total || 0, hasMore: !!res.data.hasMore, loadingMore: false });
       }
     } catch (err: any) {
       console.error('Inventory Dashboard error:', err);
       setError(err?.response?.data?.error || err?.message || 'Failed to fetch inventory records');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadMoreBatches = async () => {
+    const id = ++granularRequest.current;
+    setBatchPage(p => ({ ...p, loadingMore: true }));
+    try {
+      const res = await api.get(`/api/inventory/batches?${granularParams(batches.length).toString()}`);
+      if (id !== granularRequest.current) return;
+      setBatches(prev => [...prev, ...(res.data.rows || [])]);
+      setBatchPage({ total: res.data.total || 0, hasMore: !!res.data.hasMore, loadingMore: false });
+    } catch (err: any) {
+      setError(err?.response?.data?.error || 'Failed to load more inventory records');
+      setBatchPage(p => ({ ...p, loadingMore: false }));
     }
   };
 
@@ -531,7 +567,7 @@ export default function InventoryDashboardPage() {
       return sortAsc ? cmp : -cmp;
     });
 
-  const sortedBatches = useMemo(() => sortBatches(batches), [batches, sortField, sortAsc]);
+  const sortedBatches = useMemo(() => (sortField === 'location' ? sortBatches(batches) : batches), [batches, sortField, sortAsc]);
 
   const handleSort = (field: 'code' | 'quantity' | 'date' | 'location') => {
     if (sortField === field) {
@@ -583,7 +619,7 @@ export default function InventoryDashboardPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
         <div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <Layers size={28} /> Global Inventory Dashboard
+            <Layers size={28} /> Inventory Dashboard
           </h1>
           <p className="page-subtitle" style={{ marginTop: 4 }}>
             Central command center to monitor, drill down, and audit physical warehouse inventory across all shelves and storage racks
@@ -1425,6 +1461,7 @@ export default function InventoryDashboardPage() {
               )}
             </tbody>
           </table>
+          <LoadMore shown={batches.length} total={batchPage.total} hasMore={batchPage.hasMore} loading={batchPage.loadingMore} onMore={loadMoreBatches} noun="rolls" />
           </div>
         )}
       </div>

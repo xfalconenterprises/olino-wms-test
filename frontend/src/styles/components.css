@@ -6,6 +6,7 @@
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;   /* text stays in the middle on wide (full-width) buttons too */
   gap: var(--space-2);
   padding: 8px 16px;
   min-height: 40px;
@@ -1087,4 +1088,21 @@ html {
   font-size: 17px;
   font-weight: 600;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+/* ─── Load more: under lists that come from the server 50 rows at a time ──── */
+.load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+.load-more .btn {
+  min-width: 160px;
+  min-height: 44px;
+  justify-content: center;
 }

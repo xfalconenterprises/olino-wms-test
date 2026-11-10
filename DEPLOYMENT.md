@@ -120,9 +120,11 @@ npm run db:seed         # creates the first admin account (only if none exists)
 > Don't export `NODE_ENV=production` in the shell before `npm run install:all`; npm would then
 > skip the build tools that `npm run build` needs. Setting it inside `backend/.env` is correct.
 
-First login: username `admin`, password `admin123` (badge `EMP-0001`, PIN `112233`). You are
-asked to choose a new password (and a new PIN at the first badge login) straight away. Then
-create the real user accounts under **Administration → Users & Roles**.
+First login: username `admin`, password `admin123`. You are asked to choose a new password
+straight away. Then create the real user accounts under **Administration → Users & Roles**.
+
+Signing in with a badge and PIN opens only the Warehouse screens, whatever else the account may
+do; everything else needs the password.
 
 ---
 

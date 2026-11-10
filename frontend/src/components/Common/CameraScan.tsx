@@ -17,11 +17,12 @@ const FORMATS: ReadInputBarcodeFormat[] = ['QRCode', 'Code128'];
 const cameraApiAvailable = () => typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
 
 /** Camera icon for a scan box; calls onScan with the code read, like pressing Enter after a scan. */
-export function CameraScanButton({ onScan, title = 'Scan with camera', disabled, size = 48 }: {
+export function CameraScanButton({ onScan, title = 'Scan with camera', disabled, size = 48, inset }: {
   onScan: (code: string) => void;
   title?: string;
   disabled?: boolean;
   size?: number;
+  inset?: boolean;   // sits inside an input box: no border of its own
 }) {
   const [hasCamera, setHasCamera] = useState(false);
   const [open, setOpen] = useState(false);
@@ -40,7 +41,7 @@ export function CameraScanButton({ onScan, title = 'Scan with camera', disabled,
     <>
       <button
         type="button"
-        className="btn btn-secondary camera-scan-button"
+        className={`btn ${inset ? 'btn-ghost' : 'btn-secondary'} camera-scan-button`}
         onClick={() => setOpen(true)}
         disabled={disabled}
         title={title}

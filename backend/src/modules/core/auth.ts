@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import argon2 from 'argon2';
 import prisma from '../../lib/prisma';
-import { MIN_PASSWORD_LENGTH, SESSION_DURATION, requireAuth, requireResetOrAuth, sessionCutoff, signToken } from '../../middleware/auth';
+import { MIN_PASSWORD_LENGTH, SESSION_DURATION, floorAccess, requireAuth, requireResetOrAuth, sessionCutoff, signToken } from '../../middleware/auth';
 import { END_MESSAGES, SESSION_HOURS, endAllSessions, endSession, openSession } from '../../utils/sessions';
 
 const router = Router();
@@ -180,13 +180,14 @@ router.post('/badge-login', loginRateLimiter, async (req: Request, res: Response
   console.log(`[AUTH-FLOOR] User '${user.username}' (${user.name}) logged in via badge '${cleanBadge}'`);
 
   // A first-login token can only be used to set a new PIN; a full login opens a device session
-  const token = user.mustResetPin ? signToken(user, 'reset') : signToken(user, undefined, await openSession(user, req));
+  // A badge + PIN session is for Warehouse screens only (see floorAccess)
+  const token = user.mustResetPin ? signToken(user, 'reset') : signToken(user, undefined, await openSession(user, req), true);
 
   res.json({
     ...(user.mustResetPin && { mustResetPin: true }),
     token,
     expiresIn: SESSION_DURATION,
-    user: userResponse(user),
+    user: { ...userResponse(user), ...floorAccess(user) },
   });
 });
 
@@ -253,9 +254,9 @@ router.post('/reset-initial-pin', requireResetOrAuth, async (req: Request, res: 
 
   res.json({
     message: 'PIN updated successfully',
-    token: signToken(updated, undefined, await openSession(updated, req)),
+    token: signToken(updated, undefined, await openSession(updated, req), true),   // set at a badge sign-in: Warehouse only
     expiresIn: SESSION_DURATION,
-    user: userResponse(updated),
+    user: { ...userResponse(updated), ...floorAccess(updated) },
   });
 });
 
@@ -280,6 +281,8 @@ router.post('/unlock', requireAuth, async (req: Request, res: Response) => {
   const cleanPin = String(pin ?? '').trim();
   let valid: boolean;
   if (password) valid = await argon2.verify(user.passwordHash, String(password));
+  // A PIN only unlocks a session that was opened with the PIN (Warehouse only)
+  else if (cleanPin && !req.floorOnly) { res.status(400).json({ error: 'Unlock with your password.' }); return; }
   else if (cleanPin && !user.pinHash) { res.status(400).json({ error: 'No PIN is set for this account. Use your password.' }); return; }
   else if (cleanPin && user.pinHash) valid = /^\d{6}$/.test(cleanPin) && await argon2.verify(user.pinHash, cleanPin);
   else { res.status(400).json({ error: 'Enter your password or PIN.' }); return; }
@@ -311,7 +314,7 @@ router.post('/unlock', requireAuth, async (req: Request, res: Response) => {
   } else {
     sessionId = await openSession(user, req);
   }
-  res.json({ token: signToken(user, undefined, sessionId), expiresIn: SESSION_DURATION });
+  res.json({ token: signToken(user, undefined, sessionId, req.floorOnly), expiresIn: SESSION_DURATION });
 });
 
 // GET /api/auth/me — validate token and return current user
@@ -320,7 +323,8 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
     where: { id: req.user!.userId },
     select: { ...USER_SELECT, isActive: true },
   });
-  res.json({ user });
+  // A badge + PIN session sees only its Warehouse screens
+  res.json({ user: user && req.floorOnly ? { ...user, ...floorAccess(user) } : user });
 });
 
 export default router;

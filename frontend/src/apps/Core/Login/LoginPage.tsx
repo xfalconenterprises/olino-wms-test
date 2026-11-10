@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../../hooks/useAuth';
 import { 
   User, 
-  ScanLine, 
   KeyRound, 
   ArrowRight, 
   ArrowLeft, 
@@ -19,12 +18,13 @@ import '../../../styles/layout.css';
 import '../../../styles/components.css';
 
 // A password box with the usual eye button inside it, to show or hide what was typed
-function PasswordField({ id, value, onChange, placeholder, autoFocus }: {
+function PasswordField({ id, value, onChange, placeholder, autoFocus, autoComplete = 'new-password' }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   autoFocus?: boolean;
+  autoComplete?: string;
 }) {
   const [shown, setShown] = useState(false);
   return (
@@ -38,7 +38,7 @@ function PasswordField({ id, value, onChange, placeholder, autoFocus }: {
         onChange={e => onChange(e.target.value)}
         required
         autoFocus={autoFocus}
-        autoComplete="new-password"
+        autoComplete={autoComplete}
         style={{ height: 42, paddingRight: 46 }}
       />
       <button
@@ -54,16 +54,17 @@ function PasswordField({ id, value, onChange, placeholder, autoFocus }: {
   );
 }
 
+// Employee IDs are assigned by the system as EMP-0001…; anything else typed is a username.
+// Deciding by format (not by asking the server) means the page never tells which usernames exist.
+const isEmployeeId = (value: string) => /^EMP-\d+$/i.test(value.trim());
+
 export default function LoginPage() {
   const { login, badgeLogin, completePasswordReset, completePinReset } = useAuth();
-  const [mode, setMode] = useState<'standard' | 'floor'>('standard');
-
-  // Standard Login State
+  // One sign-in: scan a badge or type a username, then the PIN (badge) or the password (username)
+  const [step, setStep] = useState<'ID' | 'PASSWORD' | 'PIN'>('ID');
+  const [identifier, setIdentifier] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-
-  // Warehouse Floor Login State (2-step sequential workflow)
-  const [floorStep, setFloorStep] = useState<'SCAN' | 'PIN'>('SCAN');
   const [badgeCode, setBadgeCode] = useState('');
   const [pin, setPin] = useState('');
 
@@ -99,17 +100,13 @@ export default function LoginPage() {
   useEffect(() => {
     setError('');
     if (resetMode === 'NONE') {
-      if (mode === 'floor') {
-        if (floorStep === 'SCAN') {
-          setTimeout(() => badgeInputRef.current?.focus(), 120);
-        } else {
-          setTimeout(() => pinInputRef.current?.focus(), 120);
-        }
-      }
+      if (step === 'ID') setTimeout(() => badgeInputRef.current?.focus(), 120);
+      else if (step === 'PIN') setTimeout(() => pinInputRef.current?.focus(), 120);
+      else setTimeout(() => document.getElementById('password')?.focus(), 120);
     } else if (resetMode === 'PIN') {
       setTimeout(() => resetPinInputRef.current?.focus(), 120);
     }
-  }, [mode, floorStep, resetMode, resetPinStep]);
+  }, [step, resetMode, resetPinStep]);
 
   // Standard Office Login Submit
   const handleStandardSubmit = async (e: React.FormEvent) => {
@@ -158,35 +155,34 @@ export default function LoginPage() {
     }
   };
 
-  // Step 1: Proceed from Barcode Scan to 6-Digit PIN
-  const handleProceedToPin = (e?: React.FormEvent, scanned = badgeCode) => {
+  // Step 1: a badge goes on to the PIN, a username to the password
+  const handleContinue = (e?: React.FormEvent, scanned = identifier) => {
     if (e) e.preventDefault();
-    const cleanBadge = scanned.trim().toUpperCase();
-    if (!cleanBadge) {
-      setError('Please scan employee badge barcode or enter ID');
+    const value = scanned.trim();
+    if (!value) {
+      setError('Scan your badge or type your username');
       badgeInputRef.current?.focus();
       return;
     }
-
     setError('');
-    setBadgeCode(cleanBadge);
-    setPin('');
-    setFloorStep('PIN');
-  };
-
-  // Keyboard helper for floor terminal barcode scanner
-  const handleBadgeKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleProceedToPin();
+    setIdentifier(value);
+    if (isEmployeeId(value)) {
+      setBadgeCode(value.toUpperCase());
+      setPin('');
+      setStep('PIN');
+    } else {
+      setUsername(value.toLowerCase());
+      setPassword('');
+      setStep('PASSWORD');
     }
   };
 
-  // Back to Barcode Scan Step
+  // Back to step 1 to enter a different badge or username
   const handleBackToScan = () => {
     setError('');
     setPin('');
-    setFloorStep('SCAN');
+    setPassword('');
+    setStep('ID');
   };
 
   // Step 2: Final Verification & Login
@@ -315,10 +311,9 @@ export default function LoginPage() {
     setNewPin('');
     setConfirmPin('');
     setError('');
-    if (mode === 'floor') {
-      setFloorStep('SCAN');
-      setPin('');
-    }
+    setPin('');
+    setPassword('');
+    setStep('ID');
   };
 
   return (
@@ -336,71 +331,6 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Dual Mode Switcher Tabs (Only visible when not in first-time reset mode) */}
-        {resetMode === 'NONE' && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: 6,
-            background: 'var(--color-bg-subtle)',
-            padding: 4,
-            borderRadius: 'var(--radius-md)',
-            marginBottom: 20
-          }}>
-            <button
-              type="button"
-              onClick={() => { setMode('standard'); setError(''); }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                padding: '9px 12px',
-                fontSize: 13,
-                fontWeight: mode === 'standard' ? 600 : 500,
-                color: mode === 'standard' ? 'var(--color-brand)' : 'var(--color-text-muted)',
-                background: mode === 'standard' ? '#fff' : 'transparent',
-                border: mode === 'standard' ? '1px solid var(--color-border)' : '1px solid transparent',
-                borderRadius: 'var(--radius-sm)',
-                cursor: 'pointer',
-                boxShadow: mode === 'standard' ? 'var(--shadow-xs)' : 'none',
-                transition: 'all 0.15s ease'
-              }}
-            >
-              <User size={16} />
-              Standard Login
-            </button>
-
-            <button
-              type="button"
-              onClick={() => { 
-                setMode('floor'); 
-                setFloorStep('SCAN');
-                setError(''); 
-              }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 8,
-                padding: '9px 12px',
-                fontSize: 13,
-                fontWeight: mode === 'floor' ? 600 : 500,
-                color: mode === 'floor' ? 'var(--color-brand)' : 'var(--color-text-muted)',
-                background: mode === 'floor' ? '#fff' : 'transparent',
-                border: mode === 'floor' ? '1px solid var(--color-border)' : '1px solid transparent',
-                borderRadius: 'var(--radius-sm)',
-                cursor: 'pointer',
-                boxShadow: mode === 'floor' ? 'var(--shadow-xs)' : 'none',
-                transition: 'all 0.15s ease'
-              }}
-            >
-              <ScanLine size={16} />
-              Warehouse Login
-            </button>
-          </div>
-        )}
-
         {notice && !error && (
           <div className="alert alert-warning" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18, fontSize: 13 }}>
             <AlertCircle size={16} style={{ flexShrink: 0 }} />
@@ -414,125 +344,96 @@ export default function LoginPage() {
           </div>
         )}
 
-        {/* ── Mode 1: Standard Office / Admin Login (Only when resetMode is NONE) ── */}
-        {resetMode === 'NONE' && mode === 'standard' && (
-          <form className="login-form" onSubmit={handleStandardSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div className="form-group">
-              <label htmlFor="username" className="form-label" style={{ fontSize: 13 }}>
-                Username <span className="required">*</span>
-              </label>
-              <input
-                id="username"
-                type="text"
-                className="form-input"
-                placeholder="Enter username"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                required
-                autoFocus
-                autoComplete="username"
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="password" className="form-label" style={{ fontSize: 13 }}>
-                Password <span className="required">*</span>
-              </label>
-              <input
-                id="password"
-                type="password"
-                className="form-input"
-                placeholder="Enter password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                autoComplete="current-password"
-              />
-            </div>
-
-            <button
-              id="login-submit"
-              type="submit"
-              className="btn btn-primary btn-lg login-btn"
-              disabled={loading}
-              style={{ marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-            >
-              {loading ? (
-                <><span className="spinner" /> Signing in…</>
-              ) : (
-                <><ArrowRight size={18} /> Sign In</>
-              )}
-            </button>
-          </form>
-        )}
-
-        {/* ── Mode 2: Warehouse Floor Login (Only when resetMode is NONE) ── */}
-        {resetMode === 'NONE' && mode === 'floor' && (
+        {/* ── Sign in: one box, then the PIN or the password ── */}
+        {resetMode === 'NONE' && (
           <div>
-            {/* ─── STEP 1: Scan Barcode / Badge ─── */}
-            {floorStep === 'SCAN' && (
-              <form onSubmit={handleProceedToPin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <div style={{ textAlign: 'center', padding: '8px 8px 4px' }}>
-                  <div style={{
-                    width: 48,
-                    height: 48,
-                    borderRadius: '50%',
-                    background: 'var(--color-brand-faded)',
-                    color: 'var(--color-brand)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    margin: '0 auto 10px'
-                  }}>
-                    <ScanLine size={24} />
-                  </div>
-                  <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: 'var(--color-text-main)' }}>
-                    Scan Employee Badge
-                  </h3>
+            {/* ─── STEP 1: Badge or username ─── */}
+            {step === 'ID' && (
+              <form onSubmit={handleContinue} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <div>
+                  <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 4px', color: 'var(--color-text-main)' }}>Sign in</h2>
+                  <p style={{ margin: 0, fontSize: 13.5, color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                    Scan your Employee ID badge, or enter your username.
+                  </p>
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                  <label htmlFor="identifier" className="form-label" style={{ fontSize: 13, fontWeight: 600 }}>
+                    Employee ID or username
+                  </label>
+                  {/* The camera sits inside the box, at its right edge */}
+                  <div style={{ position: 'relative' }}>
                     <input
-                      id="badgeCode"
+                      id="identifier"
                       ref={badgeInputRef}
                       type="text"
                       className="form-input"
-                      placeholder="Scan badge barcode..."
-                      value={badgeCode}
-                      onChange={e => setBadgeCode(e.target.value.toUpperCase())}
-                      onKeyDown={handleBadgeKeyDown}
+                      placeholder="Scan or enter username"
+                      value={identifier}
+                      onChange={e => setIdentifier(e.target.value)}
                       required
                       autoFocus
-                      autoComplete="off"
-                      style={{ 
-                        height: 42, 
-                        fontSize: 13, 
-                        paddingLeft: 38, 
-                        letterSpacing: '0.03em', 
-                        fontWeight: 600 
-                      }}
+                      autoComplete="username"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      style={{ height: 50, fontSize: 15, fontWeight: 600, paddingLeft: 14, paddingRight: 54, width: '100%' }}
                     />
-                    <ScanLine size={18} style={{ position: 'absolute', left: 12, color: 'var(--color-brand)', pointerEvents: 'none' }} />
-                    <div style={{ marginLeft: 8 }}>
-                      <CameraScanButton size={42} title="Scan your badge with the camera" onScan={code => handleProceedToPin(undefined, code)} />
+                    <div style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)' }}>
+                      <CameraScanButton size={42} inset title="Scan your badge with the camera" onScan={code => handleContinue(undefined, code)} />
                     </div>
                   </div>
                 </div>
 
                 <button
+                  id="login-continue"
                   type="submit"
                   className="btn btn-primary btn-lg login-btn"
-                  disabled={!badgeCode.trim()}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: 42, fontSize: 13.5 }}
+                  disabled={!identifier.trim()}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: 50, fontSize: 15, fontWeight: 600 }}
                 >
-                  <ArrowRight size={18} /> Continue to PIN
+                  Continue <ArrowRight size={18} />
                 </button>
               </form>
             )}
 
-            {/* ─── STEP 2: Enter 6-Digit PIN (Only shown after badge is scanned) ─── */}
-            {floorStep === 'PIN' && (
+            {/* ─── STEP 2a: Password (a username was entered) ─── */}
+            {step === 'PASSWORD' && (
+              <form className="login-form" onSubmit={handleStandardSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: '10px 14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <User size={18} color="var(--color-brand)" />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>Username</div>
+                      <div className="truncate" style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text-main)' }}>{username}</div>
+                    </div>
+                  </div>
+                  <button type="button" onClick={handleBackToScan}
+                    style={{ background: '#fff', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '5px 10px', fontSize: 12, fontWeight: 600, color: 'var(--color-text-main)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <ArrowLeft size={13} /> Change
+                  </button>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label htmlFor="password" className="form-label" style={{ fontSize: 13 }}>
+                    Password <span className="required">*</span>
+                  </label>
+                  <PasswordField id="password" placeholder="Enter password" value={password} onChange={setPassword} autoFocus autoComplete="current-password" />
+                </div>
+
+                <button
+                  id="login-submit"
+                  type="submit"
+                  className="btn btn-primary btn-lg login-btn"
+                  disabled={loading || !password}
+                  style={{ marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: 50, fontSize: 15, fontWeight: 600 }}
+                >
+                  {loading ? <><span className="spinner" /> Signing in…</> : <>Sign in <ArrowRight size={18} /></>}
+                </button>
+              </form>
+            )}
+
+            {/* ─── STEP 2b: 6-digit PIN (an Employee ID was entered) ─── */}
+            {step === 'PIN' && (
               <form 
                 onSubmit={(e) => { e.preventDefault(); handleFloorSubmit(); }} 
                 style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
@@ -551,7 +452,7 @@ export default function LoginPage() {
                     <CheckCircle2 size={18} color="var(--color-success)" />
                     <div>
                       <div style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>
-                        Active Badge
+                        Employee ID
                       </div>
                       <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text-main)', letterSpacing: '0.04em' }}>
                         {badgeCode}
@@ -750,12 +651,12 @@ export default function LoginPage() {
                   type="submit"
                   className="btn btn-primary btn-lg login-btn"
                   disabled={loading || pin.length !== 6}
-                  style={{ marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: 44 }}
+                  style={{ marginTop: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, height: 50, fontSize: 15, fontWeight: 600 }}
                 >
                   {loading ? (
-                    <><span className="spinner" /> Verifying Terminal…</>
+                    <><span className="spinner" /> Signing in…</>
                   ) : (
-                    <><KeyRound size={18} /> Sign In to Terminal</>
+                    <>Sign in <ArrowRight size={18} /></>
                   )}
                 </button>
               </form>

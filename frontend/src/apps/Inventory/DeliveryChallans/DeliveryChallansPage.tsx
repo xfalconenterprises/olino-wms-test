@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
 import { openPrintPage } from '../../../utils/printPage';
@@ -20,6 +20,8 @@ import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import { formatTotals } from '../../../utils/units';
 import { exportToExcel } from '../../../utils/exportExcel';
+import { useDebounced, usePagedList } from '../../../hooks/usePagedList';
+import LoadMore from '../../../components/Common/LoadMore';
 import '../../../styles/components.css';
 
 interface DeliveryChallan {
@@ -58,54 +60,16 @@ interface DeliveryChallan {
 export default function DeliveryChallansPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [challans, setChallans] = useState<DeliveryChallan[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'FABRIC' | 'READY_MADE'>('ALL');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [viewDetailMode, setViewDetailMode] = useState<Record<string, 'GROUPED' | 'INDIVIDUAL'>>({});
 
-  const loadChallans = async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/api/reports/customer-shipments', {
-        params: { search: search.trim() || undefined }
-      });
-      setChallans(res.data || []);
-    } catch (e) {
-      console.error('Failed to load delivery challans', e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadChallans();
-  }, []);
-
-
-  // Client-side filtering
-  const filteredChallans = useMemo(() => {
-    return challans.filter(c => {
-      if (typeFilter === 'FABRIC' && (c.totalFabricMeters || 0) <= 0 && (c.totalFabricKg || 0) <= 0) return false;
-      if (typeFilter === 'READY_MADE' && (c.totalReadyMadePcs || c.totalUnits || c.totalPairs || 0) <= 0) return false;
-
-      if (!search.trim()) return true;
-      const q = search.toLowerCase();
-      const numMatch = c.challanNumber.toLowerCase().includes(q);
-      const custMatch = c.customerName.toLowerCase().includes(q);
-      const destMatch = (c.destination || '').toLowerCase().includes(q);
-      const opMatch = (c.operator || '').toLowerCase().includes(q);
-      const lineMatch = (c.lines || []).some(l => 
-        l.batchCode.toLowerCase().includes(q) || 
-        l.brand.toLowerCase().includes(q) || 
-        l.quality.toLowerCase().includes(q) ||
-        l.shade.toLowerCase().includes(q)
-      );
-
-      return numMatch || custMatch || destMatch || opMatch || lineMatch;
-    });
-  }, [challans, typeFilter, search]);
+  // 50 at a time from the server, which searches every challan (lines and operator included)
+  const listParams = { search: useDebounced(search.trim()), type: typeFilter === 'ALL' ? '' : typeFilter };
+  const challans = usePagedList<DeliveryChallan>('/api/reports/customer-shipments', listParams);
+  const loading = challans.loading;
+  const loadChallans = challans.reload;
 
   const handlePrintA4 = async (id: string) => {
     try {
@@ -115,7 +79,8 @@ export default function DeliveryChallansPage() {
     }
   };
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
+    const { data: all } = await api.get<DeliveryChallan[]>('/api/reports/customer-shipments', { params: listParams });
     const headers = [
       'Challan Number', 
       'Customer Name', 
@@ -127,7 +92,7 @@ export default function DeliveryChallansPage() {
       'Ready-Made / Units', 
       'Items Count'
     ];
-    const rows = filteredChallans.map(s => [
+    const rows = all.map(s => [
       s.challanNumber,
       s.customerName,
       s.destination || '',
@@ -273,7 +238,7 @@ export default function DeliveryChallansPage() {
           <button
             className="btn btn-secondary"
             onClick={handleExportExcel}
-            disabled={filteredChallans.length === 0 || loading}
+            disabled={challans.total === 0 || loading}
             style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, height: 40 }}
           >
             <Download size={15} /> Download Excel (.CSV)
@@ -284,7 +249,7 @@ export default function DeliveryChallansPage() {
       {/* ─── Challans Table ──────────────────────────────────────────────── */}
       {loading ? (
         <div className="loading-center"><span className="spinner spinner-lg" /></div>
-      ) : filteredChallans.length === 0 ? (
+      ) : challans.rows.length === 0 ? (
         <div className="table-wrapper">
           <div className="empty-state">
             <div className="empty-state-icon"><FileText size={48} className="text-muted" /></div>
@@ -307,7 +272,7 @@ export default function DeliveryChallansPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredChallans.map(s => {
+              {challans.rows.map(s => {
                 const isExpanded = expandedId === s.id;
                 const detailMode = viewDetailMode[s.id] || 'GROUPED';
                 const groupedList = getGroupedProducts(s.lines);
@@ -548,6 +513,7 @@ export default function DeliveryChallansPage() {
               })}
             </tbody>
           </table>
+          <LoadMore shown={challans.rows.length} total={challans.total} hasMore={challans.hasMore} loading={challans.loadingMore} onMore={challans.loadMore} noun="challans" />
         </div>
       )}
     </div>

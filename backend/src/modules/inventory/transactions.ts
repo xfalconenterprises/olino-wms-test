@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
+import { pageOf, pageReply } from '../../utils/paging';
 
 const router = Router();
 
@@ -209,17 +210,32 @@ router.get('/', requirePermission('inv.audit_log', 'inv.dashboard'), async (req:
     where.type = type as any;
   }
 
+  // Search the whole history: roll code and description, who did it, and the notes
+  const search = String(req.query.search || '').trim();
+  if (search) {
+    const contains = { contains: search, mode: 'insensitive' as const };
+    where.AND = [{ OR: [
+      { batch: { OR: [{ batchCode: contains }, { brand: contains }, { shade: contains }, { quality: contains }, { name: contains }] } },
+      { operator: { name: contains } },
+      { notes: contains },
+    ] }];
+  }
+
+  // The Audit Log asks a page at a time (?limit=50&offset=…); a roll's own history (?batchId) comes whole
+  const page = pageOf(req.query);
   const transactions = await prisma.transaction.findMany({
     where,
     include: {
       batch: true,
       operator: { select: { name: true } },
     },
-    orderBy: { createdAt: 'desc' },
-    take: 300,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: page ? page.take : batchId ? undefined : 300,
+    skip: page?.skip ?? 0,
   });
 
-  res.json(transactions);
+  if (!page) { res.json(transactions); return; }
+  res.json(pageReply(transactions, await prisma.transaction.count({ where }), page));
 });
 
 export default router;

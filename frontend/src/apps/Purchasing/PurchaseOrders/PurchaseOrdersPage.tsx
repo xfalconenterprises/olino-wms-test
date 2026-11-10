@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../../../utils/api';
 import { openPrintPage } from '../../../utils/printPage';
@@ -24,8 +24,10 @@ import {
   Trash2
 } from 'lucide-react';
 import { formatDate, formatDateTime } from '../../../utils/format';
-import { allowsDecimals, fabricCategoryLabel, formatQty, formatTotals, unitLabel } from '../../../utils/units';
+import { allowsDecimals, fabricCategoryLabel, formatQty, formatTotals } from '../../../utils/units';
 import { useAuth } from '../../../hooks/useAuth';
+import { useDebounced, usePagedList } from '../../../hooks/usePagedList';
+import LoadMore from '../../../components/Common/LoadMore';
 import { hasPermission } from '../../../utils/roles';
 import '../../../styles/components.css';
 
@@ -103,7 +105,6 @@ export interface FlattenedPOItem {
     allocatedQty: number;
     receivedQty: number;
   }>;
-  clientSummary: string;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -140,9 +141,7 @@ const DRAFT_TYPE_NAMES: Record<string, string> = {
 export default function PurchaseOrdersPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [drafts, setDrafts] = useState<PoDraftSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<'ORDERS' | 'ITEMS'>('ORDERS');
   const [search, setSearch] = useState('');
   
@@ -155,14 +154,15 @@ export default function PurchaseOrdersPage() {
   const [itemStatusFilter, setItemStatusFilter] = useState<'ALL' | 'NOT_REACHED' | 'PARTIALLY_REACHED' | 'FULLY_REACHED'>('ALL');
   const [itemSortField, setItemSortField] = useState<ItemSortField>('brand');
   const [itemSortDirection, setItemSortDirection] = useState<'asc' | 'desc'>('asc');
-  const load = () => {
-    setLoading(true);
-    api.get('/api/purchase-orders')
-      .then(r => setPos(r.data || []))
-      .finally(() => setLoading(false));
-  };
+  const debouncedSearch = useDebounced(search.trim());
 
-  useEffect(() => { load(); }, []);
+  // Both views come from the server 50 rows at a time; filters, search and sorting run there over every row
+  const orders = usePagedList<PurchaseOrder, { counts: Record<string, number>; itemCount: number }>(
+    '/api/purchase-orders', { status: statusFilter, type: typeFilter, search: debouncedSearch }, viewMode === 'ORDERS');
+  const items = usePagedList<FlattenedPOItem, { categoryCounts: Record<string, number>; statusCounts: Record<string, number>; orderCount: number }>(
+    '/api/purchase-orders/items',
+    { category: itemCategoryTab, status: itemStatusFilter === 'ALL' ? '' : itemStatusFilter, search: debouncedSearch, sort: itemSortField, dir: itemSortDirection },
+    viewMode === 'ITEMS');
 
   // A person's own unfinished POs; the server sends nobody else's
   const canCreate = hasPermission(user, 'po.create');
@@ -198,187 +198,21 @@ export default function PurchaseOrdersPage() {
     }
   };
 
-  // Flattened items across all POs
-  const allFlattenedItems = useMemo<FlattenedPOItem[]>(() => {
-    const list: FlattenedPOItem[] = [];
-    for (const po of pos) {
-      for (const line of (po.lines || [])) {
-        const lineItemType = line.itemType || 'FABRIC';
-        const brand = line.brand || '';
-        const quality = line.quality || '';
-        const shade = line.shade || '';
-        const name = line.name || '';
-        const artNo = line.artNo || '';
-        const category = line.category || '';
-        const size = line.size || '';
-        const uom = line.uom || (lineItemType === 'FABRIC' ? 'METERS' : 'PCS');
-        const ordered = Number(line.orderedQty) || 0;
-        const received = Number(line.receivedQty) || 0;
-        const progress = ordered > 0 ? (received / ordered) * 100 : 0;
-
-        let reachedStatus: 'FULLY_REACHED' | 'PARTIALLY_REACHED' | 'NOT_REACHED' = 'NOT_REACHED';
-        if (received >= ordered && ordered > 0) {
-          reachedStatus = 'FULLY_REACHED';
-        } else if (received > 0) {
-          reachedStatus = 'PARTIALLY_REACHED';
-        }
-
-        const allocations = (line.allocations || []).map(a => ({
-          id: a.id,
-          clientName: a.clientName,
-          allocatedQty: Number(a.allocatedQty) || 0,
-          receivedQty: Number(a.receivedQty) || 0,
-        }));
-
-        const clientSummary = allocations.length > 0
-          ? allocations.map(a => `${a.clientName}: ${a.allocatedQty} ${unitLabel(uom)}`).join(', ')
-          : (po.targetClient || 'General Stock');
-
-        list.push({
-          lineId: line.id,
-          poId: po.id,
-          poNumber: po.poNumber,
-          supplierName: po.supplierName,
-          expectedDate: po.expectedDate,
-          poStatus: po.status,
-          itemType: lineItemType,
-          brand,
-          quality,
-          qualityName: line.qualityName || '',
-          shade,
-          name,
-          artNo,
-          category,
-          size,
-          uom,
-          orderedQty: ordered,
-          receivedQty: received,
-          reachedStatus,
-          progress,
-          allocations,
-          clientSummary,
-        });
-      }
-    }
-    return list;
-  }, [pos]);
-
-  // Filtered and sorted POs (Orders view)
-  const filteredPos = useMemo(() => {
-    return pos.filter(po => {
-      const q = search.trim().toLowerCase();
-      const matchesSearch = !q || po.poNumber.toLowerCase().includes(q) || 
-        po.supplierName.toLowerCase().includes(q);
-      
-      const matchesStatus = statusFilter === 'ALL' || po.status === statusFilter;
-
-      const firstType = po.lines?.[0]?.itemType || 'FABRIC';
-      const matchesType = typeFilter === 'ALL' || firstType === typeFilter;
-
-      return matchesSearch && matchesStatus && matchesType;
-    });
-  }, [pos, search, statusFilter, typeFilter]);
-
-  // Category subsets of flattened items
-  const fabricItems = useMemo(() => allFlattenedItems.filter(i => i.itemType === 'FABRIC'), [allFlattenedItems]);
-  const readyMadeItems = useMemo(() => allFlattenedItems.filter(i => i.itemType === 'READY_MADE'), [allFlattenedItems]);
-  const accessoryItems = useMemo(() => allFlattenedItems.filter(i => i.itemType === 'ACCESSORY'), [allFlattenedItems]);
-
-  const activeCategoryItems = useMemo(() => {
-    if (itemCategoryTab === 'FABRIC') return fabricItems;
-    if (itemCategoryTab === 'READY_MADE') return readyMadeItems;
-    return accessoryItems;
-  }, [itemCategoryTab, fabricItems, readyMadeItems, accessoryItems]);
-
-  const categoryTotalCount = activeCategoryItems.length;
-  const categoryNotReachedCount = activeCategoryItems.filter(i => i.reachedStatus === 'NOT_REACHED').length;
-  const categoryPartialCount = activeCategoryItems.filter(i => i.reachedStatus === 'PARTIALLY_REACHED').length;
-  const categoryReachedCount = activeCategoryItems.filter(i => i.reachedStatus === 'FULLY_REACHED').length;
-
-  // Filtered and sorted Items (Items view)
-  const filteredAndSortedItems = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const result = allFlattenedItems.filter(item => {
-      // Strictly separate items by active category
-      if (item.itemType !== itemCategoryTab) {
-        return false;
-      }
-
-      if (itemStatusFilter !== 'ALL' && item.reachedStatus !== itemStatusFilter) {
-        return false;
-      }
-
-      if (q) {
-        const matchesClient = (item.clientSummary || '').toLowerCase().includes(q) ||
-          item.allocations.some(a => a.clientName.toLowerCase().includes(q));
-
-        if (itemCategoryTab === 'FABRIC') {
-          const matchesBrand = item.brand.toLowerCase().includes(q);
-          const matchesQuality = item.quality.toLowerCase().includes(q);
-          const matchesShade = item.shade.toLowerCase().includes(q);
-          const matchesCategory = item.category.toLowerCase().includes(q);
-          const matchesPo = item.poNumber.toLowerCase().includes(q);
-          const matchesSup = item.supplierName.toLowerCase().includes(q);
-          if (!matchesBrand && !matchesQuality && !matchesShade && !matchesCategory && !matchesPo && !matchesSup && !matchesClient) {
-            return false;
-          }
-        } else if (itemCategoryTab === 'READY_MADE') {
-          const matchesName = item.name.toLowerCase().includes(q);
-          const matchesCategory = item.category.toLowerCase().includes(q);
-          const matchesArtNo = item.artNo.toLowerCase().includes(q);
-          const matchesSize = item.size.toLowerCase().includes(q);
-          const matchesShade = item.shade.toLowerCase().includes(q);
-          const matchesPo = item.poNumber.toLowerCase().includes(q);
-          const matchesSup = item.supplierName.toLowerCase().includes(q);
-          if (!matchesName && !matchesCategory && !matchesArtNo && !matchesSize && !matchesShade && !matchesPo && !matchesSup && !matchesClient) {
-            return false;
-          }
-        } else {
-          // ACCESSORY
-          const matchesCategory = item.category.toLowerCase().includes(q);
-          const matchesName = (item.name || item.quality).toLowerCase().includes(q);
-          const matchesShade = item.shade.toLowerCase().includes(q);
-          const matchesSize = item.size.toLowerCase().includes(q);
-          const matchesPo = item.poNumber.toLowerCase().includes(q);
-          const matchesSup = item.supplierName.toLowerCase().includes(q);
-          if (!matchesCategory && !matchesName && !matchesShade && !matchesSize && !matchesPo && !matchesSup && !matchesClient) {
-            return false;
-          }
-        }
-      }
-      return true;
-    });
-
-    result.sort((a, b) => {
-      let aVal: any = (a as any)[itemSortField] || '';
-      let bVal: any = (b as any)[itemSortField] || '';
-
-      if (itemSortField === 'reachedStatus') {
-        const rank = { NOT_REACHED: 1, PARTIALLY_REACHED: 2, FULLY_REACHED: 3 };
-        aVal = rank[a.reachedStatus] || 0;
-        bVal = rank[b.reachedStatus] || 0;
-        return itemSortDirection === 'asc' ? aVal - bVal : bVal - aVal;
-      }
-
-      if (itemSortField === 'orderedQty' || itemSortField === 'progress') {
-        const key = itemSortField as 'orderedQty' | 'progress';
-        return itemSortDirection === 'asc' ? a[key] - b[key] : b[key] - a[key];
-      }
-
-      if (itemSortField === 'shade' || itemSortField === 'artNo' || itemSortField === 'size') {
-        const comp = String(aVal).localeCompare(String(bVal), undefined, { numeric: true });
-        return itemSortDirection === 'asc' ? comp : -comp;
-      }
-
-      if (typeof aVal === 'string') {
-        const comp = aVal.localeCompare(String(bVal));
-        return itemSortDirection === 'asc' ? comp : -comp;
-      }
-      return itemSortDirection === 'asc' ? aVal - bVal : bVal - aVal;
-    });
-
-    return result;
-  }, [allFlattenedItems, itemCategoryTab, search, itemStatusFilter, itemSortField, itemSortDirection]);
+  // Tab counts come from the server and cover every PO and line, not just the rows loaded
+  const orderCounts = orders.extra?.counts ?? {};
+  const totalCount = orderCounts.ALL ?? items.extra?.orderCount ?? 0;
+  const pendingCount = orderCounts.PENDING ?? 0;
+  const partialCount = orderCounts.PARTIALLY_RECEIVED ?? 0;
+  const receivedCount = orderCounts.RECEIVED ?? 0;
+  const categoryCounts = items.extra?.categoryCounts ?? {};
+  const totalItemsCount = items.extra
+    ? Object.values(categoryCounts).reduce((sum, n) => sum + n, 0)
+    : orders.extra?.itemCount ?? 0;
+  const statusCounts = items.extra?.statusCounts ?? {};
+  const categoryNotReachedCount = statusCounts.NOT_REACHED ?? 0;
+  const categoryPartialCount = statusCounts.PARTIALLY_REACHED ?? 0;
+  const categoryReachedCount = statusCounts.FULLY_REACHED ?? 0;
+  const categoryTotalCount = categoryNotReachedCount + categoryPartialCount + categoryReachedCount;
 
   // Toggle sort field or direction
   const handleSortClick = (field: ItemSortField) => {
@@ -469,14 +303,6 @@ export default function PurchaseOrdersPage() {
     { key: 'expected', label: 'Expected', sort: 'expectedDate', cell: i => <span style={{ whiteSpace: 'nowrap', color: '#475569' }}>{formatDate(i.expectedDate)}</span> },
   ];
 
-  // Order Counts
-  const totalCount = pos.length;
-  const pendingCount = pos.filter(po => po.status === 'PENDING').length;
-  const partialCount = pos.filter(po => po.status === 'PARTIALLY_RECEIVED').length;
-  const receivedCount = pos.filter(po => po.status === 'RECEIVED').length;
-
-  // Item Counts
-  const totalItemsCount = allFlattenedItems.length;
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', paddingBottom: 40 }}>
@@ -726,9 +552,9 @@ export default function PurchaseOrdersPage() {
           </div>
 
           {/* Orders Table */}
-          {loading ? (
+          {orders.loading ? (
             <div className="loading-center"><span className="spinner spinner-lg" /></div>
-          ) : filteredPos.length === 0 ? (
+          ) : orders.rows.length === 0 ? (
             <div className="table-wrapper">
               <div className="empty-state">
                 <div className="empty-state-icon"><ShoppingCart size={48} className="text-muted" /></div>
@@ -750,7 +576,7 @@ export default function PurchaseOrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredPos.map(po => {
+                  {orders.rows.map(po => {
                     const progress = po.totalOrdered > 0 ? (po.totalReceived / po.totalOrdered) * 100 : 0;
                     const poType = po.lines?.[0]?.itemType || 'FABRIC';
                     
@@ -837,6 +663,7 @@ export default function PurchaseOrdersPage() {
                   })}
                 </tbody>
               </table>
+              <LoadMore shown={orders.rows.length} total={orders.total} hasMore={orders.hasMore} loading={orders.loadingMore} onMore={orders.loadMore} noun="orders" />
             </div>
           )}
         </>
@@ -882,7 +709,7 @@ export default function PurchaseOrdersPage() {
                 background: itemCategoryTab === 'FABRIC' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
                 color: itemCategoryTab === 'FABRIC' ? '#ffffff' : '#64748b',
               }}>
-                {fabricItems.length}
+                {categoryCounts.FABRIC ?? 0}
               </span>
             </button>
 
@@ -913,7 +740,7 @@ export default function PurchaseOrdersPage() {
                 background: itemCategoryTab === 'READY_MADE' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
                 color: itemCategoryTab === 'READY_MADE' ? '#ffffff' : '#64748b',
               }}>
-                {readyMadeItems.length}
+                {categoryCounts.READY_MADE ?? 0}
               </span>
             </button>
 
@@ -944,7 +771,7 @@ export default function PurchaseOrdersPage() {
                 background: itemCategoryTab === 'ACCESSORY' ? 'rgba(255,255,255,0.25)' : '#f1f5f9',
                 color: itemCategoryTab === 'ACCESSORY' ? '#ffffff' : '#64748b',
               }}>
-                {accessoryItems.length}
+                {categoryCounts.ACCESSORY ?? 0}
               </span>
             </button>
           </div>
@@ -990,7 +817,7 @@ export default function PurchaseOrdersPage() {
             </div>
 
             <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}>
-              Showing <strong>{filteredAndSortedItems.length}</strong> items
+              <strong>{items.total}</strong> items
             </div>
           </div>
 
@@ -1027,9 +854,9 @@ export default function PurchaseOrdersPage() {
           </div>
 
           {/* Items & PO Table with Category-Specific Required Columns */}
-          {loading ? (
+          {items.loading ? (
             <div className="loading-center"><span className="spinner spinner-lg" /></div>
-          ) : filteredAndSortedItems.length === 0 ? (
+          ) : items.rows.length === 0 ? (
             <div className="table-wrapper">
               <div className="empty-state">
                 <div className="empty-state-icon">
@@ -1064,7 +891,7 @@ export default function PurchaseOrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredAndSortedItems.map((item, idx) => (
+                  {items.rows.map((item, idx) => (
                     <tr key={item.lineId} className="hover-row" onClick={() => navigate(`/purchase-orders/${item.poId}/view`)} style={{ cursor: 'pointer' }} title="Open the purchase order">
                       <td style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
                       {itemColumns.map(col => <td key={col.key}>{col.cell(item)}</td>)}
@@ -1073,6 +900,7 @@ export default function PurchaseOrdersPage() {
                   ))}
                 </tbody>
               </table>
+              <LoadMore shown={items.rows.length} total={items.total} hasMore={items.hasMore} loading={items.loadingMore} onMore={items.loadMore} noun="items" />
             </div>
           )}
         </>

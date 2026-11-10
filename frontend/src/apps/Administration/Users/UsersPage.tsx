@@ -32,6 +32,7 @@ import {
   MODULE_LABELS, 
   PERMISSION_GROUPS, 
   EXPORT_PERMISSIONS, 
+  EXPORT_MODULES,
   ROLE_PRESETS,
   ALL_PERMISSION_KEYS,
   hasPermission,
@@ -1470,8 +1471,11 @@ export default function UsersPage() {
                               )}
                             </button>
                           </div>
+                          {EXPORT_MODULES.map(moduleName => (
+                          <div key={moduleName} style={{ marginTop: 12 }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>{moduleName}</div>
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 8 }}>
-                            {EXPORT_PERMISSIONS.map(perm => {
+                            {EXPORT_PERMISSIONS.filter(perm => perm.module === moduleName).map(perm => {
                               const isPermitted = has(perm.key);
                               return (
                                 <label
@@ -1502,6 +1506,8 @@ export default function UsersPage() {
                               );
                             })}
                           </div>
+                          </div>
+                          ))}
                         </div>
                       );
                     })()}

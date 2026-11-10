@@ -176,7 +176,8 @@ export default function ExitGatePage() {
   const fetchDraftChallans = async () => {
     setLoading(true);
     try {
-      const res = await api.get('/api/delivery-challans');
+      // Only the open challans come back, not every one ever dispatched
+      const res = await api.get('/api/delivery-challans', { params: { status: 'DRAFT' } });
       const drafts = (res.data || []).filter((dc: DeliveryChallan) => dc.status === 'DRAFT');
       setDraftChallans(drafts);
     } catch (e) {

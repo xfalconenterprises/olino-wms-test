@@ -12,6 +12,7 @@ export interface TokenPayload {
   username: string;
   scope?: 'reset';
   sid?: string;     // the signed-in device (user_sessions row); reset tokens have none
+  floor?: boolean;  // signed in with badge + PIN: Warehouse screens only
   iat?: number;
   exp?: number;
 }
@@ -31,6 +32,7 @@ declare global {
     interface Request {
       user?: AuthUser;
       sessionId?: string;
+      floorOnly?: boolean;
     }
   }
 }
@@ -55,8 +57,8 @@ export function getJwtSecret(): string {
 // Fail at startup rather than on the first login
 getJwtSecret();
 
-export function signToken(user: { id: string; username: string }, scope?: 'reset', sessionId?: string): string {
-  const payload: TokenPayload = { userId: user.id, username: user.username, ...(scope && { scope }), ...(sessionId && { sid: sessionId }) };
+export function signToken(user: { id: string; username: string }, scope?: 'reset', sessionId?: string, floor?: boolean): string {
+  const payload: TokenPayload = { userId: user.id, username: user.username, ...(scope && { scope }), ...(sessionId && { sid: sessionId }), ...(floor && { floor: true }) };
   return jwt.sign(payload, getJwtSecret(), { expiresIn: SESSION_DURATION });
 }
 
@@ -135,10 +137,26 @@ async function authenticate(req: Request, res: Response, next: NextFunction, all
     userId: user.id,
     username: user.username,
     name: user.name,
-    modules: user.modules as UserModule[],
-    permissions: user.permissions || [],
+    ...(decoded.floor ? floorAccess(user) : { modules: user.modules as UserModule[], permissions: user.permissions || [] }),
   };
+  req.floorOnly = !!decoded.floor;
   next();
+}
+
+// ─── Badge + PIN sign-ins: Warehouse screens only ───────────────────────────
+// A PIN is short, so a session opened with one gets only the account's own Warehouse permissions,
+// whatever else the account may do. Cost prices, Users & Roles, reports and adjustments need the password.
+export const WAREHOUSE_PERMISSIONS = ['ops.entry_gate', 'ops.put_away', 'ops.dock_queue', 'ops.exit_gate', 'ops.returns', 'ops.stock_count', 'ops.release_earmark', 'ops.printer'];
+
+export function floorAccess(user: { modules: string[]; permissions: string[] | null }): { modules: UserModule[]; permissions: string[] } {
+  const perms = user.permissions || [];
+  const fullAccess = perms.includes('*');
+  const modules: UserModule[] = fullAccess || user.modules.includes('WAREHOUSE') ? ['WAREHOUSE'] : [];
+  // Accounts that rely on their module (no permission list) keep that, limited to the Warehouse module
+  if (perms.length === 0) return { modules, permissions: [] };
+  const warehouse = fullAccess ? WAREHOUSE_PERMISSIONS : perms.filter(p => WAREHOUSE_PERMISSIONS.includes(p));
+  // Never an empty list here: an empty list would fall back to whole modules
+  return { modules, permissions: warehouse.length ? warehouse : ['floor.none'] };
 }
 
 // ─── Verify JWT and load the current user ────────────────────────────────────

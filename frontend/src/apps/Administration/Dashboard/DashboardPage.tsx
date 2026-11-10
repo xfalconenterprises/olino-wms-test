@@ -52,7 +52,7 @@ export default function DashboardPage() {
   }, []);
 
   const quickLinks = [
-    { title: 'Global Inventory Dashboard', desc: 'Real-time stock balance & SKU rollup', path: '/inventory/dashboard', icon: LayoutDashboard, color: 'var(--color-brand)' },
+    { title: 'Inventory Dashboard', desc: 'Real-time stock balance & SKU rollup', path: '/inventory/dashboard', icon: LayoutDashboard, color: 'var(--color-brand)' },
     { title: 'System Reports & Throughput', desc: 'Inbound, outbound and capacity analytics', path: '/reports', icon: FileBarChart2, color: '#0284c7' },
     { title: 'User & Permissions Control', desc: 'Manage access, badge codes and 6-digit PINs', path: '/users', icon: Users, color: '#16a34a' },
     { title: 'Warehouse Locations Setup', desc: 'Racks, bays, positions and location barcodes', path: '/locations', icon: MapPin, color: '#ea580c' },

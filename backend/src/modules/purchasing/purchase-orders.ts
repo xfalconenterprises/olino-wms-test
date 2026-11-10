@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
+import type { Prisma, PurchaseOrderStatus } from '@prisma/client';
 import { withReceivedQuantity } from '../../utils/received';
+import { PAGE_SIZE, pageOf, pageReply } from '../../utils/paging';
 import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
@@ -40,10 +42,25 @@ export function computeClientBreakdown(po: any) {
   }));
 }
 
-// GET /api/purchase-orders — all POs
-router.get('/', requirePermission('po.view'), async (_req: Request, res: Response) => {
+// GET /api/purchase-orders — newest first. With ?limit (plus status, type, search) a page:
+// { rows, total, hasMore, counts: POs per status (all of them), itemCount: every PO line }
+router.get('/', requirePermission('po.view'), async (req: Request, res: Response) => {
+  const page = pageOf(req.query);
+  const status = String(req.query.status || '');
+  const type = String(req.query.type || '');
+  const search = String(req.query.search || '').trim();
+  const where: Prisma.PurchaseOrderWhereInput = {
+    isDeleted: false,
+    ...(status && status !== 'ALL' && { status: status as PurchaseOrderStatus }),
+    ...(type && type !== 'ALL' && { lines: { some: { itemType: type } } }),
+    ...(search && { OR: [
+      { poNumber: { contains: search, mode: 'insensitive' } },
+      { supplierName: { contains: search, mode: 'insensitive' } },
+    ] }),
+  };
+
   const pos = await prisma.purchaseOrder.findMany({
-    where: { isDeleted: false },
+    where,
     include: {
       supplier: true,
       lines: {
@@ -53,7 +70,8 @@ router.get('/', requirePermission('po.view'), async (_req: Request, res: Respons
       },
       grns: { select: { id: true }, orderBy: { createdAt: 'desc' }, take: 1 },
     },
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    ...(page && { take: page.take, skip: page.skip }),
   });
 
   const formatted = pos.map(po => ({
@@ -63,7 +81,121 @@ router.get('/', requirePermission('po.view'), async (_req: Request, res: Respons
     clientBreakdown: computeClientBreakdown(po),
   }));
 
-  res.json(formatted);
+  if (!page) { res.json(formatted); return; }
+  const [total, byStatus, itemCount] = await Promise.all([
+    prisma.purchaseOrder.count({ where }),
+    prisma.purchaseOrder.groupBy({ by: ['status'], where: { isDeleted: false }, _count: { _all: true } }),
+    prisma.purchaseOrderLine.count({ where: { po: { isDeleted: false } } }),
+  ]);
+  const counts: Record<string, number> = { ALL: 0, PENDING: 0, PARTIALLY_RECEIVED: 0, RECEIVED: 0, CANCELLED: 0 };
+  for (const g of byStatus) { counts[g.status] = g._count._all; counts.ALL += g._count._all; }
+  res.json(pageReply(formatted, total, page, { counts, itemCount }));
+});
+
+// ─── PO lines as a list of items (Purchase Orders → By Items & Shades) ───────
+type Arrival = 'NOT_REACHED' | 'PARTIALLY_REACHED' | 'FULLY_REACHED';
+const ARRIVALS: Arrival[] = ['NOT_REACHED', 'PARTIALLY_REACHED', 'FULLY_REACHED'];
+
+function arrivalWhere(arrival: string): Prisma.PurchaseOrderLineWhereInput {
+  const ordered = prisma.purchaseOrderLine.fields.orderedQty;
+  if (arrival === 'NOT_REACHED') return { receivedQty: { lte: 0 } };
+  if (arrival === 'PARTIALLY_REACHED') return { receivedQty: { gt: 0, lt: ordered } };
+  if (arrival === 'FULLY_REACHED') return { receivedQty: { gte: ordered }, orderedQty: { gt: 0 } };
+  return {};
+}
+
+const ITEM_SORT: Record<string, (dir: Prisma.SortOrder) => Prisma.PurchaseOrderLineOrderByWithRelationInput> = {
+  brand: dir => ({ brand: dir }),
+  quality: dir => ({ quality: dir }),
+  shade: dir => ({ shade: dir }),
+  category: dir => ({ category: dir }),
+  name: dir => ({ name: dir }),
+  artNo: dir => ({ artNo: dir }),
+  size: dir => ({ size: dir }),
+  orderedQty: dir => ({ orderedQty: dir }),
+  progress: dir => ({ receivedQty: dir }),   // how much has arrived
+  poNumber: dir => ({ po: { poNumber: dir } }),
+  supplierName: dir => ({ po: { supplierName: dir } }),
+  expectedDate: dir => ({ po: { expectedDate: dir } }),
+};
+
+// GET /api/purchase-orders/items?category=FABRIC&status=NOT_REACHED&search=&sort=brand&dir=asc&limit=50&offset=0
+// A page of PO lines. categoryCounts cover every line per item type; statusCounts cover every line of
+// the chosen type per arrival state (neither follows the search, like the tabs they label).
+router.get('/items', requirePermission('po.view'), async (req: Request, res: Response) => {
+  const page = pageOf(req.query) ?? { take: PAGE_SIZE, skip: 0 };
+  const category = String(req.query.category || 'FABRIC');
+  const arrival = String(req.query.status || '');
+  const search = String(req.query.search || '').trim();
+  const sortBy = ITEM_SORT[String(req.query.sort || 'brand')] ?? ITEM_SORT.brand;
+  const dir: Prisma.SortOrder = req.query.dir === 'desc' ? 'desc' : 'asc';
+
+  const base: Prisma.PurchaseOrderLineWhereInput = { po: { isDeleted: false } };
+  const contains = (value: string) => ({ contains: value, mode: 'insensitive' as const });
+  const where: Prisma.PurchaseOrderLineWhereInput = {
+    ...base,
+    itemType: category,
+    ...arrivalWhere(arrival),
+    ...(search && { OR: [
+      { brand: contains(search) }, { quality: contains(search) }, { qualityName: contains(search) },
+      { shade: contains(search) }, { category: contains(search) }, { name: contains(search) },
+      { artNo: contains(search) }, { size: contains(search) },
+      { po: { poNumber: contains(search) } }, { po: { supplierName: contains(search) } },
+      { allocations: { some: { clientName: contains(search) } } },
+    ] }),
+  };
+
+  const [lines, total, byType, orderCount, ...arrivalCounts] = await Promise.all([
+    prisma.purchaseOrderLine.findMany({
+      where,
+      include: {
+        po: { select: { id: true, poNumber: true, supplierName: true, expectedDate: true, status: true } },
+        allocations: { select: { id: true, clientName: true, allocatedQty: true, receivedQty: true } },
+      },
+      orderBy: [sortBy(dir), { po: { createdAt: 'desc' } }, { id: 'asc' }],   // equal values keep PO order, newest first
+      take: page.take,
+      skip: page.skip,
+    }),
+    prisma.purchaseOrderLine.count({ where }),
+    prisma.purchaseOrderLine.groupBy({ by: ['itemType'], where: base, _count: { _all: true } }),
+    prisma.purchaseOrder.count({ where: { isDeleted: false } }),
+    ...ARRIVALS.map(a => prisma.purchaseOrderLine.count({ where: { ...base, itemType: category, ...arrivalWhere(a) } })),
+  ]);
+
+  const rows = lines.map(line => {
+    const itemType = line.itemType || 'FABRIC';
+    const ordered = Number(line.orderedQty) || 0;
+    const received = Number(line.receivedQty) || 0;
+    const reachedStatus: Arrival = received >= ordered && ordered > 0 ? 'FULLY_REACHED' : received > 0 ? 'PARTIALLY_REACHED' : 'NOT_REACHED';
+    return {
+      lineId: line.id,
+      poId: line.po.id,
+      poNumber: line.po.poNumber,
+      supplierName: line.po.supplierName,
+      expectedDate: line.po.expectedDate,
+      poStatus: line.po.status,
+      itemType,
+      brand: line.brand || '',
+      quality: line.quality || '',
+      qualityName: line.qualityName || '',
+      shade: line.shade || '',
+      name: line.name || '',
+      artNo: line.artNo || '',
+      category: line.category || '',
+      size: line.size || '',
+      uom: line.uom || (itemType === 'FABRIC' ? 'METERS' : 'PCS'),
+      orderedQty: ordered,
+      receivedQty: received,
+      reachedStatus,
+      progress: ordered > 0 ? (received / ordered) * 100 : 0,
+      allocations: line.allocations.map(a => ({ id: a.id, clientName: a.clientName, allocatedQty: Number(a.allocatedQty) || 0, receivedQty: Number(a.receivedQty) || 0 })),
+    };
+  });
+
+  const categoryCounts: Record<string, number> = { FABRIC: 0, READY_MADE: 0, ACCESSORY: 0 };
+  for (const g of byType) categoryCounts[g.itemType] = g._count._all;
+  const statusCounts = Object.fromEntries(ARRIVALS.map((a, i) => [a, arrivalCounts[i]]));
+  res.json(pageReply(rows, total, page, { categoryCounts, statusCounts, orderCount }));
 });
 
 // GET /api/purchase-orders/meta/suppliers — suppliers for dropdown & autocomplete
