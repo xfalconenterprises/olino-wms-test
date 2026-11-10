@@ -18,7 +18,7 @@ export interface ExportChoice {
  * starting from what this user chose last time, then logs the export and downloads the file.
  * A tab only offers columns that hold data for that item type.
  */
-export default function ExportColumnsModal({ view, filters, lastChoice, heading, note, columns, rows, typeOf, onClose }: {
+export default function ExportColumnsModal({ view, filters, lastChoice, heading, note, columns, rows, typeOf, valueTotals, onClose }: {
   view: string;
   filters: Record<string, string>;
   lastChoice: ExportChoice | null;
@@ -26,6 +26,7 @@ export default function ExportColumnsModal({ view, filters, lastChoice, heading,
   note: string;
   columns: ExportColumn[];
   rows: any[];
+  valueTotals?: Record<string, string>;
   typeOf: (row: any) => string;
   onClose: () => void;
 }) {
@@ -74,7 +75,7 @@ export default function ExportColumnsModal({ view, filters, lastChoice, heading,
       const columnsFor = (type: string) => (included.has(type)
         ? columns.filter(c => c.required || chosen[type]?.has(c.key))
         : []);
-      const file = await buildStockWorkbook({ heading, note, columnsFor, rows, typeOf });
+      const file = await buildStockWorkbook({ heading, note, columnsFor, rows, typeOf, valueTotals });
       const taken = sections.filter(s => included.has(s.type));
       // Logged before the file is handed over: no record, no file
       await api.post('/api/inventory/export/log', {

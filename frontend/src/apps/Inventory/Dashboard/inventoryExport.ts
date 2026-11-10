@@ -24,6 +24,11 @@ export const SHEETS = [
 export const headerOf = (column: ExportColumn, type: string) => (type === 'FABRIC' && column.fabricHeader) || column.header;
 
 const unitColumn: ExportColumn = { key: 'unit', header: 'Unit', required: true, value: r => unitName(uomOf(r)) };
+// The secret cost code (as on the label), and the value as code, sent only to Cost Prices holders
+const costColumns: ExportColumn[] = [
+  { key: 'costCode', header: 'Cost Code', value: r => r.costCode },
+  { key: 'valueCode', header: 'Value (code)', value: r => r.valueCode },
+];
 
 export const SKU_EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'brand', header: 'Brand', value: r => r.brand },
@@ -36,6 +41,7 @@ export const SKU_EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'artNo', header: 'Article No', value: r => r.artNo },
   { key: 'quantity', header: 'Total Quantity', kind: 'quantity', required: true, value: r => r.totalQuantity },
   unitColumn,
+  ...costColumns,
   { key: 'lumps', header: 'Packs', fabricHeader: 'Lumps', value: r => r.activeBatches },
   { key: 'full', header: 'Full Packs', fabricHeader: 'Full Rolls', value: r => r.fullRollsCount || 0 },
   { key: 'partial', header: 'Partial Packs', fabricHeader: 'Partial Rolls', value: r => r.partialRollsCount || 0 },
@@ -56,6 +62,7 @@ export const ROLL_EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'artNo', header: 'Article No', value: r => r.artNo },
   { key: 'quantity', header: 'Quantity', kind: 'quantity', required: true, value: r => r.quantity },
   unitColumn,
+  ...costColumns,
   { key: 'status', header: 'Status', value: r => STATUS_NAMES[r.status] ?? r.status },
   { key: 'location', header: 'Shelf Location', kind: 'long', value: r => (r.batchLocations || []).filter((l: any) => l.quantity > 0).map((l: any) => l.location?.code).join(', ') || 'Unassigned' },
   { key: 'client', header: 'Client', value: r => r.clientName },
@@ -79,7 +86,7 @@ const quantityFormat = (decimals: boolean) => (decimals ? '#,##0.00' : '#,##0');
 const isBlank = (v: CellValue) => v === null || v === undefined || v === '';
 const cellText = (c: ExportColumn, v: CellValue) => (c.kind === 'date' && v instanceof Date ? formatDate(v) : String(v ?? ''));
 
-function fillSheet(sheet: Worksheet, sheetName: string, heading: string, note: string, columns: ExportColumn[], rows: any[]) {
+function fillSheet(sheet: Worksheet, sheetName: string, heading: string, note: string, columns: ExportColumn[], rows: any[], valueTotal?: string) {
   sheet.addRow([`Olino · ${sheetName} Stock`]).getCell(1).font = { size: 16, bold: true, color: { argb: BRAND } };
   const summary = `${heading} · ${rows.length} ${rows.length === 1 ? 'row' : 'rows'} · Exported ${formatDateTime(new Date())} IST`;
   sheet.addRow([summary]).getCell(1).font = { size: 10, color: { argb: MUTED } };
@@ -143,6 +150,20 @@ function fillSheet(sheet: Worksheet, sheetName: string, heading: string, note: s
     });
   }
 
+  // The sheet's stock value as code (Cost Prices holders only): every row of the sheet, not just the filtered ones
+  const valueAt = columns.findIndex(c => c.key === 'valueCode');
+  if (valueTotal && valueAt >= 0) {
+    const added = sheet.addRow([]);
+    columns.forEach((_, n) => {
+      const cell = added.getCell(n + 1);
+      cell.font = { bold: true };
+      cell.fill = fill(BRAND_LIGHT);
+      cell.border = borders;
+    });
+    if (valueAt > 0) added.getCell(1).value = 'Total value (code)';
+    added.getCell(valueAt + 1).value = valueTotal;
+  }
+
   columns.forEach((c, n) => {
     const longest = Math.max(c.header.length, ...rows.map(r => cellText(c, c.value(r)).length));
     sheet.getColumn(n + 1).width = Math.min(44, Math.max(11, longest + 3));
@@ -159,12 +180,14 @@ function fillSheet(sheet: Worksheet, sheetName: string, heading: string, note: s
  * has nothing in it for that item type. An item type with no rows, or no columns from
  * `columnsFor`, gets no sheet at all.
  */
-export async function buildStockWorkbook({ heading, note, columnsFor, rows, typeOf }: {
+export async function buildStockWorkbook({ heading, note, columnsFor, rows, typeOf, valueTotals }: {
   heading: string;
   note: string;
   columnsFor: (type: string) => ExportColumn[];
   rows: any[];
   typeOf: (row: any) => string;
+  /** Value as code per item type, for Cost Prices holders */
+  valueTotals?: Record<string, string>;
 }): Promise<ArrayBuffer> {
   // Loaded only when someone exports: the library is far larger than the rest of this screen
   const library: any = await import('exceljs');
@@ -178,7 +201,7 @@ export async function buildStockWorkbook({ heading, note, columnsFor, rows, type
       .filter(c => sheetRows.some(r => !isBlank(c.value(r))))
       .map(c => ({ ...c, header: headerOf(c, type) }));
     if (!sheetRows.length || !filled.length) continue;
-    fillSheet(workbook.addWorksheet(name, { properties: { tabColor: { argb: tabColor } } }), name, heading, note, filled, sheetRows);
+    fillSheet(workbook.addWorksheet(name, { properties: { tabColor: { argb: tabColor } } }), name, heading, note, filled, sheetRows, valueTotals?.[type]);
   }
   if (!workbook.worksheets.length) throw new Error('The chosen columns have nothing to export.');
   return workbook.xlsx.writeBuffer();

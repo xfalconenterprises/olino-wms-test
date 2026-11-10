@@ -45,32 +45,65 @@ async function loadConfig(): Promise<CostCodeConfig | null> {
   const row = await prisma.costCodeSettings.findUnique({ where: { id: 1 } });
   return row ? { codeWord: row.codeWord } : null;
 }
+export const costCodeConfig = loadConfig;
+
+type Roll = { id: string; poLineId: string | null };
 
 /**
- * The secret cost code for a roll's label ('' when no code word is set or no cost was entered).
- * A roll received against a PO line takes that line's cost; a roll received without a PO takes
- * its own (Direct Inward Excel); a roll created by a customer return takes the cost of the roll
- * it was shipped from.
+ * A roll's cost per unit in rupees, or null. A roll received against a PO line takes that line's
+ * cost; a roll received without a PO takes its own (Direct Inward Excel); a roll created by a
+ * customer return takes the cost of the roll it was shipped from. Never sent to a screen.
  */
-export async function costCodeForBatch(batch: { id: string; poLineId: string | null; batchCode: string }): Promise<string> {
-  const config = await loadConfig();
-  if (!config) return '';
-  let current: { id: string; poLineId: string | null } | null = batch;
-  let costPrice: number | null = null;
+async function costOfRoll(roll: Roll): Promise<number | null> {
+  let current: Roll | null = roll;
   for (let hops = 0; current && hops < 6; hops++) {
     if (current.poLineId) {
       const cost = await prisma.poLineCost.findUnique({ where: { poLineId: current.poLineId } });
-      costPrice = cost ? Number(cost.costPrice) : null;
-      break;
+      return cost ? Number(cost.costPrice) : null;
     }
     const own = await prisma.batchCost.findUnique({ where: { batchId: current.id } });
-    if (own) { costPrice = Number(own.costPrice); break; }
-    const returned: { dcLine: { batch: { id: string; poLineId: string | null } } } | null = await prisma.customerReturnLine.findFirst({
+    if (own) return Number(own.costPrice);
+    const returned: { dcLine: { batch: Roll } } | null = await prisma.customerReturnLine.findFirst({
       where: { batchId: current.id },
       select: { dcLine: { select: { batch: { select: { id: true, poLineId: true } } } } },
     });
     current = returned?.dcLine.batch ?? null;
   }
+  return null;
+}
+
+/** The same for many rolls at once: roll id → cost (rolls without a cost are left out). */
+export async function costsOfRolls(rolls: Roll[]): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (rolls.length === 0) return result;
+  const lineIds = [...new Set(rolls.map(r => r.poLineId).filter((id): id is string => !!id))];
+  const lineCosts = new Map((lineIds.length ? await prisma.poLineCost.findMany({ where: { poLineId: { in: lineIds } } }) : [])
+    .map(c => [c.poLineId, Number(c.costPrice)]));
+  const withoutLine = rolls.filter(r => !r.poLineId).map(r => r.id);
+  const ownCosts = new Map((withoutLine.length ? await prisma.batchCost.findMany({ where: { batchId: { in: withoutLine } } }) : [])
+    .map(c => [c.batchId, Number(c.costPrice)]));
+  const rest: string[] = [];
+  for (const r of rolls) {
+    const cost = r.poLineId ? lineCosts.get(r.poLineId) : ownCosts.get(r.id);
+    if (cost !== undefined) result.set(r.id, cost);
+    else if (!r.poLineId) rest.push(r.id);
+  }
+  // Rolls made by a customer return (few): followed back one by one
+  if (rest.length) {
+    const returned = await prisma.customerReturnLine.findMany({ where: { batchId: { in: rest } }, select: { batchId: true } });
+    for (const { batchId } of returned) {
+      const cost = await costOfRoll({ id: batchId, poLineId: null });
+      if (cost !== null) result.set(batchId, cost);
+    }
+  }
+  return result;
+}
+
+/** The secret cost code for a roll's label ('' when no code word is set or no cost was entered). */
+export async function costCodeForBatch(batch: { id: string; poLineId: string | null; batchCode: string }): Promise<string> {
+  const config = await loadConfig();
+  if (!config) return '';
+  const costPrice = await costOfRoll(batch);
   // Decoys are chosen for the roll being labelled, so each roll's code looks different
   return costPrice !== null ? encodeCost(costPrice, config, batch.batchCode) : '';
 }

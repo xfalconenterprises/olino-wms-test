@@ -2,7 +2,9 @@ import { Router, Request, Response } from 'express';
 import { istDayEnd, istDayStart } from '../../utils/format';
 import { userMessage } from '../../utils/errors';
 import prisma from '../../lib/prisma';
-import { requireAuth, requirePermission } from '../../middleware/auth';
+import { requireAuth, requirePermission, hasCostAccess } from '../../middleware/auth';
+import { costCodeConfig, costsOfRolls } from '../administration/cost-prices';
+import { costLetters, encodeCost, type CostCodeConfig } from '../../utils/cost-code';
 import { Prisma } from '@prisma/client';
 import { pageOf, pageReply } from '../../utils/paging';
 
@@ -179,7 +181,8 @@ async function findSkus(query: Request['query']) {
       COUNT(b.id) FILTER (WHERE b.status = 'IN_STOCK')::int AS "fullRollsCount",
       COUNT(b.id) FILTER (WHERE b.status = 'PARTIALLY_USED')::int AS "partialRollsCount",
       COUNT(b.id) FILTER (WHERE b.status = 'QC_HOLD')::int AS "qcHoldCount",
-      COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT l.code), NULL), ARRAY[]::text[]) AS locations
+      COALESCE(ARRAY_REMOVE(ARRAY_AGG(DISTINCT l.code), NULL), ARRAY[]::text[]) AS locations,
+      ARRAY_AGG(DISTINCT b.id) AS "rollIds"
     FROM item_batches b
     LEFT JOIN batch_locations bl ON bl."batchId" = b.id AND bl.quantity > 0
     LEFT JOIN locations l ON l.id = bl."locationId"
@@ -218,6 +221,7 @@ async function findSkus(query: Request['query']) {
       partialRollsCount: r.partialRollsCount,
       qcHoldCount: r.qcHoldCount,
       locations: Array.isArray(r.locations) ? r.locations : [],
+      rollIds: (Array.isArray(r.rollIds) ? r.rollIds : []) as string[],  // for cost codes; not sent
       batches: [] // Loaded on demand when accordion is expanded
     };
   });
@@ -225,9 +229,104 @@ async function findSkus(query: Request['query']) {
   return formatted;
 }
 
+// ─── Cost codes ─────────────────────────────────────────────────────────────
+// Everyone who sees the stock sees each roll's secret cost code, exactly as on its label. A value
+// (quantity × cost) is shown as code only to people with the Cost Prices permission: next to the
+// plain quantities it would let anyone work the code word out. Rupees never leave the server.
+type CostRoll = { id: string; poLineId: string | null; quantity: number; itemType: string };
+type Viewer = { permissions?: string[] | null };
+
+/** Rolls with `costCode` (and `valueCode` for Cost Prices holders) added when they have a cost. */
+async function withRollCodes<T extends { id: string; poLineId: string | null; batchCode: string; quantity: number }>(rows: T[], user: Viewer) {
+  const config = await costCodeConfig();
+  if (!config || rows.length === 0) return rows;
+  const costs = await costsOfRolls(rows);
+  const seeValue = hasCostAccess(user);
+  return rows.map(r => {
+    const cost = costs.get(r.id);
+    if (cost === undefined) return r;
+    return { ...r, costCode: encodeCost(cost, config, r.batchCode), ...(seeValue && r.quantity > 0 && { valueCode: costLetters(cost * r.quantity, config) }) };
+  });
+}
+
+/** The rolls behind grouped items, for their codes and value. */
+const rollsOf = (items: { rollIds: string[] }[]) => {
+  const ids = [...new Set(items.flatMap(i => i.rollIds))];
+  return ids.length ? prisma.itemBatch.findMany({ where: { id: { in: ids } }, select: { id: true, poLineId: true, quantity: true, itemType: true } }) : Promise.resolve([] as CostRoll[]);
+};
+
+/**
+ * Grouped items with `costCode` when every roll in the item has the same cost (rolls from POs at
+ * different costs have no single code), and `valueCode` for Cost Prices holders when every roll
+ * has a cost. The roll ids used for this are not sent.
+ */
+async function withItemCodes<T extends { id: string; rollIds: string[] }>(items: T[], user: Viewer, rolls?: CostRoll[]) {
+  const strip = (i: T) => { const { rollIds: _ids, ...rest } = i; return rest; };
+  const config = await costCodeConfig();
+  if (!config || items.length === 0) return items.map(strip);
+  const all = rolls ?? await rollsOf(items);
+  const byId = new Map(all.map(r => [r.id, r]));
+  const costs = await costsOfRolls(all);
+  const seeValue = hasCostAccess(user);
+  return items.map(item => {
+    const own = item.rollIds.map(id => ({ cost: costs.get(id), qty: byId.get(id)?.quantity ?? 0 }));
+    const costed = own.length > 0 && own.every(o => o.cost !== undefined);
+    const single = costed && own.every(o => o.cost === own[0].cost);
+    const value = own.reduce((sum, o) => sum + (o.cost ?? 0) * o.qty, 0);
+    return {
+      ...strip(item),
+      ...(single && { costCode: encodeCost(own[0].cost!, config, item.id) }),
+      ...(seeValue && costed && value > 0 && { valueCode: costLetters(value, config) }),
+    };
+  });
+}
+
+/** Total value as code (all, and per item type) and how many rolls have no cost: Cost Prices holders only. */
+async function valueTotals(rolls: CostRoll[], config: CostCodeConfig) {
+  const costs = await costsOfRolls(rolls);
+  const byType: Record<string, number> = {};
+  let total = 0, costedRolls = 0, rollsWithoutCost = 0;
+  for (const r of rolls) {
+    if (r.quantity <= 0) continue;
+    const cost = costs.get(r.id);
+    if (cost === undefined) { rollsWithoutCost++; continue; }
+    costedRolls++;
+    total += cost * r.quantity;
+    byType[r.itemType] = (byType[r.itemType] ?? 0) + cost * r.quantity;
+  }
+  return {
+    totalCode: costedRolls ? costLetters(total, config) : '',
+    byType: Object.fromEntries(Object.entries(byType).map(([type, v]) => [type, costLetters(v, config)])),
+    costedRolls,
+    rollsWithoutCost,
+  };
+}
+
+/** The rolls a view's filters cover (for the total value). */
+async function rollsForView(view: string, query: Request['query']): Promise<CostRoll[]> {
+  if (view === 'GRANULAR') {
+    return prisma.itemBatch.findMany({ where: batchesWhere(query), select: { id: true, poLineId: true, quantity: true, itemType: true } });
+  }
+  return rollsOf(await findSkus(query));
+}
+
+// GET /api/inventory/value?view=ROLLUP|GRANULAR&<filters> — the stock value as code, Cost Prices holders only
+router.get('/value', requirePermission('inv.dashboard'), async (req: Request, res: Response) => {
+  if (!hasCostAccess(req.user!)) { res.status(403).json({ error: 'You do not have access to cost prices' }); return; }
+  try {
+    const config = await costCodeConfig();
+    if (!config) { res.json({ totalCode: '', byType: {}, costedRolls: 0, rollsWithoutCost: 0 }); return; }
+    const view = req.query.view === 'GRANULAR' ? 'GRANULAR' : 'ROLLUP';
+    res.json(await valueTotals(await rollsForView(view, req.query), config));
+  } catch (err: any) {
+    console.error('Inventory value error:', err);
+    res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
+  }
+});
+
 router.get('/skus', requirePermission('inv.dashboard'), async (req: Request, res: Response) => {
   try {
-    res.json(await findSkus(req.query));
+    res.json(await withItemCodes(await findSkus(req.query), req.user!));
   } catch (err: any) {
     console.error('Inventory SKUs SQL query error:', err);
     res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
@@ -331,7 +430,7 @@ router.get('/skus/batches', requirePermission('inv.dashboard'), async (req: Requ
       uom: b.uom
     }));
 
-    res.json(formatted);
+    res.json(await withRollCodes(formatted, req.user!));
   } catch (err: any) {
     console.error('Inventory SKU batches query error:', err);
     res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
@@ -487,9 +586,9 @@ async function findBatches(query: Request['query'], takeLimit?: number, skip = 0
 router.get('/batches', requirePermission('inv.dashboard'), async (req: Request, res: Response) => {
   try {
     const page = pageOf(req.query);
-    if (!page) { res.json(await findBatches(req.query, 500)); return; }
+    if (!page) { res.json(await withRollCodes(await findBatches(req.query, 500), req.user!)); return; }
     const [rows, total] = await Promise.all([findBatches(req.query, page.take, page.skip), prisma.itemBatch.count({ where: batchesWhere(req.query) })]);
-    res.json(pageReply(rows, total, page));
+    res.json(pageReply(await withRollCodes(rows, req.user!), total, page));
   } catch (err: any) {
     console.error('Inventory batches query error:', err);
     res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
@@ -504,13 +603,25 @@ const EXPORT_FILTERS = ['search', 'brand', 'quality', 'shade', 'status', 'locati
 router.get('/export', requirePermission('export.stock'), async (req: Request, res: Response) => {
   const view = req.query.view === 'GRANULAR' ? 'GRANULAR' : 'ROLLUP';
   try {
-    const rows = view === 'GRANULAR' ? await findBatches(req.query) : await findSkus(req.query);
+    // Codes in the file as on screen; the total value as code only for Cost Prices holders
+    let rows: unknown[];
+    let rolls: CostRoll[];
+    if (view === 'GRANULAR') {
+      const found = await findBatches(req.query);
+      rolls = found;
+      rows = await withRollCodes(found, req.user!);
+    } else {
+      const items = await findSkus(req.query);
+      rolls = await rollsOf(items);
+      rows = await withItemCodes(items, req.user!, rolls);
+    }
+    const config = hasCostAccess(req.user!) ? await costCodeConfig() : null;
     const last = await prisma.exportLog.findFirst({
       where: { userId: req.user!.userId, view },
       orderBy: { createdAt: 'desc' },
       select: { choice: true },
     });
-    res.json({ rows, lastChoice: last?.choice ?? null });
+    res.json({ rows, lastChoice: last?.choice ?? null, ...(config && { valueTotals: await valueTotals(rolls, config) }) });
   } catch (err: any) {
     console.error('Stock export error:', err);
     res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });

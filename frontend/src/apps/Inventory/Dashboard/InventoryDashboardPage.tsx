@@ -28,7 +28,7 @@ import { openPrintPage } from '../../../utils/printPage';
 import { formatDateTime, formatDate } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { useAuth } from '../../../hooks/useAuth';
-import { hasPermission } from '../../../utils/roles';
+import { hasPermission, COST_PRICE_PERMISSION } from '../../../utils/roles';
 import ExportColumnsModal from './ExportColumnsModal';
 import type { ExportChoice } from './ExportColumnsModal';
 import { ROLL_EXPORT_COLUMNS, SKU_EXPORT_COLUMNS } from './inventoryExport';
@@ -41,6 +41,8 @@ interface SKUChildBatch {
   id: string;
   batchCode: string;
   quantity: number;
+  costCode?: string;   // secret cost code, as on the label
+  valueCode?: string;  // value as code, Cost Prices holders only
   status: string;
   locationCode: string;
   supplierBundle: string | null;
@@ -57,6 +59,8 @@ interface SKUChildBatch {
 
 interface AggregatedSKU {
   id: string;
+  costCode?: string;   // secret cost code, when every roll has the same cost
+  valueCode?: string;  // value as code, Cost Prices holders only
   itemType: string;
   brand: string;
   quality: string | null;
@@ -80,6 +84,8 @@ const exportTypeOf = (row: any) => row.itemType || 'FABRIC';
 interface BatchRecord {
   id: string;
   batchCode: string;
+  costCode?: string;   // secret cost code, as on the label
+  valueCode?: string;  // value as code, Cost Prices holders only
   quantity: number;
   status: string;
   supplierBundle: string | null;
@@ -248,7 +254,10 @@ export default function InventoryDashboardPage() {
   const [status, setStatus] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const { user } = useAuth();
-  const [exportData, setExportData] = useState<{ view: string; filters: Record<string, string>; rows: any[]; lastChoice: ExportChoice | null } | null>(null);
+  const [exportData, setExportData] = useState<{ view: string; filters: Record<string, string>; rows: any[]; lastChoice: ExportChoice | null; valueTotals?: Record<string, string> } | null>(null);
+  const canSeeValue = !!user?.permissions?.includes(COST_PRICE_PERMISSION);
+  const [valueTotal, setValueTotal] = useState<{ totalCode: string; costedRolls: number; rollsWithoutCost: number } | null>(null);
+  const valueRequest = useRef(0);
   const [exportBusy, setExportBusy] = useState(false);
   const [brand, setBrand] = useState('');
   const [quality, setQuality] = useState('');
@@ -364,6 +373,13 @@ export default function InventoryDashboardPage() {
     setError(null);
     try {
       const params = filterParams();
+      // The stock value as code: only Cost Prices holders ask (and the server answers no one else)
+      const valueId = ++valueRequest.current;
+      if (canSeeValue) {
+        api.get(`/api/inventory/value?view=${viewMode === 'AGGREGATED' ? 'ROLLUP' : 'GRANULAR'}&${params.toString()}`)
+          .then(r => { if (valueId === valueRequest.current) setValueTotal(r.data); })
+          .catch(() => { if (valueId === valueRequest.current) setValueTotal(null); });
+      } else setValueTotal(null);
 
       if (viewMode === 'AGGREGATED') {
         const res = await api.get(`/api/inventory/skus?${params.toString()}`);
@@ -589,6 +605,7 @@ export default function InventoryDashboardPage() {
         view,
         filters: Object.fromEntries(params),
         lastChoice: data.lastChoice,
+        valueTotals: data.valueTotals?.byType,
         rows: view === 'GRANULAR' ? sortBatches(data.rows) : data.rows,
       });
     } catch (err: any) {
@@ -610,7 +627,19 @@ export default function InventoryDashboardPage() {
     selectedClientFilter,
   ].filter(Boolean).join(' · ');
 
-  const skuRollupColSpan = categoryTab === 'FABRIC' ? 6 : 8;
+  // Cost code columns appear only when some row has one; values reach Cost Prices holders only
+  const skuCode = skus.some(s => s.costCode), skuValue = skus.some(s => s.valueCode);
+  const rollCode = batches.some(b => b.costCode), rollValue = batches.some(b => b.valueCode);
+  const codeHeads = (code: boolean, value: boolean) => (
+    <>{code && <th style={{ whiteSpace: 'nowrap' }}>Cost Code</th>}{value && <th style={{ whiteSpace: 'nowrap' }}>Value (code)</th>}</>
+  );
+  const codeCells = (row: { costCode?: string; valueCode?: string }, code: boolean, value: boolean) => (
+    <>
+      {code && <td>{row.costCode && <code className="cost-code">{row.costCode}</code>}</td>}
+      {value && <td>{row.valueCode && <code className="cost-code">{row.valueCode}</code>}</td>}
+    </>
+  );
+  const skuRollupColSpan = (categoryTab === 'FABRIC' ? 6 : 8) + Number(skuCode) + Number(skuValue);
 
   return (
     <div style={{ maxWidth: '100%', margin: '0 auto', paddingBottom: 40 }}>
@@ -766,8 +795,10 @@ export default function InventoryDashboardPage() {
           lastChoice={exportData.lastChoice}
           heading={viewMode === 'AGGREGATED' ? 'SKU Rollup' : 'Granular'}
           note={exportNote}
-          columns={viewMode === 'AGGREGATED' ? SKU_EXPORT_COLUMNS : ROLL_EXPORT_COLUMNS}
+          columns={(viewMode === 'AGGREGATED' ? SKU_EXPORT_COLUMNS : ROLL_EXPORT_COLUMNS)
+            .filter(c => !['costCode', 'valueCode'].includes(c.key) || exportData.rows.some(r => r[c.key]))}
           rows={exportData.rows}
+          valueTotals={exportData.valueTotals}
           typeOf={exportTypeOf}
           onClose={() => setExportData(null)}
         />
@@ -922,6 +953,15 @@ export default function InventoryDashboardPage() {
       )}
 
       {/* ─── Table View (SKU Rollup vs Granular) ───────────────────────────── */}
+      {valueTotal?.totalCode && (
+        <div className="stock-value-code" title="Stock value of the rolls shown, as cost code">
+          Stock value (code): <code className="cost-code">{valueTotal.totalCode}</code>
+          <span style={{ color: 'var(--color-text-muted)' }}>
+            · {valueTotal.costedRolls} {valueTotal.costedRolls === 1 ? 'roll' : 'rolls'} with a cost
+            {valueTotal.rollsWithoutCost > 0 && ` · ${valueTotal.rollsWithoutCost} without`}
+          </span>
+        </div>
+      )}
       <div className="card" style={{ boxShadow: 'var(--shadow-sm)', overflow: 'hidden', width: '100%' }}>
         {loading ? (
           <div style={{ padding: 60, textAlign: 'center' }}><span className="spinner spinner-lg" /></div>
@@ -938,7 +978,7 @@ export default function InventoryDashboardPage() {
                   <th>Quality Grade</th>
                   <th>Color / Shade</th>
                   <th>In Stock</th>
-                  <th>Lumps Count (Full vs Cut)</th>                </tr>
+                  <th>Lumps Count (Full vs Cut)</th>{codeHeads(skuCode, skuValue)}</tr>
               ) : categoryTab === 'READY_MADE' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -948,7 +988,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Size</th>
                   <th>In Stock (Pieces)</th>
-                  <th>Packs / Cartons</th>                </tr>
+                  <th>Packs / Cartons</th>{codeHeads(skuCode, skuValue)}</tr>
               ) : categoryTab === 'ACCESSORY' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -958,7 +998,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Size / Art No</th>
                   <th>In Stock (Units)</th>
-                  <th>Packs / Boxes</th>                </tr>
+                  <th>Packs / Boxes</th>{codeHeads(skuCode, skuValue)}</tr>
               ) : (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -968,7 +1008,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Category / Size</th>
                   <th>Total In Stock</th>
-                  <th>Lumps / Packs</th>                </tr>
+                  <th>Lumps / Packs</th>{codeHeads(skuCode, skuValue)}</tr>
               )}
             </thead>
             <tbody>
@@ -976,6 +1016,8 @@ export default function InventoryDashboardPage() {
                 const isExpanded = !!expandedSkuIds[s.id];
                 const unitStr = unitLabel(uomOf(s));
                 const childBatches = s.batches || [];
+                const childCode = childBatches.some((cb: any) => cb.costCode), childValue = childBatches.some((cb: any) => cb.valueCode);
+                const childSpan = 8 + Number(childCode) + Number(childValue);
 
                 return (
                   <>
@@ -1083,6 +1125,7 @@ export default function InventoryDashboardPage() {
                         </>
                       )}
                       {/* No shelf column: an item spans many rolls on many shelves; each roll's shelf shows when expanded */}
+                      {codeCells(s, skuCode, skuValue)}
                     </tr>
 
                     {/* Accordion Child Table */}
@@ -1105,6 +1148,7 @@ export default function InventoryDashboardPage() {
                                 <tr>
                                   <th>{s.itemType === 'FABRIC' ? 'Roll Barcode' : 'Pack / Barcode'}</th>
                                   <th>{s.itemType === 'FABRIC' ? `Remaining (${unitStr})` : 'In Stock Quantity'}</th>
+                                  {codeHeads(childCode, childValue)}
                                   <th>{s.itemType === 'FABRIC' ? 'Roll Status' : 'Pack Status'}</th>
                                   <th>Physical Shelf</th>
                                   <th>Client Earmark</th>
@@ -1116,7 +1160,7 @@ export default function InventoryDashboardPage() {
                               <tbody>
                                 {loadingSkuBatches[s.id] ? (
                                   <tr>
-                                    <td colSpan={8} style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)' }}>
+                                    <td colSpan={childSpan} style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)' }}>
                                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, justifyContent: 'center' }}>
                                         <span className="spinner spinner-sm" /> Loading {s.itemType === 'FABRIC' ? 'rolls & lumps' : 'cartons & packs'}...
                                       </div>
@@ -1134,6 +1178,7 @@ export default function InventoryDashboardPage() {
                                         <td>
                                           <strong>{cb.quantity} {unitStr}</strong>
                                         </td>
+                                        {codeCells(cb, childCode, childValue)}
                                         <td>
                                           <span className={`badge ${cb.status === 'IN_STOCK' ? 'badge-success' : cb.status === 'PARTIALLY_USED' ? 'badge-warning' : cb.status === 'QC_HOLD' ? 'badge-danger' : 'badge-neutral'}`} style={{ fontSize: 10.5 }}>
                                             {cb.status === 'IN_STOCK' ? (s.itemType === 'FABRIC' ? 'Full Roll' : 'Full Pack') : cb.status === 'PARTIALLY_USED' ? (s.itemType === 'FABRIC' ? 'Partial Cut' : 'Open Pack') : cb.status === 'QC_HOLD' ? 'QC Hold' : cb.status}
@@ -1209,7 +1254,7 @@ export default function InventoryDashboardPage() {
                                     ))}
                                     {childBatches.length === 0 && (
                                       <tr>
-                                        <td colSpan={8} style={{ textAlign: 'center', padding: 16, color: 'var(--color-text-muted)' }}>
+                                        <td colSpan={childSpan} style={{ textAlign: 'center', padding: 16, color: 'var(--color-text-muted)' }}>
                                           No child rolls currently registered under this SKU.
                                         </td>
                                       </tr>
@@ -1259,6 +1304,7 @@ export default function InventoryDashboardPage() {
                       Qty In Stock <ArrowUpDown size={12} />
                     </div>
                   </th>
+                  {codeHeads(rollCode, rollValue)}
                   <th>Roll Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1284,6 +1330,7 @@ export default function InventoryDashboardPage() {
                       Pieces In Stock <ArrowUpDown size={12} />
                     </div>
                   </th>
+                  {codeHeads(rollCode, rollValue)}
                   <th>Pack Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1309,6 +1356,7 @@ export default function InventoryDashboardPage() {
                       Units In Stock <ArrowUpDown size={12} />
                     </div>
                   </th>
+                  {codeHeads(rollCode, rollValue)}
                   <th>Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1333,6 +1381,7 @@ export default function InventoryDashboardPage() {
                       In Stock Qty <ArrowUpDown size={12} />
                     </div>
                   </th>
+                  {codeHeads(rollCode, rollValue)}
                   <th>Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1430,6 +1479,7 @@ export default function InventoryDashboardPage() {
                         {b.quantity} {unitStr}
                       </span>
                     </td>
+                    {codeCells(b, rollCode, rollValue)}
                     <td>
                       <span className={`badge ${b.status === 'IN_STOCK' ? 'badge-success' : b.status === 'PARTIALLY_USED' ? 'badge-warning' : b.status === 'QC_HOLD' ? 'badge-danger' : 'badge-neutral'}`}>
                         {b.status === 'IN_STOCK' ? (bType === 'FABRIC' ? 'Full Roll' : 'Full Pack') : b.status === 'PARTIALLY_USED' ? (bType === 'FABRIC' ? 'Partial Cut' : 'Open Pack') : b.status === 'QC_HOLD' ? 'QC Hold' : b.status}
@@ -1454,7 +1504,7 @@ export default function InventoryDashboardPage() {
               })}
               {sortedBatches.length === 0 && (
                 <tr>
-                  <td colSpan={categoryTab === 'FABRIC' ? 8 : (categoryTab === 'READY_MADE' || categoryTab === 'ACCESSORY') ? 10 : 9} style={{ textAlign: 'center', padding: 48, color: 'var(--color-text-muted)' }}>
+                  <td colSpan={(categoryTab === 'FABRIC' ? 8 : (categoryTab === 'READY_MADE' || categoryTab === 'ACCESSORY') ? 10 : 9) + Number(rollCode) + Number(rollValue)} style={{ textAlign: 'center', padding: 48, color: 'var(--color-text-muted)' }}>
                     No granular inventory found matching active filters.
                   </td>
                 </tr>
