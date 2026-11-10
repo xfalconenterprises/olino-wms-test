@@ -24,7 +24,7 @@ import {
   Repeat2
 } from 'lucide-react';
 import api from '../../../utils/api';
-import { openPrintPage } from '../../../utils/printPage';
+import { printTSPL } from '../../../utils/printer';
 import { formatDateTime, formatDate } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { useAuth } from '../../../hooks/useAuth';
@@ -282,6 +282,17 @@ export default function InventoryDashboardPage() {
 
   // Item Passport Drawer
   const [selectedBatch, setSelectedBatch] = useState<BatchRecord | null>(null);
+  // Reprint from the roll drawer goes straight to the barcode printer, as at the Entry Gate
+  const [labelPrint, setLabelPrint] = useState<{ code: string; state: 'sending' | 'sent' | 'failed'; message: string } | null>(null);
+  const reprintLabel = async (batchCode: string) => {
+    setLabelPrint({ code: batchCode, state: 'sending', message: 'Sending to the barcode printer…' });
+    try {
+      await printTSPL(batchCode);
+      setLabelPrint({ code: batchCode, state: 'sent', message: 'Label sent to the barcode printer.' });
+    } catch (err: any) {
+      setLabelPrint({ code: batchCode, state: 'failed', message: err?.response?.data?.error || err?.message || 'The label could not be printed. Check the printer in Settings.' });
+    }
+  };
   const [batchHistory, setBatchHistory] = useState<BatchTransaction[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -1541,18 +1552,31 @@ export default function InventoryDashboardPage() {
                   </h2>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <a 
-                    role="button"
-                    onClick={() => openPrintPage(`/api/labels/preview/${encodeURIComponent(selectedBatch.batchCode)}`, 'label').catch(() => alert('Could not open the label preview.'))}
+                  <button
+                    type="button"
+                    onClick={() => reprintLabel(selectedBatch.batchCode)}
+                    disabled={labelPrint?.code === selectedBatch.batchCode && labelPrint.state === 'sending'}
                     className="btn btn-secondary btn-sm"
                     style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                    title="Print TSC Barcode Label"
+                    title="Print on the barcode printer"
                   >
                     <Printer size={14} /> Print Label
-                  </a>
-                  <button onClick={() => setSelectedBatch(null)} className="btn btn-ghost btn-icon"><X size={20} /></button>
+                  </button>
+                  <button onClick={() => { setSelectedBatch(null); setLabelPrint(null); }} className="btn btn-ghost btn-icon"><X size={20} /></button>
                 </div>
               </div>
+              {labelPrint?.code === selectedBatch.batchCode && (
+                <div
+                  id="label-print-note"
+                  role="status"
+                  style={{
+                    padding: '10px 24px', fontSize: 13, fontWeight: 600, borderBottom: '1px solid var(--color-border)',
+                    color: labelPrint.state === 'failed' ? 'var(--color-danger)' : labelPrint.state === 'sent' ? 'var(--color-success)' : 'var(--color-text-muted)',
+                  }}
+                >
+                  {labelPrint.message}
+                </div>
+              )}
 
               {/* Drawer Body */}
               <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
