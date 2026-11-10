@@ -36,6 +36,7 @@ interface DeliveryChallan {
   challanNumber: string;
   customerName: string;
   destination: string | null;
+  remarks?: string | null;
   status: 'DRAFT' | 'DISPATCHED' | 'CANCELLED';
   createdAt: string;
   _count?: { lines: number };
@@ -106,6 +107,10 @@ export default function ExitGatePage() {
   const [loading, setLoading] = useState(true);
   const [dispatching, setDispatching] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
+  // Remarks / notes printed on the challan; saved when the box is left, and before printing or dispatch
+  const [remarks, setRemarks] = useState('');
+  const [remarksState, setRemarksState] = useState<'' | 'saving' | 'saved'>('');
+  const [remarksError, setRemarksError] = useState('');
 
   // Customer Directory for auto-suggest
   interface CustomerDirectoryEntry {
@@ -201,6 +206,9 @@ export default function ExitGatePage() {
     try {
       const res = await api.get(`/api/delivery-challans/${id}`);
       setActiveDC(res.data);
+      setRemarks(res.data.remarks || '');
+      setRemarksState('');
+      setRemarksError('');
       setTimeout(() => scanInputRef.current?.focus(), 150);
     } catch (e) {
       console.error(e);
@@ -313,8 +321,28 @@ export default function ExitGatePage() {
     }
   };
 
+  // Saves the remarks if they changed; false when they could not be saved
+  const saveRemarks = async (): Promise<boolean> => {
+    if (!activeDC || activeDC.status !== 'DRAFT') return true;
+    const text = remarks.trim();
+    if (text === (activeDC.remarks || '').trim()) return true;
+    setRemarksState('saving');
+    setRemarksError('');
+    try {
+      const res = await api.patch(`/api/delivery-challans/${activeDC.id}/remarks`, { remarks: text });
+      setActiveDC(prev => (prev && prev.id === activeDC.id ? { ...prev, remarks: res.data.remarks } : prev));
+      setRemarksState('saved');
+      return true;
+    } catch (err: any) {
+      setRemarksState('');
+      setRemarksError(err.response?.data?.error || 'Could not save the remarks');
+      return false;
+    }
+  };
+
   const handleDispatch = async () => {
     if (!activeDC || !window.confirm(`Are you sure you want to finalize dispatch for ${activeDC.challanNumber}?`)) return;
+    if (!(await saveRemarks())) return;
     setDispatching(true);
     try {
       await api.post(`/api/delivery-challans/${activeDC.id}/dispatch`);
@@ -347,6 +375,7 @@ export default function ExitGatePage() {
 
   const handlePrintA4 = async () => {
     if (!activeDC) return;
+    if (!(await saveRemarks())) return;
     try {
       await openPrintPage(`/api/delivery-challans/${activeDC.id}/print`, 'delivery challan');
     } catch {
@@ -441,6 +470,11 @@ export default function ExitGatePage() {
             {activeDC.destination && (
               <div style={{ fontSize: 13, color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
                 <MapPin size={14} color="var(--color-brand)" /> Destination: {activeDC.destination}
+              </div>
+            )}
+            {activeDC.status !== 'DRAFT' && activeDC.remarks && (
+              <div style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 4, whiteSpace: 'pre-wrap', maxWidth: 520 }}>
+                Remarks: {activeDC.remarks}
               </div>
             )}
           </div>
@@ -726,12 +760,29 @@ export default function ExitGatePage() {
             background: '#fff', 
             border: '1px solid var(--color-border)', 
             borderRadius: 'var(--radius-lg)', 
-            padding: '16px 24px', 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center',
+            padding: '16px 24px',
             boxShadow: 'var(--shadow-sm)'
           }}>
+            <div style={{ marginBottom: 14 }}>
+              <label htmlFor="dc-remarks" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginBottom: 6, color: 'var(--color-text-main)' }}>
+                <span>Remarks / notes <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(optional, printed on the challan)</span></span>
+                <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--color-text-muted)' }}>
+                  {remarksState === 'saving' ? 'Saving…' : remarksState === 'saved' ? 'Saved' : ''}
+                </span>
+              </label>
+              <textarea
+                id="dc-remarks"
+                className="form-input"
+                value={remarks}
+                maxLength={500}
+                rows={2}
+                onChange={e => { setRemarks(e.target.value); setRemarksState(''); setRemarksError(''); }}
+                onBlur={() => { saveRemarks(); }}
+                style={{ width: '100%', resize: 'vertical', minHeight: 56, fontSize: 14 }}
+              />
+              {remarksError && <div style={{ color: 'var(--color-danger)', fontSize: 12.5, marginTop: 4 }}>{remarksError}</div>}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13.5, color: 'var(--color-text-muted)' }}>
               Ready to ship <strong>{activeDC.lines?.length || 0} items</strong> to <strong>{activeDC.customerName}</strong>
             </div>
@@ -752,6 +803,7 @@ export default function ExitGatePage() {
             >
               {dispatching ? <><span className="spinner" /> Finalizing...</> : <><LogOut size={18} /> Finalize & Dispatch Shipment</>}
             </button>
+            </div>
           </div>
         )}
 

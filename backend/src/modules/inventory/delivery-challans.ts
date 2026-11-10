@@ -161,9 +161,15 @@ async function generateNextChallanNumber(): Promise<string> {
   return challanNumber;
 }
 
+const REMARKS_MAX = 500;
+
 // POST /api/delivery-challans — Create a new draft DC
 router.post('/', requireAuth, requirePermission('ops.exit_gate'), async (req: Request, res: Response) => {
   const { customerName, customerId, destination, remarks } = req.body;
+  if (String(remarks ?? '').trim().length > REMARKS_MAX) {
+    res.status(400).json({ error: `Remarks can be at most ${REMARKS_MAX} characters.` });
+    return;
+  }
   if (!customerName) {
     res.status(400).json({ error: 'Customer name is required' });
     return;
@@ -375,6 +381,27 @@ router.delete('/:id', requireAuth, requirePermission('ops.exit_gate'), async (re
 });
 
 // POST /api/delivery-challans/:id/dispatch — Finalize and dispatch the stock
+// PATCH /api/delivery-challans/:id/remarks — Remarks / notes printed on the challan; editable until dispatch
+router.patch('/:id/remarks', requireAuth, requirePermission('ops.exit_gate'), async (req: Request, res: Response) => {
+  const remarks = String(req.body?.remarks ?? '').trim();
+  if (remarks.length > REMARKS_MAX) {
+    res.status(400).json({ error: `Remarks can be at most ${REMARKS_MAX} characters.` });
+    return;
+  }
+  const dcId = req.params.id as string;
+  const dc = await prisma.deliveryChallan.findUnique({ where: { id: dcId }, select: { status: true, isDeleted: true } });
+  if (!dc || dc.isDeleted) {
+    res.status(404).json({ error: 'Delivery Challan not found' });
+    return;
+  }
+  if (dc.status !== 'DRAFT') {
+    res.status(400).json({ error: 'Remarks can only be changed before the challan is dispatched.' });
+    return;
+  }
+  const saved = await prisma.deliveryChallan.update({ where: { id: dcId }, data: { remarks: remarks || null }, select: { id: true, remarks: true } });
+  res.json(saved);
+});
+
 router.post('/:id/dispatch', requireAuth, requirePermission('ops.exit_gate'), async (req: Request, res: Response) => {
   const dcId = req.params.id as string;
 
@@ -622,7 +649,7 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
     ['Dispatched Date', `<strong>${formatDate(dc.dispatchedAt || dc.createdAt)}</strong>`],
     ...filledMeta([['Destination', dc.destination]]).map(([k, v]): [string, string] => [k, `<strong>${escapeHtml(v)}</strong>`]),
     ['Delivery Status', `<strong>${dc.status === 'DISPATCHED' ? '<span style="color: #166534;">Dispatched</span>' : '<span style="color: #b45309;">Draft</span>'}</strong>`],
-    ...filledMeta([['Prepared By', dc.createdBy?.name], ['Remarks', dc.remarks]]).map(([k, v]): [string, string] => [k, `<strong>${escapeHtml(v)}</strong>`]),
+    ...filledMeta([['Prepared By', dc.createdBy?.name]]).map(([k, v]): [string, string] => [k, `<strong>${escapeHtml(v)}</strong>`]),
   ];
   let metaRowsHtml = '';
   for (let i = 0; i < metaCells.length; i += 2) {
@@ -745,6 +772,22 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
       padding: 6px 8px;
       color: #000000;
     }
+    .remarks-box {
+      border: 1px solid #000000;
+      padding: 8px 10px;
+      margin-bottom: 14px;
+      page-break-inside: avoid;
+    }
+    .remarks-label {
+      font-size: 10.5px;
+      font-weight: bold;
+      margin-bottom: 3px;
+    }
+    .remarks-text {
+      font-size: 11px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
     .sign-table {
       width: 100%;
       margin-top: 30px;
@@ -826,6 +869,7 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
           </tr>
         </tfoot>
       </table>
+      ${dc.remarks?.trim() ? `<div class="remarks-box"><div class="remarks-label">Remarks</div><div class="remarks-text">${escapeHtml(dc.remarks.trim())}</div></div>` : ''}
     </div>
 
     <div class="bottom-section">
