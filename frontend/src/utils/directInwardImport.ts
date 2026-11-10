@@ -21,7 +21,7 @@ interface ColumnDef {
   key: string;
   header: string;
   required: boolean;
-  kind: 'text' | 'quantity' | 'choice';
+  kind: 'text' | 'quantity' | 'choice' | 'cost';
   choices?: Choice[];
   aliases?: string[];       // other header spellings accepted on import (e.g. older templates)
   wholeNumber?: boolean;
@@ -52,6 +52,10 @@ const ACCESSORY_UOMS: Choice[] = [
 const text = (key: string, header: string, required: boolean, note: string, width = 18): ColumnDef =>
   ({ key, header, required, kind: 'text', note, width });
 
+// Optional on every sheet: saved with each lump and printed on its label only as the secret cost code
+const cost = (per: string): ColumnDef =>
+  ({ key: 'costPrice', header: 'Cost Price', required: false, kind: 'cost', aliases: ['Cost', 'Cost Rate'], note: `Optional. Cost per ${per} in rupees, e.g. 245.50. Never shown on screens; the label carries it only as the cost code.`, width: 12 });
+
 export const IMPORT_COLUMNS: Record<InwardItemType, ColumnDef[]> = {
   FABRIC: [
     { key: 'category', header: 'Category', required: true, kind: 'choice', choices: fabricChoices(DEFAULT_FABRIC_TYPES), aliases: ['Fabric Type'], note: 'A fabric type from the master catalogue, e.g. Suiting, Shirting, Knits', width: 16 },
@@ -60,6 +64,7 @@ export const IMPORT_COLUMNS: Record<InwardItemType, ColumnDef[]> = {
     text('qualityName', 'Quality Name', false, 'Optional, e.g. Poly Viscose Twill', 22),
     text('shade', 'Shade', true, 'e.g. Navy Blue 04'),
     { key: 'quantity', header: 'Total Quantity', required: true, kind: 'quantity', aliases: ['Total Meters', 'Total Kg'], note: 'Total of this item in the delivery, in its fabric type\'s unit: meters (e.g. 520.5), or kg for fabric weighed by weight such as Knits', width: 14 },
+    cost('meter (or per kg for fabric weighed by weight)'),
     text('bundle', 'Bundle Number', false, 'Optional, e.g. B-101', 16),
     text('notes', 'Remarks', false, 'Optional', 24),
   ],
@@ -70,6 +75,7 @@ export const IMPORT_COLUMNS: Record<InwardItemType, ColumnDef[]> = {
     text('artNo', 'Art No', true, 'e.g. ART-2041', 14),
     text('size', 'Size', true, 'e.g. 32, M, XL', 10),
     { key: 'quantity', header: 'Total Pieces', required: true, kind: 'quantity', wholeNumber: true, note: 'Whole number of pieces, e.g. 240', width: 14 },
+    cost('piece'),
     text('bundle', 'Bundle Number', false, 'Optional, e.g. Carton 4', 16),
     text('notes', 'Remarks', false, 'Optional', 24),
   ],
@@ -80,6 +86,7 @@ export const IMPORT_COLUMNS: Record<InwardItemType, ColumnDef[]> = {
     text('shade', 'Shade', false, 'Optional, e.g. Navy Blue', 14),
     { key: 'uom', header: 'UOM', required: true, kind: 'choice', choices: ACCESSORY_UOMS, note: 'Pcs, Gross, Boxes, Meters or Packets', width: 10 },
     { key: 'quantity', header: 'Total Quantity', required: true, kind: 'quantity', note: 'Total quantity in the UOM above, e.g. 5000', width: 14 },
+    cost('unit of the UOM above'),
     text('bundle', 'Packet / Box Number', false, 'Optional, e.g. Pkt 3', 18),
     text('notes', 'Remarks', false, 'Optional', 24),
   ],
@@ -98,6 +105,7 @@ export interface ImportLine {
   uom: string;
   received: number;
   lumps: number;
+  costPrice?: number;              // from the optional Cost Price column; never shown, kept off the saved draft
 }
 
 export interface ImportResult {
@@ -115,6 +123,20 @@ function matchChoice(choices: Choice[], raw: string): string | null {
   const found = choices.find(c =>
     [c.value, c.label, ...(c.aliases ?? [])].some(option => normaliseHeader(option) === wanted));
   return found ? found.value : null;
+}
+
+/** A cost as typed in the sheet (₹ and commas allowed): above 0, at most 2 decimals; null when not valid. */
+function parseCost(value: Cell | undefined): number | null {
+  let n: number;
+  if (typeof value === 'number') n = value;
+  else {
+    const s = cellText(value).replace(/^(rs\.?|inr)/i, '').replace(/[₹,\s]/g, '');
+    if (!/^\d+(\.\d+)?$/.test(s)) return null;
+    n = Number(s);
+  }
+  if (!Number.isFinite(n) || n <= 0 || n >= 1e10) return null;
+  if (Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) return null;
+  return Math.round(n * 100) / 100;
 }
 
 function parseQuantity(value: Cell | undefined): number | null {
@@ -198,6 +220,7 @@ export function validateImportRows(itemType: InwardItemType, rows: Cell[][], fab
     const rowNumber = headerIndex + offset + 2; // spreadsheet rows are 1-based, after the header
     const fields: Record<string, string> = {};
     let quantity = 0;
+    let costPrice: number | undefined;
     let rowOk = true;
     const problem = (msg: string) => { errors.push(`Row ${rowNumber}: ${msg}`); rowOk = false; };
 
@@ -214,6 +237,10 @@ export function validateImportRows(itemType: InwardItemType, rows: Cell[][], fab
         if (n === null || n <= 0) problem(`${col.header} must be a number above 0 (found "${value}").`);
         else if (col.wholeNumber && !Number.isInteger(n)) problem(`${col.header} must be a whole number (found ${value}).`);
         else quantity = Math.round(n * 1000) / 1000;
+      } else if (col.kind === 'cost') {
+        const n = parseCost(raw);
+        if (n === null) problem(`${col.header} must be an amount above 0 with at most 2 decimals (found "${value}").`);
+        else costPrice = n;
       } else if (col.kind === 'choice') {
         const choice = matchChoice(col.choices!, value);
         if (!choice) problem(`${col.header} "${value}" is not valid. Use ${col.choices!.map(c => c.label).join(', ')}.`);
@@ -236,6 +263,7 @@ export function validateImportRows(itemType: InwardItemType, rows: Cell[][], fab
         uom: itemType === 'FABRIC' ? (types.find(t => t.value === fields.category)?.unit ?? 'METERS') : itemType === 'READY_MADE' ? 'PCS' : fields.uom,
         received: 0,
         lumps: 0,
+        ...(costPrice !== undefined && { costPrice }),
       });
     }
   });
@@ -332,7 +360,7 @@ export function remainingQty(line: ImportLine): number {
 /** The item's own columns, in template order (quantity, unit, bundle and remarks are shown separately). */
 export function itemFieldColumns(itemType: InwardItemType): { key: string; header: string }[] {
   return IMPORT_COLUMNS[itemType]
-    .filter(c => c.kind !== 'quantity' && !['uom', 'bundle', 'notes'].includes(c.key))
+    .filter(c => c.kind !== 'quantity' && c.kind !== 'cost' && !['uom', 'bundle', 'notes'].includes(c.key))
     .map(c => ({ key: c.key, header: c.header }));
 }
 
@@ -353,6 +381,9 @@ export function lumpPayload(line: ImportLine, quantity: number, bundle: string) 
     uom: line.uom,
     supplierBundle: bundle.trim() || undefined,
     notes: f.notes || undefined,
+    // The cost (when the sheet had one) goes with the lump; after a reload the server finds it by line
+    costPrice: line.costPrice,
+    importLineId: line.id,
   };
   if (line.itemType === 'FABRIC') {
     return { ...common, category: f.category, brand: f.brand, quality: f.quality, qualityName: f.qualityName || undefined, shade: f.shade };
@@ -361,4 +392,28 @@ export function lumpPayload(line: ImportLine, quantity: number, bundle: string) 
     return { ...common, name: f.name, category: f.fabricType || undefined, shade: f.shade || undefined, artNo: f.artNo.toUpperCase(), size: f.size };
   }
   return { ...common, category: f.category, name: f.name, brand: f.category, size: f.spec || undefined, shade: f.shade || undefined };
+}
+
+const ITEM_KEYS = ['category', 'brand', 'quality', 'qualityName', 'shade', 'name', 'artNo', 'size'] as const;
+
+/**
+ * The imported line a received lump belongs to. Lumps remember their line; lumps saved before
+ * that are matched on the item fields they were created with.
+ */
+export function importLineFor(lines: ImportLine[], roll: Record<string, any>): ImportLine | undefined {
+  if (roll.importLineId) return lines.find(l => l.id === roll.importLineId);
+  const norm = (v: unknown) => String(v ?? '').trim().toLowerCase();
+  const matches = lines.filter(l => {
+    if (l.itemType !== roll.itemType || (roll.uom && l.uom !== roll.uom)) return false;
+    const p = lumpPayload(l, 0, '') as Record<string, unknown>;
+    return ITEM_KEYS.every(k => p[k] === undefined || norm(p[k]) === norm(roll[k]));
+  });
+  return matches.find(l => l.received + 0.001 >= Number(roll.quantity)) ?? matches[0];
+}
+
+/** A received lump was corrected (change = new − old) or undone: the line's received total follows. */
+export function adjustReceived(lines: ImportLine[], lineId: string, change: number, undone: boolean): ImportLine[] {
+  return lines.map(l => (l.id === lineId
+    ? { ...l, received: Math.max(0, Math.round((l.received + change) * 1000) / 1000), lumps: Math.max(0, l.lumps - (undone ? 1 : 0)) }
+    : l));
 }

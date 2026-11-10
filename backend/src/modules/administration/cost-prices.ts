@@ -48,24 +48,31 @@ async function loadConfig(): Promise<CostCodeConfig | null> {
 
 /**
  * The secret cost code for a roll's label ('' when no code word is set or no cost was entered).
- * A roll received against a PO line takes that line's cost; a roll created by a customer return
- * takes the cost of the roll it was shipped from.
+ * A roll received against a PO line takes that line's cost; a roll received without a PO takes
+ * its own (Direct Inward Excel); a roll created by a customer return takes the cost of the roll
+ * it was shipped from.
  */
 export async function costCodeForBatch(batch: { id: string; poLineId: string | null; batchCode: string }): Promise<string> {
   const config = await loadConfig();
   if (!config) return '';
   let current: { id: string; poLineId: string | null } | null = batch;
-  for (let hops = 0; current && !current.poLineId && hops < 5; hops++) {
+  let costPrice: number | null = null;
+  for (let hops = 0; current && hops < 6; hops++) {
+    if (current.poLineId) {
+      const cost = await prisma.poLineCost.findUnique({ where: { poLineId: current.poLineId } });
+      costPrice = cost ? Number(cost.costPrice) : null;
+      break;
+    }
+    const own = await prisma.batchCost.findUnique({ where: { batchId: current.id } });
+    if (own) { costPrice = Number(own.costPrice); break; }
     const returned: { dcLine: { batch: { id: string; poLineId: string | null } } } | null = await prisma.customerReturnLine.findFirst({
       where: { batchId: current.id },
       select: { dcLine: { select: { batch: { select: { id: true, poLineId: true } } } } },
     });
     current = returned?.dcLine.batch ?? null;
   }
-  if (!current?.poLineId) return '';
-  const cost = await prisma.poLineCost.findUnique({ where: { poLineId: current.poLineId } });
   // Decoys are chosen for the roll being labelled, so each roll's code looks different
-  return cost ? encodeCost(Number(cost.costPrice), config, batch.batchCode) : '';
+  return costPrice !== null ? encodeCost(costPrice, config, batch.batchCode) : '';
 }
 
 // ─── Unlock ─────────────────────────────────────────────────────────────────
@@ -195,11 +202,14 @@ router.get('/lines', async (req: Request, res: Response) => {
   const inStock = new Map(stock.map(s => [s.poLineId, s._sum.quantity ?? 0]));
   const config = await loadConfig();
 
-  // Whole-warehouse figures, not just this page
-  const [valueRow] = await prisma.$queryRaw<{ value: number | null; lines: number }[]>`
-    SELECT COALESCE(SUM(b.quantity * c.cost_price), 0)::float AS value, COUNT(DISTINCT c.po_line_id)::int AS lines
-    FROM item_batches b JOIN po_line_costs c ON c.po_line_id = b."poLineId"
-    WHERE b.status::text IN ('IN_STOCK', 'PARTIALLY_USED', 'QC_HOLD') AND b.quantity > 0`;
+  // Whole-warehouse figures, not just this page: PO rolls at their line's cost, Direct Inward rolls at their own
+  const [valueRow] = await prisma.$queryRaw<{ value: number | null }[]>`
+    SELECT (
+      COALESCE((SELECT SUM(b.quantity * c.cost_price) FROM item_batches b JOIN po_line_costs c ON c.po_line_id = b."poLineId"
+        WHERE b.status::text IN ('IN_STOCK', 'PARTIALLY_USED', 'QC_HOLD') AND b.quantity > 0), 0)
+      + COALESCE((SELECT SUM(b.quantity * c.cost_price) FROM item_batches b JOIN batch_costs c ON c.batch_id = b.id
+        WHERE b."poLineId" IS NULL AND b.status::text IN ('IN_STOCK', 'PARTIALLY_USED', 'QC_HOLD') AND b.quantity > 0), 0)
+    )::float AS value`;
   const missingCount = await prisma.purchaseOrderLine.count({
     where: { po: { isDeleted: false, status: { not: 'CANCELLED' } }, cost: { is: null } },
   });

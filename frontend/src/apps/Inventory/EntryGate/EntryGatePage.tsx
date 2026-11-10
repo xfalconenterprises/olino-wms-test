@@ -38,7 +38,7 @@ import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { fabricCategoryLabel, fabricUnit, formatTotals, formatUnitTotals, unitLabel, unitName, useFabricCategories } from '../../../utils/units';
-import { ITEM_TYPE_LABEL, lumpPayload, remainingQty, type ImportLine, type InwardItemType } from '../../../utils/directInwardImport';
+import { ITEM_TYPE_LABEL, adjustReceived, importLineFor, lumpPayload, remainingQty, type ImportLine, type InwardItemType } from '../../../utils/directInwardImport';
 import DirectInwardImport from './DirectInwardImport';
 import ChoiceCard from '../../../components/Common/ChoiceCard';
 import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type GateDiscrepancy } from './DiscrepancyModal';
@@ -388,8 +388,9 @@ export default function EntryGatePage() {
       ...(hasQualityName ? [{ header: 'Quality Name', value: (b: any) => b.qualityName ?? '' }] : []),
       { header: 'Shade', value: (b: any) => b.shade ?? '' },
       { header: only === 'ACCESSORY' ? 'Spec / Size' : 'Size', value: (b: any) => b.size ?? '' },
-    ];
+    ].filter(c => directSessionBatches.some(b => c.value(b))); // a column nobody filled in is left out
   }, [directSessionBatches]);
+  const sessionHasBundle = directSessionBatches.some(b => b.supplierBundle);
 
   // Direct GRN Finalize Modal State
   const [showDirectGrnModal, setShowDirectGrnModal] = useState(false);
@@ -998,10 +999,11 @@ export default function EntryGatePage() {
   });
 
   // Saves one direct-inward lump as a batch, adds it to the session and prints its label
-  const saveDirectBatch = async (payload: any) => {
+  const saveDirectBatch = async (payload: any, importLineId?: string) => {
     const res = await api.post('/api/batches', payload);
     const batch = res.data;
-    setDirectSessionBatches(prev => [batch, ...prev]);
+    // A lump from the Excel list remembers its line, so a later Fix can put the quantity back on it
+    setDirectSessionBatches(prev => [importLineId ? { ...batch, importLineId } : batch, ...prev]);
     setRecentBatch({
       batchCode: batch.batchCode,
       quantity: batch.quantity,
@@ -1018,7 +1020,7 @@ export default function EntryGatePage() {
   const inwardImportedLump = async (line: ImportLine, quantity: number, bundle: string) => {
     if (!directSupplierInput.trim()) throw new Error('Please enter or select a delivering Supplier first.');
     try {
-      await saveDirectBatch({ ...lumpPayload(line, quantity, bundle), ...directCommonFields() });
+      await saveDirectBatch({ ...lumpPayload(line, quantity, bundle), ...directCommonFields() }, line.id);
     } catch (err: any) {
       console.error('Direct Inward import lump error:', err);
       throw new Error(err.response?.data?.error || 'Failed to inward this lump', { cause: err });
@@ -1075,13 +1077,15 @@ export default function EntryGatePage() {
       infoConfirmed: directInfoConfirmed,
       itemType: directClassification,
       entryMode: directEntryMode,
-      importLines,
-      sessionBatches: directSessionBatches.map(b => ({ id: b.id })),
+      // Cost prices never go into the draft itself (it comes back to the screen); they are sent apart
+      importLines: importLines.map(({ costPrice: _cost, ...line }) => line),
+      sessionBatches: directSessionBatches.map(b => (b.importLineId ? { id: b.id, importLineId: b.importLineId } : { id: b.id })),
     };
+    const costs = Object.fromEntries(importLines.filter(l => l.costPrice !== undefined).map(l => [l.id, l.costPrice]));
     const save = () => {
       pendingDraftSave.current = null;
       const request = hasWork
-        ? api.put('/api/direct-inward/draft', { data }).then(() => { draftOnServer.current = true; })
+        ? api.put('/api/direct-inward/draft', { data, costs }).then(() => { draftOnServer.current = true; })
         : api.delete('/api/direct-inward/draft').then(() => { draftOnServer.current = false; });
       request.catch(err => console.error('Could not save the Direct Inward draft:', err));
     };
@@ -1285,9 +1289,17 @@ export default function EntryGatePage() {
   });
   const fixDirectRoll = (b: any) => setFixing({
     roll: { id: b.id, batchCode: b.batchCode, quantity: b.quantity, uom: b.uom || (b.itemType === 'FABRIC' ? 'METERS' : 'PCS') },
-    after: ({ undone, quantity }) => setDirectSessionBatches(prev => undone
-      ? prev.filter(x => x.id !== b.id)
-      : prev.map(x => (x.id === b.id ? { ...x, quantity } : x))),
+    after: ({ undone, quantity }) => {
+      // The Excel list's received total follows the correction, so its Remaining is right again
+      const line = importLineFor(importLines, b);
+      if (line) {
+        const before = Number(b.quantity) || 0;
+        setImportLines(prev => adjustReceived(prev, line.id, undone ? -before : quantity - before, undone));
+      }
+      setDirectSessionBatches(prev => undone
+        ? prev.filter(x => x.id !== b.id)
+        : prev.map(x => (x.id === b.id ? { ...x, quantity } : x)));
+    },
   });
 
   // The preview needs the login, so it is fetched and written into a new window
@@ -1302,7 +1314,7 @@ export default function EntryGatePage() {
     : String((supplierData?.totalPendingQty ?? 0).toFixed(1));
 
   return (
-    <div style={{ maxWidth: 1180, margin: '0 auto', paddingBottom: 60 }}>
+    <div style={{ maxWidth: activeTab === 'DIRECT' ? 1440 : 1180, margin: '0 auto', paddingBottom: 60 }}>
 
       {/* ─────────────────────────────────────────────────────────────────────────────
           1. OPTION SELECTION SCREEN (PROMPT WITH 3 CLEAN CARDS)
@@ -3060,7 +3072,7 @@ export default function EntryGatePage() {
           4. DIRECT INWARD (NO PO)
           ───────────────────────────────────────────────────────────────────────────── */}
       {activeTab === 'DIRECT' && (
-        <div style={{ maxWidth: 1040, margin: '0 auto' }}>
+        <div style={{ maxWidth: 1440, margin: '0 auto' }}>
           {/* Header Title */}
           <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
             <div>
@@ -4002,10 +4014,10 @@ export default function EntryGatePage() {
                         <th>Barcode</th>
                         <th>Classification</th>
                         {sessionItemColumns.map(c => <th key={c.header}>{c.header}</th>)}
-                        <th>Bundle / Box</th>
+                        {sessionHasBundle && <th>Bundle / Box</th>}
                         <th style={{ textAlign: 'right' }}>Quantity</th>
                         <th>Client</th>
-                        <th style={{ textAlign: 'center', width: 140 }}>Actions</th>
+                        <th style={{ textAlign: 'center', width: 150 }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -4013,7 +4025,7 @@ export default function EntryGatePage() {
                         <tr key={b.id} style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
                           <td style={{ textAlign: 'center', color: 'var(--color-text-muted)' }}>{idx + 1}</td>
                           <td>
-                            <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 13, color: '#0f172a' }}>
+                            <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 13, color: '#0f172a', whiteSpace: 'nowrap' }}>
                               {b.batchCode}
                             </span>
                           </td>
@@ -4026,20 +4038,20 @@ export default function EntryGatePage() {
                             const value = c.value(b);
                             return (
                               <td key={c.header} style={{ fontWeight: i === 1 ? 700 : 500, color: 'var(--color-text-main)' }}>
-                                {value || <span style={{ color: 'var(--color-text-muted)', fontWeight: 400 }}>—</span>}
+                                {value}
                               </td>
                             );
                           })}
-                          <td>
-                            {b.supplierBundle ? (
-                              <span style={{ fontWeight: 600, background: '#f1f5f9', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
-                                {b.supplierBundle}
-                              </span>
-                            ) : (
-                              <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                            )}
-                          </td>
-                          <td style={{ textAlign: 'right', fontWeight: 700, color: '#065f46' }}>
+                          {sessionHasBundle && (
+                            <td>
+                              {b.supplierBundle && (
+                                <span style={{ fontWeight: 600, background: '#f1f5f9', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
+                                  {b.supplierBundle}
+                                </span>
+                              )}
+                            </td>
+                          )}
+                          <td style={{ textAlign: 'right', fontWeight: 700, color: '#065f46', whiteSpace: 'nowrap' }}>
                             {b.quantity} {unitLabel(b.uom || (b.itemType === 'FABRIC' ? 'METERS' : 'PCS'))}
                           </td>
                           <td>

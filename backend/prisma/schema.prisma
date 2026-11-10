@@ -113,6 +113,7 @@ model DirectInwardDraft {
   id        String   @id @default(uuid())
   userId    String   @unique @map("user_id")
   data      Json
+  costs     Json     @default("{}")  // Excel cost prices by imported line; never sent back to the screen
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -246,6 +247,7 @@ model ItemBatch {
   @@index([createdAt])
   @@index([clientId])
   receiptCorrections ReceiptCorrection[]
+  cost           BatchCost?
   @@index([poLineId])
   @@index([grnId])
   @@map("item_batches")
@@ -385,6 +387,19 @@ model PoLineCost {
   poLine      PurchaseOrderLine @relation(fields: [poLineId], references: [id], onDelete: Cascade)
 
   @@map("po_line_costs")
+}
+
+// The cost of a roll received without a PO (Direct Inward, from the Excel's Cost Price column).
+// Same rules as PoLineCost: only the Cost Prices tab and the label's secret code read it.
+model BatchCost {
+  batchId     String   @id @map("batch_id")
+  costPrice   Decimal  @map("cost_price") @db.Decimal(12, 2)  // per unit of the roll (m, kg, pcs…)
+  updatedById String?  @map("updated_by_id")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  batch       ItemBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@map("batch_costs")
 }
 
 // Every change to a cost price or to the cost code settings

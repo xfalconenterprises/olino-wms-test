@@ -34,6 +34,7 @@ const rupees = (n: number | null | undefined) =>
 
 const SOURCE_LABEL: Record<string, string> = {
   PO_CREATE: 'Entered on new PO', PO_EDIT: 'Changed on PO edit', COST_TAB: 'Changed here', CODE_SETTINGS: 'Code settings',
+  DIRECT_INWARD: 'Direct Inward Excel',
 };
 const SAMPLE_PRICES = [245, 180, 200, 1150];
 

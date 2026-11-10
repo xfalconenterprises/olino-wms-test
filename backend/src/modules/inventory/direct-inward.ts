@@ -3,6 +3,7 @@ import { withReceivedQuantity } from '../../utils/received';
 import type { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
+import { parseCostPrice } from '../administration/cost-prices';
 
 // Drafts for the Direct Inward Desk: one per user, so imported Excel items and lumps not yet on a
 // GRN survive leaving the page, a refresh or another device. The screen decides the content.
@@ -22,7 +23,13 @@ router.get('/draft', async (req: Request, res: Response) => {
     ? await withReceivedQuantity(await prisma.itemBatch.findMany({ where: { id: { in: ids }, grnId: null, receiptVoidedAt: null } }))
     : [];
   const byId = new Map(open.map(b => [b.id, b]));
-  data.sessionBatches = ids.map(id => byId.get(id)).filter(Boolean);
+  // Which Excel line each lump came from is the screen's own note; it is kept as saved
+  const lineOf = new Map(saved.map((b: any) => [b?.id, typeof b?.importLineId === 'string' ? b.importLineId : undefined]));
+  data.sessionBatches = ids.map(id => {
+    const row = byId.get(id);
+    const importLineId = lineOf.get(id);
+    return row && importLineId ? { ...row, importLineId } : row;
+  }).filter(Boolean);
 
   res.json({ draft: { data, updatedAt: draft.updatedAt } });
 });
@@ -35,10 +42,28 @@ router.put('/draft', async (req: Request, res: Response) => {
     return;
   }
   const userId = req.user!.userId;
+
+  // Excel cost prices are kept apart from the draft (which is sent back to the screen): new ones are
+  // added to those already kept, and only lines still in the list keep theirs
+  const lines: any[] = Array.isArray(data.importLines) ? data.importLines : [];
+  data.importLines = lines.map(l => {
+    if (!l || typeof l !== 'object') return l;
+    const { costPrice: _hidden, ...rest } = l;
+    return rest;
+  });
+  const lineIds = new Set(lines.map(l => l?.id).filter((id): id is string => typeof id === 'string'));
+  const existing = await prisma.directInwardDraft.findUnique({ where: { userId }, select: { costs: true } });
+  const incoming = req.body?.costs && typeof req.body.costs === 'object' && !Array.isArray(req.body.costs) ? req.body.costs : {};
+  const costs: Record<string, number> = {};
+  for (const [id, value] of Object.entries({ ...((existing?.costs as Record<string, unknown>) ?? {}), ...incoming })) {
+    const price = parseCostPrice(value, 'Cost price');
+    if (lineIds.has(id) && typeof price === 'number') costs[id] = price;
+  }
+
   const saved = await prisma.directInwardDraft.upsert({
     where: { userId },
-    create: { userId, data: data as Prisma.InputJsonValue },
-    update: { data: data as Prisma.InputJsonValue },
+    create: { userId, data: data as Prisma.InputJsonValue, costs },
+    update: { data: data as Prisma.InputJsonValue, costs },
   });
   res.json({ updatedAt: saved.updatedAt });
 });

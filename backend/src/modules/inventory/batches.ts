@@ -7,6 +7,8 @@ import { autoLearnAttributes } from '../master-data/attributes';
 import { allowsDecimals, fabricUnitFor, unitLabel } from '../../utils/units';
 import { recordAllocationReceipt } from '../purchasing/allocations';
 import { awaitingGrn } from '../../utils/received';
+import { logCostChange, parseCostPrice } from '../administration/cost-prices';
+import { itemDescription } from './returns';
 
 const router = Router();
 
@@ -241,6 +243,8 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
     invoiceRef,
     clientId,
     clientName,
+    costPrice,
+    importLineId,
   } = req.body;
   
   if (!quantity) {
@@ -383,7 +387,19 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
     res.json(result);
     learnAttributes();
   } else {
-    // Direct entry (no PO)
+    // Direct entry (no PO). A cost from the Excel's Cost Price column comes with the lump, or, after
+    // the page was reloaded, from the user's draft where it was kept by imported line.
+    let cost = parseCostPrice(costPrice, 'Cost price');
+    if (typeof cost === 'string') {
+      res.status(400).json({ error: cost });
+      return;
+    }
+    if (cost === undefined && typeof importLineId === 'string' && importLineId) {
+      const draft = await prisma.directInwardDraft.findUnique({ where: { userId: req.user!.userId }, select: { costs: true } });
+      const saved = parseCostPrice((draft?.costs as Record<string, unknown> | null)?.[importLineId], 'Cost price');
+      if (typeof saved === 'number') cost = saved;
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       const prefix = generateSmartBatchCodePrefix(resolvedBrand, resolvedQuality, resolvedShade, {
         itemType: resolvedType,
@@ -436,6 +452,11 @@ router.post('/', requirePermission('ops.entry_gate'), async (req: Request, res: 
       await tx.transaction.create({
         data: { batchId: batch.id, type: 'STOCK_IN', quantityMoved: meterVal, operatorId: req.user!.userId },
       });
+
+      if (typeof cost === 'number') {
+        await tx.batchCost.create({ data: { batchId: batch.id, costPrice: cost, updatedById: req.user!.userId } });
+        await logCostChange(tx, { lineLabel: `${itemDescription(batch) || batch.itemType} · ${batch.batchCode}`, newPrice: cost, source: 'DIRECT_INWARD' }, req.user!);
+      }
 
       return batch;
     });
