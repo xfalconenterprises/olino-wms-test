@@ -48,6 +48,8 @@ import { QuickAddClientModal, QuickAddSupplierModal } from '../../../components/
 import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } from '../../../components/Common/RollCorrection';
 import { useConfirm } from '../../../components/Common/ConfirmDialog';
 import { CameraScanButton } from '../../../components/Common/CameraScan';
+import PhotoPrompt from '../../../components/Common/PhotoPrompt';
+import type { PhotoItem } from '../../../utils/itemPhotos';
 import '../../../styles/components.css';
 
 interface Supplier {
@@ -234,6 +236,9 @@ export default function EntryGatePage() {
     bundleNumber?: string;
     matchedPoNumber?: string;
   } | null>(null);
+
+  // The item of the lump just received: offered a photo when it has none (stays until done or "Not now")
+  const [photoItem, setPhotoItem] = useState<PhotoItem | null>(null);
 
   // The "Inward Successful" note goes by itself after 10 seconds, long enough to tap Reprint;
   // each new roll starts the time again
@@ -937,6 +942,7 @@ export default function EntryGatePage() {
       });
 
       const { batchCode, matchedPo, unlinked } = res.data;
+      setPhotoItem({ itemType: selectedItem.sku.itemType || 'FABRIC', category: selectedItem.sku.category, brand: selectedItem.sku.brand, quality: selectedItem.sku.quality, shade: selectedItem.sku.shade, name: selectedItem.sku.name, artNo: selectedItem.sku.artNo });
 
       setRecentBatch({
         batchCode,
@@ -1008,6 +1014,7 @@ export default function EntryGatePage() {
     const batch = res.data;
     // A lump from the Excel list remembers its line, so a later Fix can put the quantity back on it
     setDirectSessionBatches(prev => [importLineId ? { ...batch, importLineId } : batch, ...prev]);
+    setPhotoItem({ itemType: batch.itemType, category: batch.category, brand: batch.brand, quality: batch.quality, shade: batch.shade, name: batch.name, artNo: batch.artNo });
     setRecentBatch({
       batchCode: batch.batchCode,
       quantity: batch.quantity,
@@ -1499,6 +1506,9 @@ export default function EntryGatePage() {
           </button>
         </div>
       )}
+
+      {/* ── A photo for the item just received, when it has none ── */}
+      {activeTab !== 'SELECT_MODE' && <PhotoPrompt item={photoItem} />}
 
       {/* ── RECENT BATCH NOTIFICATION BANNER (on the receiving screens only) ── */}
       {recentBatch && activeTab !== 'SELECT_MODE' && (

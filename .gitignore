@@ -14,6 +14,9 @@ build/
 # Site-specific runtime config, written by the Printer Settings page
 backend/printer-config.json
 
+# Item photos (kept on the server's disk; include this folder in backups)
+backend/item-images/
+
 # Logs
 *.log
 npm-debug.log*

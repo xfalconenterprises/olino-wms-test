@@ -30,6 +30,8 @@ export interface PermissionDefinition {
   description: string;
   app: AppName;
   path: string;
+  /** Lets the user do something on another tab's screen; not a screen of its own. */
+  action?: boolean;
 }
 
 export const PERMISSION_GROUPS: {
@@ -59,7 +61,7 @@ export const PERMISSION_GROUPS: {
       { key: 'ops.put_away',   label: 'Put Away (Shelving)',    description: 'Assign physical shelf locations to dock items', app: 'WAREHOUSE', path: '/put-away' },
       { key: 'ops.dock_queue', label: 'Inbound Dock Queue',     description: 'View unassigned rolls waiting at receiving dock', app: 'WAREHOUSE', path: '/batches' },
       { key: 'ops.exit_gate',  label: 'Stock Out (Exit Gate)',  description: 'Scan and dispatch goods out of warehouse', app: 'WAREHOUSE', path: '/exit-gate' },
-      { key: 'ops.release_earmark', label: 'Release Reserved Stock', description: 'Dispatch stock reserved for one client to another, with a reason', app: 'WAREHOUSE', path: '/exit-gate' },
+      { key: 'ops.release_earmark', label: 'Release Reserved Stock', description: 'Dispatch stock reserved for one client to another, with a reason', app: 'WAREHOUSE', path: '/exit-gate', action: true },
       { key: 'ops.stock_count',    label: 'Stock Count',            description: 'Open counts and scan shelves (approving needs Stock Adjustments)', app: 'WAREHOUSE', path: '/stock-counts' },
       { key: 'ops.returns',        label: 'Returns',                description: 'Customer returns against challans and returns to suppliers', app: 'WAREHOUSE', path: '/returns' },
       { key: 'ops.printer',    label: 'Printer Settings',       description: 'Configure thermal label barcode printers', app: 'WAREHOUSE', path: '/settings/printer' },
@@ -79,6 +81,7 @@ export const PERMISSION_GROUPS: {
       { key: 'inv.adjustments',        label: 'Stock Adjustments',           description: 'Perform manual quantity adjustments & count corrections', app: 'INVENTORY', path: '/inventory/adjustments' },
       { key: 'inv.relocations',        label: 'Stock Relocations',           description: 'Transfer items between warehouse bays and shelves', app: 'INVENTORY', path: '/inventory/relocations' },
       { key: 'inv.aging',              label: 'Stock Aging Analysis',        description: 'Track slow-moving stock and shelf dwell time', app: 'INVENTORY', path: '/inventory/aging' },
+      { key: 'inv.photos',             label: 'Item Photos',                 description: 'Add, remove and choose the main photo of items (seen in the Inventory Dashboard)', app: 'INVENTORY', path: '/inventory/dashboard', action: true },
     ],
   },
   {
@@ -277,14 +280,14 @@ export const getDefaultRoute = (user: WmsUser | null): string => {
     if (targetApp === 'ACCOUNTS') return '/accounts';
     const group = PERMISSION_GROUPS.find(g => g.app === targetApp);
     if (group) {
-      const firstAllowed = group.permissions.find(p => hasPermission(user, p.key));
+      const firstAllowed = group.permissions.find(p => !p.action && hasPermission(user, p.key));
       if (firstAllowed) return firstAllowed.path;
     }
   }
 
   // General fallback: iterate through all permission groups to find any allowed path
   for (const group of PERMISSION_GROUPS) {
-    const allowed = group.permissions.find(p => hasPermission(user, p.key));
+    const allowed = group.permissions.find(p => !p.action && hasPermission(user, p.key));
     if (allowed) return allowed.path;
   }
 

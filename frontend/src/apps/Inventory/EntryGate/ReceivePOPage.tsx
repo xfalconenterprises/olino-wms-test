@@ -28,6 +28,8 @@ import SpecLine from '../../../components/Common/SpecLine';
 import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } from '../../../components/Common/RollCorrection';
 import { useConfirm } from '../../../components/Common/ConfirmDialog';
 import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type DiscrepancyItem, type GateDiscrepancy } from './DiscrepancyModal';
+import PhotoPrompt from '../../../components/Common/PhotoPrompt';
+import type { PhotoItem } from '../../../utils/itemPhotos';
 import '../../../styles/components.css';
 
 // Dropdown text for a PO line, with only the details that were entered: "[Fabric] Brand — Quality (Shade: 12)"
@@ -109,6 +111,8 @@ export default function ReceivePOPage() {
   const [receiving, setReceiving] = useState(false);
   const [error, setError] = useState('');
   const [recentBatch, setRecentBatch] = useState<{ id?: string; batchCode: string; quantity: number } | null>(null);
+  // The item of the lump just received: offered a photo when it has none
+  const [photoItem, setPhotoItem] = useState<PhotoItem | null>(null);
   const [fixingRoll, setFixingRoll] = useState<CorrectableRoll | null>(null);
   const [confirmDialog, ask] = useConfirm();
 
@@ -398,6 +402,7 @@ export default function ReceivePOPage() {
       const newBatch = res.data.newRolls?.[0];
       if (newBatch?.batchCode) {
         setRecentBatch({ id: newBatch.id, batchCode: newBatch.batchCode, quantity: qty });
+        setPhotoItem({ itemType: newBatch.itemType, category: newBatch.category, brand: newBatch.brand, quality: newBatch.quality, shade: newBatch.shade, name: newBatch.name, artNo: newBatch.artNo });
         void autoPrintReceivedLabel(newBatch.batchCode, setError);   // never waits for the printer
       }
 
@@ -752,6 +757,9 @@ export default function ReceivePOPage() {
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: '16px 16px 80px 16px' }}>
       
+      {/* ─── A photo for the item just received, when it has none ─── */}
+      <PhotoPrompt item={photoItem} />
+
       {/* ─── Top Navigation & Header ────────────────────────────────────────── */}
       <div style={{ marginBottom: 18 }}>
         <button

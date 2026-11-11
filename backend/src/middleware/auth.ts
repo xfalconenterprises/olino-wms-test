@@ -148,13 +148,16 @@ async function authenticate(req: Request, res: Response, next: NextFunction, all
 // whatever else the account may do. Cost prices, Users & Roles, reports and adjustments need the password.
 export const WAREHOUSE_PERMISSIONS = ['ops.entry_gate', 'ops.put_away', 'ops.dock_queue', 'ops.exit_gate', 'ops.returns', 'ops.stock_count', 'ops.release_earmark', 'ops.printer'];
 
+// Also kept on the floor: adding item photos at Stock In (a photo is not sensitive)
+const FLOOR_PERMISSIONS = [...WAREHOUSE_PERMISSIONS, 'inv.photos'];
+
 export function floorAccess(user: { modules: string[]; permissions: string[] | null }): { modules: UserModule[]; permissions: string[] } {
   const perms = user.permissions || [];
   const fullAccess = perms.includes('*');
   const modules: UserModule[] = fullAccess || user.modules.includes('WAREHOUSE') ? ['WAREHOUSE'] : [];
   // Accounts that rely on their module (no permission list) keep that, limited to the Warehouse module
   if (perms.length === 0) return { modules, permissions: [] };
-  const warehouse = fullAccess ? WAREHOUSE_PERMISSIONS : perms.filter(p => WAREHOUSE_PERMISSIONS.includes(p));
+  const warehouse = fullAccess ? FLOOR_PERMISSIONS : perms.filter(p => FLOOR_PERMISSIONS.includes(p));
   // Never an empty list here: an empty list would fall back to whole modules
   return { modules, permissions: warehouse.length ? warehouse : ['floor.none'] };
 }

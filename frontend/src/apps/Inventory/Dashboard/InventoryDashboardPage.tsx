@@ -26,6 +26,8 @@ import {
 import api from '../../../utils/api';
 import { printTSPL } from '../../../utils/printer';
 import { CameraScanButton } from '../../../components/Common/CameraScan';
+import ItemPhotos from '../../../components/Common/ItemPhotos';
+import { lookupPhotos } from '../../../utils/itemPhotos';
 import { formatDateTime, formatDate } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { useAuth } from '../../../hooks/useAuth';
@@ -277,6 +279,21 @@ export default function InventoryDashboardPage() {
 
   // Data
   const [skus, setSkus] = useState<AggregatedSKU[]>([]);
+  // Each item's main photo (small), by item row id: one request per list
+  const [skuPhotos, setSkuPhotos] = useState<Record<string, string>>({});
+  const photoRequest = useRef(0);
+  const loadSkuPhotos = (list: AggregatedSKU[]) => {
+    const id = ++photoRequest.current;
+    lookupPhotos(list)
+      .then(photos => {
+        if (id !== photoRequest.current) return;
+        const map: Record<string, string> = {};
+        list.forEach((s, i) => { if (photos[i]?.[0]) map[s.id] = photos[i][0].thumbUrl; });
+        setSkuPhotos(map);
+      })
+      .catch(() => { /* the list still works without photos */ });
+  };
+  const canManagePhotos = hasPermission(user, 'inv.photos');
   const [batches, setBatches] = useState<BatchRecord[]>([]);
   // Granular rolls come 50 at a time; the page beyond those is fetched by Load more
   const [batchPage, setBatchPage] = useState({ total: 0, hasMore: false, loadingMore: false });
@@ -407,7 +424,9 @@ export default function InventoryDashboardPage() {
 
       if (viewMode === 'AGGREGATED') {
         const res = await api.get(`/api/inventory/skus?${params.toString()}`);
-        setSkus(Array.isArray(res.data) ? res.data : []);
+        const list: AggregatedSKU[] = Array.isArray(res.data) ? res.data : [];
+        setSkus(list);
+        loadSkuPhotos(list);
       } else {
         const id = ++granularRequest.current;
         const res = await api.get(`/api/inventory/batches?${granularParams(0).toString()}`);
@@ -1056,9 +1075,15 @@ export default function InventoryDashboardPage() {
                       }}
                       className="hover-row"
                     >
-                      <td style={{ textAlign: 'center', width: 44, verticalAlign: 'middle' }}>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, borderRadius: 4, background: isExpanded ? 'var(--color-bg-subtle)' : '#f8fafc', border: '1px solid var(--color-border)' }}>
-                          {isExpanded ? <ChevronDown size={14} color="var(--color-brand)" /> : <ChevronRight size={14} color="var(--color-text-muted)" />}
+                      <td style={{ textAlign: 'left', width: 44, verticalAlign: 'middle', whiteSpace: 'nowrap', paddingLeft: 16 }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, borderRadius: 4, background: isExpanded ? 'var(--color-bg-subtle)' : '#f8fafc', border: '1px solid var(--color-border)' }}>
+                            {isExpanded ? <ChevronDown size={14} color="var(--color-brand)" /> : <ChevronRight size={14} color="var(--color-text-muted)" />}
+                          </div>
+                          {skuPhotos[s.id] && (
+                            <img src={skuPhotos[s.id]} alt="" loading="lazy"
+                              style={{ width: 44, height: 44, borderRadius: 6, objectFit: 'cover', border: '1px solid var(--color-border)', background: '#f8fafc' }} />
+                          )}
                         </div>
                       </td>
 
@@ -1684,6 +1709,17 @@ export default function InventoryDashboardPage() {
                       </button>
                     ) : null}
                   </div>
+                </div>
+
+                {/* The item's photos (shared by all its lumps) */}
+                <div style={{ marginBottom: 20 }}>
+                  <ItemPhotos
+                    key={selectedBatch.id}
+                    item={{ itemType: dType, category: dCategory, brand: dBrand, quality: dQuality, shade: dShade, name: getBatchName(selectedBatch), artNo: dArtNo }}
+                    canManage={canManagePhotos}
+                    onChange={() => { if (viewMode === 'AGGREGATED') loadSkuPhotos(skus); }}
+                    heading={<h3 style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', margin: '0 0 8px' }}>Item Photos</h3>}
+                  />
                 </div>
 
                 {/* Shelf Placement */}

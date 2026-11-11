@@ -25,6 +25,7 @@ import receiptCorrectionRoutes from './modules/inventory/receipt-corrections';
 import returnsRoutes from './modules/inventory/returns';
 import stockCountsRoutes from './modules/inventory/stock-counts';
 import accountsRoutes from './modules/accounts/accounts';
+import itemImagesRoutes from './modules/inventory/item-images';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -98,6 +99,7 @@ app.use('/api/receipt-corrections', receiptCorrectionRoutes);
 app.use('/api/returns', returnsRoutes);
 app.use('/api/stock-counts', stockCountsRoutes);
 app.use('/api/accounts', accountsRoutes);
+app.use('/api/item-images', itemImagesRoutes);
 
 // Unknown API paths are a 404, never the frontend page
 app.use('/api', (_req, res) => {

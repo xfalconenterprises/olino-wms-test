@@ -29,6 +29,7 @@ import { formatDateTime } from '../../../utils/format';
 import { allowsDecimals, formatQty, formatTotals, unitLabel, uomOf } from '../../../utils/units';
 import { QuickAddClientModal } from '../../../components/Common/QuickAddModals';
 import { CameraScanButton } from '../../../components/Common/CameraScan';
+import ItemPhotos from '../../../components/Common/ItemPhotos';
 import '../../../styles/components.css';
 
 interface DeliveryChallan {
@@ -831,6 +832,21 @@ export default function ExitGatePage() {
                       {formatQty(scannedBatch.quantity, uomOf(scannedBatch))}
                     </strong>
                   </div>
+                </div>
+
+                {/* What the item looks like, to check it is the right one (nothing when it has no photo) */}
+                <div style={{ marginBottom: 14 }}>
+                  <ItemPhotos
+                    key={scannedBatch.batchCode}
+                    canManage={false}
+                    mainHeight={200}
+                    item={{
+                      itemType: scannedBatch.itemType, category: scannedBatch.category ?? scannedBatch.poLine?.category,
+                      brand: scannedBatch.brand ?? scannedBatch.poLine?.brand, quality: scannedBatch.quality ?? scannedBatch.poLine?.quality,
+                      shade: scannedBatch.shade ?? scannedBatch.poLine?.shade, name: scannedBatch.name ?? scannedBatch.poLine?.name,
+                      artNo: scannedBatch.artNo ?? scannedBatch.poLine?.artNo,
+                    }}
+                  />
                 </div>
 
                 {scanError && <div className="alert alert-danger" style={{ marginBottom: 14, fontSize: 13 }}>{scanError}</div>}

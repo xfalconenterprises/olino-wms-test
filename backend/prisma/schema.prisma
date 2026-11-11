@@ -846,3 +846,24 @@ model SupplierReturnLine {
   @@index([batchId])
   @@map("supplier_return_lines")
 }
+
+// Item photos: up to 3 per item, kept once on the item and shown for every lump or pack of it.
+// An item is Fabric: type + brand + quality + shade; Readymade: name + art no + colour (all sizes
+// share); Accessory: category + name + colour (see itemPhotoKey). The pictures are files on disk
+// (large and small WebP); this row says which item they belong to and in what order.
+model ItemImage {
+  id             String   @id @default(uuid())
+  itemKey        String   @map("item_key")
+  itemType       String   @map("item_type")
+  label          String                        // the item as it was described when the photo was added
+  position       Int                           // 0 = the main photo
+  width          Int
+  height         Int
+  sizeBytes      Int      @map("size_bytes")   // large and small copies together
+  uploadedById   String   @map("uploaded_by_id")
+  uploadedByName String   @map("uploaded_by_name")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([itemKey])
+  @@map("item_images")
+}
