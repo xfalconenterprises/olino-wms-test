@@ -46,7 +46,6 @@ interface SKUChildBatch {
   batchCode: string;
   quantity: number;
   costCode?: string;   // secret cost code, as on the label
-  valueCode?: string;  // value as code, Cost Prices holders only
   status: string;
   locationCode: string;
   supplierBundle: string | null;
@@ -671,8 +670,10 @@ export default function InventoryDashboardPage() {
     selectedClientFilter,
   ].filter(Boolean).join(' · ');
 
-  // Cost codes are shown in the Item Passport only (and in the Excel), not in the tables
-  const skuRollupColSpan = categoryTab === 'FABRIC' ? 6 : 8;
+  // The cost code is shown in the Item Passport (and in the Excel); each item row carries its value as
+  // code, which the server sends to Cost Prices holders only
+  const skuValue = skus.some(s => s.valueCode);
+  const skuRollupColSpan = (categoryTab === 'FABRIC' ? 6 : 8) + Number(skuValue);
 
   return (
     <div style={{ maxWidth: '100%', margin: '0 auto', paddingBottom: 40 }}>
@@ -1022,7 +1023,7 @@ export default function InventoryDashboardPage() {
                   <th>Quality Grade</th>
                   <th>Color / Shade</th>
                   <th>In Stock</th>
-                  <th>Lumps Count (Full vs Cut)</th></tr>
+                  <th>Lumps Count (Full vs Cut)</th>{skuValue && <th style={{ whiteSpace: 'nowrap' }}>Value (code)</th>}</tr>
               ) : categoryTab === 'READY_MADE' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -1032,7 +1033,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Size</th>
                   <th>In Stock (Pieces)</th>
-                  <th>Packs / Cartons</th></tr>
+                  <th>Packs / Cartons</th>{skuValue && <th style={{ whiteSpace: 'nowrap' }}>Value (code)</th>}</tr>
               ) : categoryTab === 'ACCESSORY' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -1042,7 +1043,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Size / Art No</th>
                   <th>In Stock (Units)</th>
-                  <th>Packs / Boxes</th></tr>
+                  <th>Packs / Boxes</th>{skuValue && <th style={{ whiteSpace: 'nowrap' }}>Value (code)</th>}</tr>
               ) : (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -1052,7 +1053,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Category / Size</th>
                   <th>Total In Stock</th>
-                  <th>Lumps / Packs</th></tr>
+                  <th>Lumps / Packs</th>{skuValue && <th style={{ whiteSpace: 'nowrap' }}>Value (code)</th>}</tr>
               )}
             </thead>
             <tbody>
@@ -1174,6 +1175,7 @@ export default function InventoryDashboardPage() {
                         </>
                       )}
                       {/* No shelf column: an item spans many rolls on many shelves; each roll's shelf shows when expanded */}
+                      {skuValue && <td>{s.valueCode && <code className="cost-code">{s.valueCode}</code>}</td>}
                     </tr>
 
                     {/* Accordion Child Table */}
@@ -1238,7 +1240,6 @@ export default function InventoryDashboardPage() {
                                           grnId: cb.grnId,
                                           batchLocations: cb.batchLocations || (cb.locationCode && cb.locationCode !== 'Unassigned' ? [{ quantity: cb.quantity, location: { code: cb.locationCode } }] : []),
                                           costCode: cb.costCode,
-                                          valueCode: cb.valueCode,
                                       });
                                       return (
                                       <tr key={cb.id} className="hover-row" onClick={openChild} style={{ cursor: 'pointer' }} title="Open Item Passport">
@@ -1620,19 +1621,10 @@ export default function InventoryDashboardPage() {
                     </span>
                   </div>
 
-                  {/* The secret cost code, as on the label (and the value as code for Cost Prices holders) */}
-                  {(selectedBatch.costCode || selectedBatch.valueCode) && (
-                    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'center' }}>
-                      {selectedBatch.costCode && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>
-                          Cost Code <code className="cost-code">{selectedBatch.costCode}</code>
-                        </span>
-                      )}
-                      {selectedBatch.valueCode && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>
-                          Value (code) <code className="cost-code">{selectedBatch.valueCode}</code>
-                        </span>
-                      )}
+                  {/* The secret cost code, as on the label (the value as code is on the item row) */}
+                  {selectedBatch.costCode && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>
+                      Cost Code <code className="cost-code">{selectedBatch.costCode}</code>
                     </div>
                   )}
 

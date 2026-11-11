@@ -352,8 +352,11 @@ router.get('/value', requirePermission('inv.dashboard'), async (req: Request, re
 
 router.get('/skus', requirePermission('inv.dashboard'), async (req: Request, res: Response) => {
   try {
-    // Codes are shown per roll (Item Passport) and in the Excel, not on the item rows: none worked out here
-    res.json((await findSkus(req.query)).map(({ rollIds: _ids, ...item }) => item));
+    // Item rows carry the value as code, for Cost Prices holders only (the cost code is shown per roll,
+    // in the Item Passport); for anyone else no codes are worked out at all
+    const items = await findSkus(req.query);
+    if (!hasCostAccess(req.user!)) { res.json(items.map(({ rollIds: _ids, ...item }) => item)); return; }
+    res.json((await withItemCodes(items, req.user!)).map(item => { const { costCode: _code, ...rest } = item as typeof item & { costCode?: string }; return rest; }));
   } catch (err: any) {
     console.error('Inventory SKUs SQL query error:', err);
     res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
