@@ -12,7 +12,7 @@ import { itemDescription } from './returns';
 // that item shows them. Each photo is stored as two WebP files: a large one (1600 px) and a small
 // one (300 px) for lists. The original upload is never kept. Pictures are served through signed
 // links that expire, so an <img> can show them without the login header and nobody outside the
-// app can open them.
+// app can open them. Anyone who works with stock may see and change them.
 
 const router = Router();
 
@@ -83,11 +83,11 @@ router.get('/file/:id/:size', async (req: Request, res: Response) => {
 
 router.use(requireAuth);
 
-// Seeing photos: anyone who works with stock. Adding, removing or reordering: Item Photos only.
+// Seeing, adding, removing and reordering photos: anyone who works with stock.
 
 // POST /api/item-images/lookup { items: [{ itemType, category, brand, quality, shade, name, artNo }] }
 // — the photos of several items at once, in the same order (a list page asks once)
-router.post('/lookup', requirePermission('inv.dashboard', 'inv.photos', 'ops.entry_gate', 'ops.exit_gate', 'ops.put_away', 'ops.dock_queue'), async (req: Request, res: Response) => {
+router.post('/lookup', requirePermission('inv.dashboard', 'ops.entry_gate', 'ops.exit_gate', 'ops.put_away', 'ops.dock_queue'), async (req: Request, res: Response) => {
   const items: ItemFields[] = Array.isArray(req.body?.items) ? req.body.items.slice(0, 500) : [];
   const keys = items.map(itemPhotoKey);
   const wanted = [...new Set(keys.filter((k): k is string => !!k))];
@@ -101,7 +101,7 @@ router.post('/lookup', requirePermission('inv.dashboard', 'inv.photos', 'ops.ent
 
 // POST /api/item-images?itemType=&category=&brand=&quality=&shade=&name=&artNo= with the picture as
 // the body (image/jpeg, png, webp or heic) — adds a photo to the item (at most 3)
-router.post('/', requirePermission('inv.photos'), express.raw({ type: 'image/*', limit: MAX_UPLOAD_BYTES }), async (req: Request, res: Response) => {
+router.post('/', requirePermission('inv.dashboard', 'ops.entry_gate', 'ops.exit_gate', 'ops.put_away', 'ops.dock_queue'), express.raw({ type: 'image/*', limit: MAX_UPLOAD_BYTES }), async (req: Request, res: Response) => {
   const fields = req.query as ItemFields;
   const key = itemPhotoKey(fields);
   if (!key) { res.status(400).json({ error: 'Which item is this photo for?' }); return; }
@@ -170,7 +170,7 @@ async function renumber(itemKey: string, firstId?: string) {
 }
 
 // PUT /api/item-images/:id/main — makes this the item's main photo
-router.put('/:id/main', requirePermission('inv.photos'), async (req: Request, res: Response) => {
+router.put('/:id/main', requirePermission('inv.dashboard', 'ops.entry_gate', 'ops.exit_gate', 'ops.put_away', 'ops.dock_queue'), async (req: Request, res: Response) => {
   const img = await prisma.itemImage.findUnique({ where: { id: String(req.params.id) } });
   if (!img) { res.status(404).json({ error: 'Photo not found' }); return; }
   await renumber(img.itemKey, img.id);
@@ -178,7 +178,7 @@ router.put('/:id/main', requirePermission('inv.photos'), async (req: Request, re
 });
 
 // DELETE /api/item-images/:id — removes a photo (its files too)
-router.delete('/:id', requirePermission('inv.photos'), async (req: Request, res: Response) => {
+router.delete('/:id', requirePermission('inv.dashboard', 'ops.entry_gate', 'ops.exit_gate', 'ops.put_away', 'ops.dock_queue'), async (req: Request, res: Response) => {
   const img = await prisma.itemImage.findUnique({ where: { id: String(req.params.id) } });
   if (!img) { res.status(404).json({ error: 'Photo not found' }); return; }
   await prisma.itemImage.delete({ where: { id: img.id } });

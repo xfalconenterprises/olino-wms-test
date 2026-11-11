@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Camera, CheckCircle2 } from 'lucide-react';
-import { useAuth } from '../../hooks/useAuth';
-import { hasPermission } from '../../utils/roles';
 import { lookupPhotos, type ItemPhoto, type PhotoItem } from '../../utils/itemPhotos';
 import ItemPhotos from './ItemPhotos';
 
 // At Stock In, after a lump is received: when its item has no photo yet, offers to add one there and
 // then (the goods are in hand). Asked once per item in a session: an item that has a photo, or one
-// the user said "Not now" to, isn't asked again. Only for users with Item Photos.
+// the user said "Not now" to, isn't asked again.
 
 const known = new Map<string, 'has' | 'skip'>();
 
@@ -26,13 +24,11 @@ function itemName(i: PhotoItem): string {
 }
 
 export default function PhotoPrompt({ item }: { item: PhotoItem | null }) {
-  const { user } = useAuth();
-  const canAdd = hasPermission(user, 'inv.photos');
   const key = item ? promptKey(item) : '';
   const [state, setState] = useState<{ key: string; show: 'ask' | 'added' | null; photos: ItemPhoto[] }>({ key: '', show: null, photos: [] });
 
   useEffect(() => {
-    if (!item || !canAdd || known.has(key)) { setState({ key, show: null, photos: [] }); return; }
+    if (!item || known.has(key)) { setState({ key, show: null, photos: [] }); return; }
     let live = true;
     lookupPhotos([item])
       .then(([photos]) => {
@@ -43,7 +39,7 @@ export default function PhotoPrompt({ item }: { item: PhotoItem | null }) {
       .catch(() => { if (live) setState({ key, show: null, photos: [] }); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, canAdd]);
+  }, [key]);
 
   // "Photo added" shows briefly, then the card goes
   useEffect(() => {

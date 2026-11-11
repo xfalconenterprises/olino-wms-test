@@ -81,7 +81,6 @@ export const PERMISSION_GROUPS: {
       { key: 'inv.adjustments',        label: 'Stock Adjustments',           description: 'Perform manual quantity adjustments & count corrections', app: 'INVENTORY', path: '/inventory/adjustments' },
       { key: 'inv.relocations',        label: 'Stock Relocations',           description: 'Transfer items between warehouse bays and shelves', app: 'INVENTORY', path: '/inventory/relocations' },
       { key: 'inv.aging',              label: 'Stock Aging Analysis',        description: 'Track slow-moving stock and shelf dwell time', app: 'INVENTORY', path: '/inventory/aging' },
-      { key: 'inv.photos',             label: 'Item Photos',                 description: 'Add, remove and choose the main photo of items (seen in the Inventory Dashboard)', app: 'INVENTORY', path: '/inventory/dashboard', action: true },
     ],
   },
   {

@@ -293,7 +293,6 @@ export default function InventoryDashboardPage() {
       })
       .catch(() => { /* the list still works without photos */ });
   };
-  const canManagePhotos = hasPermission(user, 'inv.photos');
   const [batches, setBatches] = useState<BatchRecord[]>([]);
   // Granular rolls come 50 at a time; the page beyond those is fetched by Load more
   const [batchPage, setBatchPage] = useState({ total: 0, hasMore: false, loadingMore: false });
@@ -1716,7 +1715,7 @@ export default function InventoryDashboardPage() {
                   <ItemPhotos
                     key={selectedBatch.id}
                     item={{ itemType: dType, category: dCategory, brand: dBrand, quality: dQuality, shade: dShade, name: getBatchName(selectedBatch), artNo: dArtNo }}
-                    canManage={canManagePhotos}
+                    canManage
                     onChange={() => { if (viewMode === 'AGGREGATED') loadSkuPhotos(skus); }}
                     heading={<h3 style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', margin: '0 0 8px' }}>Item Photos</h3>}
                   />
