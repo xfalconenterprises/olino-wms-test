@@ -554,7 +554,6 @@ router.get('/:id/print', requireAuth, requirePermission('ops.exit_gate', 'inv.de
   for (const line of dc.lines || []) {
     const batch = line.batch;
     const isFabric = batch.itemType === 'FABRIC';
-    const isReadyMade = batch.itemType === 'READY_MADE';
     const itemType = batch.itemType || 'FABRIC';
     const name = batch.name || null;
     const artNo = batch.artNo || null;

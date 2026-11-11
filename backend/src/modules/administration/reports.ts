@@ -6,6 +6,7 @@ import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission, hasCostAccess, type AuthUser } from '../../middleware/auth';
 import { totalsByUnit, unitLabel, unitName } from '../../utils/units';
 import { ownPasswordRefusal } from './cost-prices';
+import { saveClosingStock } from '../accounts/valuation';
 
 const router = Router();
 
@@ -594,7 +595,7 @@ const undoUntil = (endedAt: Date) => new Date(endedAt.getTime() + UNDO_DAYS * 86
 const canEndYears = (user: AuthUser) => (user.permissions || []).includes('*') || hasCostAccess(user);
 
 /** The ended years (newest first) and the day the current year started. */
-async function stockYears() {
+export async function stockYears() {
   const ended = await prisma.stockYear.findMany({ orderBy: { endsOn: 'desc' } });
   const [first] = await prisma.$queryRaw<{ first: Date | null }[]>`SELECT MIN("createdAt") AS first FROM transactions`;
   const firstDay = first.first ? istDateKey(first.first) : istDateKey();
@@ -722,6 +723,12 @@ router.post('/year-end/end', requirePermission('admin.reports'), async (req: Req
       data: { startsOn: asDate(currentStarts), endsOn: asDate(endsOn), endedById: req.user!.userId, endedByName: req.user!.name },
     });
     console.log(`[YEAR-END] '${req.user!.username}' ended the year ${currentStarts} to ${endsOn}`);
+    // The closing stock at cost is kept for Accounts. The year stays ended if this fails: it can be saved there later
+    try {
+      await saveClosingStock(year.id, req.user!);
+    } catch (err) {
+      console.error('[YEAR-END] Closing stock could not be saved:', err);
+    }
     res.status(201).json({ id: year.id, from: currentStarts, to: endsOn });
   } catch (err: any) {
     if (err?.code === 'P2002') { res.status(409).json({ error: 'That year has just been ended. Refresh to see it.' }); return; }

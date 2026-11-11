@@ -26,7 +26,7 @@ import api from '../../../utils/api';
 import { formatDate } from '../../../utils/format';
 import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
-import { formatQty, formatTotals, unitLabel } from '../../../utils/units';
+import { fabricCategoryLabel, formatQty, formatTotals, unitLabel } from '../../../utils/units';
 import '../../../styles/components.css';
 
 interface SupplierTrackingItem {
@@ -1131,7 +1131,7 @@ export default function SuppliersTrackingPage() {
                                                   {[line.brand || line.name, line.quality, line.qualityName, line.shade && `Shade: ${line.shade}`].filter(Boolean).join(' · ')}
                                                 </div>
                                                 <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>
-                                                  {[`Type: ${line.itemType}`, line.category && `Category: ${line.category}`, line.size && `Size: ${line.size}`].filter(Boolean).join(' · ')}
+                                                  {[`Type: ${line.itemType}`, line.category && (line.itemType === 'FABRIC' ? `Fabric Type: ${fabricCategoryLabel(line.category)}` : `Category: ${line.category}`), line.size && `Size: ${line.size}`].filter(Boolean).join(' · ')}
                                                 </div>
                                               </div>
                                               <div style={{ textAlign: 'right' }}>

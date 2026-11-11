@@ -32,12 +32,14 @@ import {
   Search,
   ChevronRight,
   FileSpreadsheet,
-  PencilLine
+  PencilLine,
+  LockKeyhole
 } from 'lucide-react';
 import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
 import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { fabricCategoryLabel, fabricUnit, formatTotals, formatUnitTotals, unitLabel, unitName, useFabricCategories } from '../../../utils/units';
+import LearningTypeaheadInput from '../../../components/Common/LearningTypeaheadInput';
 import { ITEM_TYPE_LABEL, adjustReceived, importLineFor, lumpPayload, remainingQty, type ImportLine, type InwardItemType } from '../../../utils/directInwardImport';
 import DirectInwardImport from './DirectInwardImport';
 import ChoiceCard from '../../../components/Common/ChoiceCard';
@@ -356,7 +358,9 @@ export default function EntryGatePage() {
     accQuantity: '',
     accBundleNumber: '',
 
-    notes: ''
+    notes: '',
+    // Optional cost per unit: saved with the lump and printed on its label only as the secret code
+    costPrice: ''
   });
   const [directSubmittingItem, setDirectSubmittingItem] = useState(false);
   const [directItemError, setDirectItemError] = useState('');
@@ -382,7 +386,7 @@ export default function EntryGatePage() {
     const pick = (fabric: string, other: string) => (only === 'FABRIC' ? fabric : only ? other : `${fabric} / ${other}`);
     const hasQualityName = directSessionBatches.some(b => b.qualityName);
     return [
-      { header: only === 'READY_MADE' ? 'Fabric Type' : 'Category', value: (b: any) => (b.itemType === 'FABRIC' ? fabricCategoryLabel(b.category) : b.category) ?? '' },
+      { header: only === 'ACCESSORY' ? 'Category' : only ? 'Fabric Type' : 'Fabric Type / Category', value: (b: any) => (b.itemType === 'FABRIC' ? fabricCategoryLabel(b.category) : b.category) ?? '' },
       { header: pick('Brand', 'Item Name'), value: (b: any) => (b.itemType === 'FABRIC' ? b.brand : b.name) ?? '' },
       { header: pick('Quality', 'Art No'), value: (b: any) => (b.itemType === 'FABRIC' ? b.quality : b.artNo) ?? '' },
       ...(hasQualityName ? [{ header: 'Quality Name', value: (b: any) => b.qualityName ?? '' }] : []),
@@ -1215,6 +1219,16 @@ export default function EntryGatePage() {
         supplierBundle: directItemForm.accBundleNumber.trim() || undefined,
         notes: directItemForm.notes.trim() || undefined,
       };
+    }
+
+    const cost = directItemForm.costPrice.trim();
+    if (cost) {
+      const n = Number(cost);
+      if (!Number.isFinite(n) || n <= 0 || Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) {
+        setDirectItemError('Cost price: enter an amount above 0, with at most 2 decimals (or leave it blank).');
+        return;
+      }
+      payload.costPrice = n;
     }
 
     setDirectSubmittingItem(true);
@@ -3601,69 +3615,53 @@ export default function EntryGatePage() {
 
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Brand <span className="required">*</span></label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-brand-options"
-                        placeholder="e.g. Raymond, Arvind, Siyaram"
+                      <LearningTypeaheadInput
                         value={directItemForm.brand}
-                        onChange={e => setDirectItemForm({ ...directItemForm, brand: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, brand: val }))}
+                        options={masterAttributes.BRAND}
+                        attributeType="Brand"
+                        placeholder="e.g. Raymond, Arvind, Siyaram"
                         required
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-brand-options">
-                        {masterAttributes.BRAND.map(b => <option key={b} value={b} />)}
-                      </datalist>
                     </div>
 
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Quality <span className="required">*</span></label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-quality-options"
-                        placeholder="Quality"
+                      <LearningTypeaheadInput
                         value={directItemForm.quality}
-                        onChange={e => setDirectItemForm({ ...directItemForm, quality: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, quality: val }))}
+                        options={masterAttributes.QUALITY}
+                        attributeType="Quality"
+                        placeholder="Quality"
                         required
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-quality-options">
-                        {masterAttributes.QUALITY.map(q => <option key={q} value={q} />)}
-                      </datalist>
                     </div>
 
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Quality Name</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-quality-name-options"
-                        placeholder="Optional"
+                      <LearningTypeaheadInput
                         value={directItemForm.qualityName}
-                        onChange={e => setDirectItemForm({ ...directItemForm, qualityName: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, qualityName: val }))}
+                        options={masterAttributes.QUALITY_NAME}
+                        attributeType="Quality Name"
+                        placeholder="Optional"
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-quality-name-options">
-                        {masterAttributes.QUALITY_NAME.map(q => <option key={q} value={q} />)}
-                      </datalist>
                     </div>
 
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Shade / Color <span className="required">*</span></label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-shade-options"
-                        placeholder="e.g. Navy Blue 04, White"
+                      <LearningTypeaheadInput
                         value={directItemForm.shade}
-                        onChange={e => setDirectItemForm({ ...directItemForm, shade: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, shade: val }))}
+                        options={masterAttributes.SHADE}
+                        attributeType="Shade"
+                        placeholder="e.g. Navy Blue 04, White"
                         required
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-shade-options">
-                        {masterAttributes.SHADE.map(s => <option key={s} value={s} />)}
-                      </datalist>
                     </div>
                   </div>
 
@@ -3718,46 +3716,37 @@ export default function EntryGatePage() {
                   <div className="form-row" style={{ marginBottom: 14 }}>
                     <div className="form-group" style={{ flex: 1.5 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Item Name <span className="required">*</span></label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-item-name-options"
-                        placeholder="e.g. Boys Half Sleeve Shirt"
+                      <LearningTypeaheadInput
                         value={directItemForm.rmName}
-                        onChange={e => setDirectItemForm({ ...directItemForm, rmName: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, rmName: val }))}
+                        options={masterAttributes.ITEM_NAME}
+                        attributeType="Item Name"
+                        placeholder="e.g. Boys Half Sleeve Shirt"
                         required
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-item-name-options">
-                        {masterAttributes.ITEM_NAME.map(n => <option key={n} value={n} />)}
-                      </datalist>
                     </div>
 
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Fabric Type</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-fabric-type-options"
-                        placeholder="e.g. Cotton Twill"
+                      <LearningTypeaheadInput
                         value={directItemForm.rmFabricType}
-                        onChange={e => setDirectItemForm({ ...directItemForm, rmFabricType: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, rmFabricType: val }))}
+                        options={masterAttributes.FABRIC_TYPE}
+                        attributeType="Fabric Type"
+                        placeholder="e.g. Cotton Twill"
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-fabric-type-options">
-                        {masterAttributes.FABRIC_TYPE.map(f => <option key={f} value={f} />)}
-                      </datalist>
                     </div>
 
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Color / Shade</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-shade-options"
-                        placeholder="e.g. White"
+                      <LearningTypeaheadInput
                         value={directItemForm.rmShade}
-                        onChange={e => setDirectItemForm({ ...directItemForm, rmShade: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, rmShade: val }))}
+                        options={masterAttributes.SHADE}
+                        attributeType="Shade"
+                        placeholder="e.g. White"
                         style={{ height: 40, fontSize: 13.5 }}
                       />
                     </div>
@@ -3766,19 +3755,15 @@ export default function EntryGatePage() {
                   <div className="form-row" style={{ marginBottom: 18 }}>
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Art No <span className="required">*</span></label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-art-no-options"
-                        placeholder="e.g. ART-101"
+                      <LearningTypeaheadInput
                         value={directItemForm.rmArtNo}
-                        onChange={e => setDirectItemForm({ ...directItemForm, rmArtNo: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, rmArtNo: val }))}
+                        options={masterAttributes.ART_NO}
+                        attributeType="Art No"
+                        placeholder="e.g. ART-101"
                         required
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-art-no-options">
-                        {masterAttributes.ART_NO.map(a => <option key={a} value={a} />)}
-                      </datalist>
                     </div>
 
                     <div className="form-group" style={{ flex: 0.7 }}>
@@ -3842,29 +3827,25 @@ export default function EntryGatePage() {
                   <div className="form-row" style={{ marginBottom: 14 }}>
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Accessory Category <span className="required">*</span></label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        list="direct-accessory-category-options"
-                        placeholder="e.g. Buttons, Zippers"
+                      <LearningTypeaheadInput
                         value={directItemForm.accCategory}
-                        onChange={e => setDirectItemForm({ ...directItemForm, accCategory: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, accCategory: val }))}
+                        options={masterAttributes.ACCESSORY_CATEGORY}
+                        attributeType="Category"
+                        placeholder="e.g. Buttons, Zippers"
                         required
                         style={{ height: 40, fontSize: 13.5 }}
                       />
-                      <datalist id="direct-accessory-category-options">
-                        {masterAttributes.ACCESSORY_CATEGORY.map(c => <option key={c} value={c} />)}
-                      </datalist>
                     </div>
 
                     <div className="form-group" style={{ flex: 1.5 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Item Name / Brand <span className="required">*</span></label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        placeholder="e.g. 24L 4-Hole Navy Button, Metal Zipper 7 inch"
+                      <LearningTypeaheadInput
                         value={directItemForm.accItemName}
-                        onChange={e => setDirectItemForm({ ...directItemForm, accItemName: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, accItemName: val }))}
+                        options={masterAttributes.ITEM_NAME}
+                        attributeType="Accessory Item"
+                        placeholder="e.g. 24L 4-Hole Navy Button, Metal Zipper 7 inch"
                         required
                         style={{ height: 40, fontSize: 13.5 }}
                       />
@@ -3886,12 +3867,12 @@ export default function EntryGatePage() {
                   <div className="form-row" style={{ marginBottom: 18 }}>
                     <div className="form-group" style={{ flex: 1 }}>
                       <label className="form-label" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600 }}>Shade / Color</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        placeholder="e.g. Navy Blue, Silver"
+                      <LearningTypeaheadInput
                         value={directItemForm.accShade}
-                        onChange={e => setDirectItemForm({ ...directItemForm, accShade: e.target.value })}
+                        onChange={val => setDirectItemForm(f => ({ ...f, accShade: val }))}
+                        options={masterAttributes.SHADE}
+                        attributeType="Color"
+                        placeholder="e.g. Navy Blue, Silver"
                         style={{ height: 40, fontSize: 13.5 }}
                       />
                     </div>
@@ -3940,6 +3921,33 @@ export default function EntryGatePage() {
                     </div>
                   </div>
                 </>
+              )}
+
+              {directClassification && (
+                <div className="form-row" style={{ marginBottom: 18 }}>
+                  <div className="form-group" style={{ flex: '0 1 320px' }}>
+                    <label className="form-label" htmlFor="direct-cost-price" style={{ marginBottom: 6, fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                      <LockKeyhole size={13} /> Cost Price (₹ per {directClassification === 'FABRIC'
+                        ? unitLabel(fabricUnit(fabricCategories, directItemForm.category))
+                        : directClassification === 'READY_MADE' ? 'pc' : unitLabel(directItemForm.uom || 'PCS')})
+                    </label>
+                    <input
+                      id="direct-cost-price"
+                      type="number"
+                      className="form-input"
+                      step="0.01"
+                      min="0"
+                      placeholder="Optional, e.g. 245.50"
+                      value={directItemForm.costPrice}
+                      onChange={e => setDirectItemForm({ ...directItemForm, costPrice: e.target.value })}
+                      autoComplete="off"
+                      style={{ height: 40, fontSize: 13.5 }}
+                    />
+                  </div>
+                  <div style={{ flex: 1, alignSelf: 'center', fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
+                    Printed on the barcode label only as the secret cost code. It stays filled for the next lumps of this item; change or clear it for a different item.
+                  </div>
+                </div>
               )}
 
               <button

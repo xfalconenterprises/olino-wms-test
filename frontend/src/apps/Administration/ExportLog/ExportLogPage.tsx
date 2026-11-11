@@ -3,6 +3,7 @@ import { FileDown, X } from 'lucide-react';
 import api from '../../../utils/api';
 import DateField from '../../../components/Common/DateField';
 import { formatDate, formatDateTime } from '../../../utils/format';
+import { ITEM_FILTER_NAMES } from '../../../utils/itemFilters';
 import '../../../styles/components.css';
 
 interface ExportEntry {
@@ -16,8 +17,13 @@ interface ExportEntry {
 }
 
 const FILTER_NAMES: Record<string, string> = {
-  search: 'Search', brand: 'Brand', quality: 'Quality', shade: 'Shade', status: 'Status', location: 'Location',
-  itemType: 'Type', startDate: 'From', endDate: 'To', client: 'Client',
+  ...ITEM_FILTER_NAMES,
+  search: 'Search', status: 'Status', location: 'Location',
+  itemType: 'Type', startDate: 'From', endDate: 'To', client: 'Client', asOnDate: 'As on',
+};
+
+const VIEW_NAMES: Record<string, string> = {
+  GRANULAR: 'Granular', ROLLUP: 'SKU Rollup', ACCOUNTS_STOCK_VALUE: 'Accounts: Stock Value', ACCOUNTS_CLOSING_STOCK: 'Accounts: Closing Stock',
 };
 
 const filterText = (filters: Record<string, string>) => Object.entries(filters)
@@ -95,7 +101,7 @@ export default function ExportLogPage() {
                 <tr key={e.id}>
                   <td style={{ whiteSpace: 'nowrap' }}>{formatDateTime(e.createdAt)}</td>
                   <td style={{ fontWeight: 600 }}>{e.userName}</td>
-                  <td>{e.view === 'GRANULAR' ? 'Granular' : 'SKU Rollup'}</td>
+                  <td>{VIEW_NAMES[e.view] ?? e.view}</td>
                   <td>{e.rowCount.toLocaleString('en-IN')}</td>
                   <td style={{ fontSize: 12.5 }}>
                     {Object.entries(e.columns ?? {}).map(([sheet, headers]) => (

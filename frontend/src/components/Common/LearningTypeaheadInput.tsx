@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useReducer } from 'react';
 import { AlertTriangle, Check, Plus, ChevronDown, X } from 'lucide-react';
 
 export interface LearningTypeaheadInputProps {
@@ -12,6 +12,19 @@ export interface LearningTypeaheadInputProps {
   className?: string;
   disabled?: boolean;
   autoFocus?: boolean;
+}
+
+// Shared by every box on the page: a new word confirmed once (Proceed) counts as confirmed in
+// every other row, e.g. rows made by Repeat, and only one "new word" warning is open at a time.
+const confirmedWords = new Map<string, Set<string>>();
+let openWarning: symbol | null = null;
+const listeners = new Set<() => void>();
+const notifyAll = () => listeners.forEach(listener => listener());
+function confirmWord(attributeType: string, word: string) {
+  const words = confirmedWords.get(attributeType) ?? new Set<string>();
+  words.add(word.trim().toLowerCase());
+  confirmedWords.set(attributeType, words);
+  notifyAll();
 }
 
 export const LearningTypeaheadInput: React.FC<LearningTypeaheadInputProps> = ({
@@ -30,7 +43,22 @@ export const LearningTypeaheadInput: React.FC<LearningTypeaheadInputProps> = ({
   const [isFocused, setIsFocused] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState(-1);
   const [confirmedValue, setConfirmedValue] = useState<string | null>(null);
-  const [showWarningModal, setShowWarningModal] = useState(false);
+  // Re-render when a word is confirmed or a warning opens anywhere on the page
+  const [, refresh] = useReducer((n: number) => n + 1, 0);
+  const [warningId] = useState(() => Symbol('warning'));
+  useEffect(() => {
+    listeners.add(refresh);
+    return () => {
+      listeners.delete(refresh);
+      if (openWarning === warningId) openWarning = null;
+    };
+  }, [warningId]);
+  const showWarningModal = openWarning === warningId;
+  const setShowWarningModal = (show: boolean) => {
+    if (show) openWarning = warningId;
+    else if (openWarning === warningId) openWarning = null;
+    notifyAll();
+  };
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -68,7 +96,8 @@ export const LearningTypeaheadInput: React.FC<LearningTypeaheadInputProps> = ({
   const hasMatches = filteredSuggestions.length > 0;
   // A word is genuinely "new / uncatalogued" ONLY when user has typed something that has zero matches among existing records
   const isZeroMatches = Boolean(trimmedVal && !isExistingMatch && !hasMatches);
-  const isConfirmed = Boolean(trimmedVal && confirmedValue?.toLowerCase() === trimmedVal.toLowerCase());
+  const isConfirmed = Boolean(trimmedVal && (confirmedValue?.toLowerCase() === trimmedVal.toLowerCase()
+    || confirmedWords.get(attributeType)?.has(trimmedVal.toLowerCase())));
   const isUnconfirmedNew = Boolean(trimmedVal && !isExistingMatch && !isConfirmed && trimmedVal.length >= 2);
 
   const handleSelect = (selectedVal: string) => {
@@ -82,6 +111,7 @@ export const LearningTypeaheadInput: React.FC<LearningTypeaheadInputProps> = ({
 
   const handleProceedNew = () => {
     setConfirmedValue(trimmedVal);
+    confirmWord(attributeType, trimmedVal);
     setIsOpen(false);
     setIsFocused(false);
     setShowWarningModal(false);
@@ -125,6 +155,7 @@ export const LearningTypeaheadInput: React.FC<LearningTypeaheadInputProps> = ({
     } else if (e.key === 'Tab') {
       if (isUnconfirmedNew) {
         setConfirmedValue(trimmedVal);
+        confirmWord(attributeType, trimmedVal);
       }
       setIsOpen(false);
       setIsFocused(false);

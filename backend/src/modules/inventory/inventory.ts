@@ -105,27 +105,53 @@ router.get('/summary', requirePermission('inv.dashboard', 'admin.dashboard'), as
 });
 
 // ─── GET /api/inventory/skus — Aggregated Rollup View via High-Performance SQL ───
+// The item filters on the Inventory screen, by the names each item type uses (see
+// frontend/src/utils/itemFilters.ts): each is a part of the field, any case. Spec (accessories)
+// is kept in Quality on a PO and in Size on the Direct Inward Excel, so it looks at both.
+const ITEM_FILTER_FIELDS = { brand: 'brand', quality: 'quality', qualityName: 'quality_name', shade: 'shade', itemName: 'name', category: 'category', artNo: '"artNo"', size: 'size' } as const;
+
+function itemFilterSql(query: Request['query']): Prisma.Sql[] {
+  const out: Prisma.Sql[] = [];
+  for (const [key, column] of Object.entries(ITEM_FILTER_FIELDS)) {
+    const value = query[key];
+    if (typeof value === 'string' && value.trim()) out.push(Prisma.sql`b.${Prisma.raw(column)} ILIKE ${'%' + value.trim() + '%'}`);
+  }
+  const spec = query.spec;
+  if (typeof spec === 'string' && spec.trim()) out.push(Prisma.sql`(b.quality ILIKE ${'%' + spec.trim() + '%'} OR b.size ILIKE ${'%' + spec.trim() + '%'})`);
+  return out;
+}
+
+function itemFilterWhere(query: Request['query']): Prisma.ItemBatchWhereInput[] {
+  const field: Record<keyof typeof ITEM_FILTER_FIELDS, keyof Prisma.ItemBatchWhereInput> = {
+    brand: 'brand', quality: 'quality', qualityName: 'qualityName', shade: 'shade', itemName: 'name', category: 'category', artNo: 'artNo', size: 'size',
+  };
+  const out: Prisma.ItemBatchWhereInput[] = [];
+  for (const [key, name] of Object.entries(field)) {
+    const value = query[key];
+    if (typeof value === 'string' && value.trim()) out.push({ [name]: { contains: value.trim(), mode: 'insensitive' } });
+  }
+  const spec = query.spec;
+  if (typeof spec === 'string' && spec.trim()) {
+    out.push({ OR: [{ quality: { contains: spec.trim(), mode: 'insensitive' } }, { size: { contains: spec.trim(), mode: 'insensitive' } }] });
+  }
+  return out;
+}
+
 async function findSkus(query: Request['query']) {
-  const { search, brand, quality, shade, itemType, startDate, endDate, client } = query;
+  const { search, itemType, startDate, endDate, client, fabricType } = query;
 
   const conditions: Prisma.Sql[] = [
-    Prisma.sql`b.status IN ('IN_STOCK', 'PARTIALLY_USED', 'QC_HOLD') AND b.quantity > 0`
+    Prisma.sql`b.status IN ('IN_STOCK', 'PARTIALLY_USED', 'QC_HOLD') AND b.quantity > 0`,
+    ...itemFilterSql(query),
   ];
 
   if (itemType && itemType !== 'ALL') {
     conditions.push(Prisma.sql`b."itemType" = ${String(itemType)}`);
   }
 
-  if (brand) {
-    conditions.push(Prisma.sql`b.brand ILIKE ${'%' + String(brand) + '%'}`);
-  }
-
-  if (quality) {
-    conditions.push(Prisma.sql`b.quality ILIKE ${'%' + String(quality) + '%'}`);
-  }
-
-  if (shade) {
-    conditions.push(Prisma.sql`b.shade ILIKE ${'%' + String(shade) + '%'}`);
+  // Fabric Type (the fabric's category, e.g. Suiting): fabric only
+  if (fabricType) {
+    conditions.push(Prisma.sql`b."itemType" = 'FABRIC' AND b.category = ${String(fabricType)}`);
   }
 
   if (client) {
@@ -326,7 +352,8 @@ router.get('/value', requirePermission('inv.dashboard'), async (req: Request, re
 
 router.get('/skus', requirePermission('inv.dashboard'), async (req: Request, res: Response) => {
   try {
-    res.json(await withItemCodes(await findSkus(req.query), req.user!));
+    // Codes are shown per roll (Item Passport) and in the Excel, not on the item rows: none worked out here
+    res.json((await findSkus(req.query)).map(({ rollIds: _ids, ...item }) => item));
   } catch (err: any) {
     console.error('Inventory SKUs SQL query error:', err);
     res.status(500).json({ error: userMessage(err, 'Something went wrong. Please try again.') });
@@ -440,7 +467,7 @@ router.get('/skus/batches', requirePermission('inv.dashboard'), async (req: Requ
 // ─── GET /api/inventory/batches — Granular Detailed View ───────────────────────
 // The rolls matching the Granular view's filters
 function batchesWhere(query: Request['query']) {
-  const { search, brand, quality, shade, status, location, itemType, unassigned, startDate, endDate, client } = query;
+  const { search, status, location, itemType, unassigned, startDate, endDate, client, fabricType } = query;
 
   const where: any = {};
 
@@ -482,10 +509,14 @@ function batchesWhere(query: Request['query']) {
     where.quantity = { gt: 0 };
   }
 
-  if (brand) where.brand = { contains: String(brand), mode: 'insensitive' };
-  if (quality) where.quality = { contains: String(quality), mode: 'insensitive' };
-  if (shade) where.shade = { contains: String(shade), mode: 'insensitive' };
+  const itemFilters = itemFilterWhere(query);
+  if (itemFilters.length) where.AND = [...(where.AND ?? []), ...itemFilters];
   if (itemType) where.itemType = String(itemType);
+  // Fabric Type (the fabric's category): fabric only; older rolls may carry it on their PO line
+  if (fabricType) {
+    where.itemType = 'FABRIC';
+    where.AND = [...(where.AND ?? []), { OR: [{ category: String(fabricType) }, { category: null, poLine: { is: { category: String(fabricType) } } }] }];
+  }
 
   if (client) {
     if (client === 'GENERAL' || client === 'UNASSIGNED') {
@@ -597,7 +628,7 @@ router.get('/batches', requirePermission('inv.dashboard'), async (req: Request, 
 
 // ─── Stock export ───────────────────────────────────────────────────────────
 // The stock export needs its own permission, and each file downloaded is logged.
-const EXPORT_FILTERS = ['search', 'brand', 'quality', 'shade', 'status', 'location', 'itemType', 'startDate', 'endDate', 'client'];
+const EXPORT_FILTERS = ['search', 'fabricType', 'brand', 'quality', 'qualityName', 'shade', 'itemName', 'category', 'artNo', 'size', 'spec', 'status', 'location', 'itemType', 'startDate', 'endDate', 'client'];
 
 // GET /api/inventory/export?view=ROLLUP|GRANULAR — every matching row, plus the user's last choices
 router.get('/export', requirePermission('export.stock'), async (req: Request, res: Response) => {

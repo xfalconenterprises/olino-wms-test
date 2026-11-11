@@ -350,6 +350,7 @@
 .alert-danger  { background: var(--color-danger-bg);  color: var(--color-danger);  border-color: #FECACA; }
 .alert-success { background: var(--color-success-bg); color: var(--color-success); border-color: #BBF7D0; }
 .alert-warning { background: var(--color-warning-bg); color: var(--color-warning); border-color: #FDE68A; }
+.alert-info    { background: #EFF6FF; color: #1E40AF; border-color: #BFDBFE; }
 
 /* ─── Loading spinner ────────────────────────────────────────────────────────── */
 .spinner {

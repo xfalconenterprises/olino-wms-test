@@ -58,7 +58,7 @@ const cost = (per: string): ColumnDef =>
 
 export const IMPORT_COLUMNS: Record<InwardItemType, ColumnDef[]> = {
   FABRIC: [
-    { key: 'category', header: 'Category', required: true, kind: 'choice', choices: fabricChoices(DEFAULT_FABRIC_TYPES), aliases: ['Fabric Type'], note: 'A fabric type from the master catalogue, e.g. Suiting, Shirting, Knits', width: 16 },
+    { key: 'category', header: 'Fabric Type', required: true, kind: 'choice', choices: fabricChoices(DEFAULT_FABRIC_TYPES), aliases: ['Category'], note: 'A fabric type from the master catalogue, e.g. Suiting, Shirting, Knits', width: 16 },
     text('brand', 'Brand', true, 'e.g. Raymond, Siyaram'),
     text('quality', 'Quality', true, 'e.g. PV-2041'),
     text('qualityName', 'Quality Name', false, 'Optional, e.g. Poly Viscose Twill', 22),

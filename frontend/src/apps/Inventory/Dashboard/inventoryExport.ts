@@ -1,6 +1,6 @@
 import type { Worksheet } from 'exceljs';
 import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
-import { allowsDecimals, unitName, uomOf } from '../../../utils/units';
+import { allowsDecimals, fabricCategoryLabel, unitName, uomOf } from '../../../utils/units';
 
 type CellValue = string | number | Date | null | undefined;
 
@@ -35,7 +35,7 @@ export const SKU_EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'quality', header: 'Quality', value: r => r.quality },
   { key: 'qualityName', header: 'Quality Name', value: r => r.qualityName },
   { key: 'shade', header: 'Shade / Color', value: r => r.shade },
-  { key: 'category', header: 'Category', value: r => r.category },
+  { key: 'category', header: 'Category', fabricHeader: 'Fabric Type', value: r => (r.itemType === 'FABRIC' ? fabricCategoryLabel(r.category) || r.category : r.category) },
   { key: 'size', header: 'Size', value: r => r.size },
   { key: 'name', header: 'Item Name', value: r => r.name },
   { key: 'artNo', header: 'Article No', value: r => r.artNo },
@@ -56,7 +56,7 @@ export const ROLL_EXPORT_COLUMNS: ExportColumn[] = [
   { key: 'quality', header: 'Quality', value: r => r.quality },
   { key: 'qualityName', header: 'Quality Name', value: r => r.qualityName },
   { key: 'shade', header: 'Shade / Color', value: r => r.shade },
-  { key: 'category', header: 'Category', value: r => r.category },
+  { key: 'category', header: 'Category', fabricHeader: 'Fabric Type', value: r => (r.itemType === 'FABRIC' ? fabricCategoryLabel(r.category) || r.category : r.category) },
   { key: 'size', header: 'Size', value: r => r.size },
   { key: 'name', header: 'Item Name', value: r => r.name },
   { key: 'artNo', header: 'Article No', value: r => r.artNo },

@@ -1085,7 +1085,7 @@ export default function CreatePOPage() {
                         <th style={{ width: 170 }}>Quality Name</th>
                         <th style={{ width: 150 }}>Shade</th>
                         <th style={{ width: 150 }}>Quantity *</th>
-                        <th style={{ width: 140 }} title="Confidential: only visible in Administration → Cost Prices">
+                        <th style={{ width: 140 }} title="Confidential: only visible in Accounts → Purchase Costs">
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><LockKeyhole size={12} /> Cost / unit</span>
                         </th>
                         <th style={{ width: 200 }}>Notes</th>
@@ -1099,7 +1099,7 @@ export default function CreatePOPage() {
                         <th style={{ width: 140 }}>Art No</th>
                         <th style={{ width: 100 }}>Size</th>
                         <th style={{ width: 140 }}>Pieces *</th>
-                        <th style={{ width: 140 }} title="Confidential: only visible in Administration → Cost Prices">
+                        <th style={{ width: 140 }} title="Confidential: only visible in Accounts → Purchase Costs">
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><LockKeyhole size={12} /> Cost / unit</span>
                         </th>
                         <th style={{ width: 200 }}>Notes</th>
@@ -1113,7 +1113,7 @@ export default function CreatePOPage() {
                         <th style={{ width: 140 }}>Color</th>
                         <th style={{ width: 100 }}>Size</th>
                         <th style={{ width: 140 }}>Quantity *</th>
-                        <th style={{ width: 140 }} title="Confidential: only visible in Administration → Cost Prices">
+                        <th style={{ width: 140 }} title="Confidential: only visible in Accounts → Purchase Costs">
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><LockKeyhole size={12} /> Cost / unit</span>
                         </th>
                         <th style={{ width: 200 }}>Notes</th>

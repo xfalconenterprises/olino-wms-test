@@ -779,7 +779,7 @@ export default function UsersPage() {
                               </span>
                             )}
                             {u.permissions.includes(COST_PRICE_PERMISSION) && (
-                              <span title="Confidential Cost Prices access" style={{ display: 'inline-flex', color: '#b45309' }}>
+                              <span title="Confidential Cost Prices & Accounts access" style={{ display: 'inline-flex', color: '#b45309' }}>
                                 <LockKeyhole size={13} />
                               </span>
                             )}
@@ -1524,10 +1524,10 @@ export default function UsersPage() {
                         />
                         <div>
                           <span style={{ fontSize: 13, fontWeight: 700, color: '#92400e', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                            <LockKeyhole size={14} /> Confidential Cost Prices
+                            <LockKeyhole size={14} /> Confidential Cost Prices &amp; Accounts
                           </span>
                           <span style={{ fontSize: 11.5, color: '#78350f', display: 'block', marginTop: 2, lineHeight: 1.35 }}>
-                            Can open Administration → Cost Prices (after re-entering their password) to see and change item costs and the secret label code.
+                            Can open Accounts (costs in rupees, stock value, closing stock, Excel exports and the secret code word), after re-entering their password.
                             Not included in Super Admin. {canGrantCostAccess ? '' : 'Only a user who already has this access can give or remove it.'}
                           </span>
                         </div>

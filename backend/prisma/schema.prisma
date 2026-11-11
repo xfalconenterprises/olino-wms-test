@@ -446,8 +446,24 @@ model StockYear {
   endedById   String   @map("ended_by_id")
   endedByName String   @map("ended_by_name")
   createdAt   DateTime @default(now()) @map("created_at")
+  closingStock ClosingStock?
 
   @@map("stock_years")
+}
+
+// The closing stock at cost, saved when a year is ended so later cost changes don't alter the
+// books. Rupees: read only in the Accounts module. Undoing the year-end removes it.
+model ClosingStock {
+  yearId      String   @id @map("year_id")
+  totalValue  Decimal  @map("total_value") @db.Decimal(16, 2)
+  data        Json     // { items, byType, bySupplier, totals }
+  savedById   String   @map("saved_by_id")
+  savedByName String   @map("saved_by_name")
+  savedAt     DateTime @default(now()) @map("saved_at")
+
+  year        StockYear @relation(fields: [yearId], references: [id], onDelete: Cascade)
+
+  @@map("closing_stocks")
 }
 
 // The secret code word that turns a cost into letters on the label (one row). Labels add 2 decoy

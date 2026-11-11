@@ -24,7 +24,7 @@ import poDraftRoutes from './modules/purchasing/po-drafts';
 import receiptCorrectionRoutes from './modules/inventory/receipt-corrections';
 import returnsRoutes from './modules/inventory/returns';
 import stockCountsRoutes from './modules/inventory/stock-counts';
-import costPricesRoutes from './modules/administration/cost-prices';
+import accountsRoutes from './modules/accounts/accounts';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -97,7 +97,7 @@ app.use('/api/po-drafts', poDraftRoutes);
 app.use('/api/receipt-corrections', receiptCorrectionRoutes);
 app.use('/api/returns', returnsRoutes);
 app.use('/api/stock-counts', stockCountsRoutes);
-app.use('/api/cost-prices', costPricesRoutes);
+app.use('/api/accounts', accountsRoutes);
 
 // Unknown API paths are a 404, never the frontend page
 app.use('/api', (_req, res) => {

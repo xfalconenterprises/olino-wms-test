@@ -20,7 +20,8 @@ export const MODULE_LABELS: Record<string, string> = {
   ADMINISTRATION: 'Administration',
 };
 
-export type AppName = 'PURCHASE' | 'WAREHOUSE' | 'INVENTORY' | 'ADMINISTRATION';
+// Accounts is an app but not a module: it opens only for Confidential Cost Prices holders
+export type AppName = 'PURCHASE' | 'WAREHOUSE' | 'INVENTORY' | 'ADMINISTRATION' | 'ACCOUNTS';
 
 // ─── Granular Tab Permission Definitions Per Module ───────────────────────────
 export interface PermissionDefinition {
@@ -223,7 +224,8 @@ export function hasPermission(user: WmsUser | null | undefined, permissionKey: s
   return false;
 }
 
-export const canAccessApp = {
+export const canAccessApp: Record<AppName, (user: WmsUser | null) => boolean> = {
+  ACCOUNTS: (user: WmsUser | null) => hasCostAccess(user),
   PURCHASE: (user: WmsUser | null) => hasModuleAccess(user, 'PURCHASE') && (
     hasPermission(user, 'po.view') || hasPermission(user, 'po.create')
   ),
@@ -246,7 +248,7 @@ export const canAccessApp = {
     hasPermission(user, 'inv.relocations') ||
     hasPermission(user, 'inv.aging')
   ),
-  ADMINISTRATION: (user: WmsUser | null) => hasCostAccess(user) || hasPermission(user, 'export.log') || hasModuleAccess(user, 'ADMINISTRATION') && (
+  ADMINISTRATION: (user: WmsUser | null) => hasPermission(user, 'export.log') || hasModuleAccess(user, 'ADMINISTRATION') && (
     hasPermission(user, 'admin.dashboard') || 
     hasPermission(user, 'admin.clients') || 
     hasPermission(user, 'admin.suppliers') || 
@@ -261,7 +263,7 @@ export const canAccessApp = {
 export const getDefaultRoute = (user: WmsUser | null): string => {
   if (!user) return '/login';
 
-  const accessibleApps = (['PURCHASE', 'WAREHOUSE', 'INVENTORY', 'ADMINISTRATION'] as const).filter(
+  const accessibleApps = (['PURCHASE', 'WAREHOUSE', 'INVENTORY', 'ADMINISTRATION', 'ACCOUNTS'] as const).filter(
     app => canAccessApp[app](user)
   );
 
@@ -272,6 +274,7 @@ export const getDefaultRoute = (user: WmsUser | null): string => {
   // If exactly 1 app, find the first permitted tab path in that app
   if (accessibleApps.length === 1) {
     const targetApp = accessibleApps[0];
+    if (targetApp === 'ACCOUNTS') return '/accounts';
     const group = PERMISSION_GROUPS.find(g => g.app === targetApp);
     if (group) {
       const firstAllowed = group.permissions.find(p => hasPermission(user, p.key));

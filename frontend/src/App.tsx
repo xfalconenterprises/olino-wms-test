@@ -66,7 +66,9 @@ const ReportsPage = screen(() => import('./apps/Administration/Reports/ReportsPa
 const ExportLogPage = screen(() => import('./apps/Administration/ExportLog/ExportLogPage'));
 const UsersPage = screen(() => import('./apps/Administration/Users/UsersPage'));
 const PrinterSettingsPage = screen(() => import('./apps/Administration/Settings/PrinterSettingsPage'));
-const CostPricesPage = screen(() => import('./apps/Administration/CostPrices/CostPricesPage'));
+
+// Accounts (one screen with its own pages, so the unlock lasts while moving between them)
+const AccountsPage = screen(() => import('./apps/Accounts/AccountsPage'));
 
 function ProtectedRoute({ 
   children, 
@@ -142,7 +144,10 @@ function AppRoutes() {
       <Route path="/export-log" element={<ProtectedRoute permission="export.log"><ExportLogPage /></ProtectedRoute>} />
       <Route path="/reports" element={<ProtectedRoute permission="admin.reports"><ReportsPage /></ProtectedRoute>} />
       <Route path="/users" element={<ProtectedRoute permission="admin.users"><UsersPage /></ProtectedRoute>} />
-      <Route path="/cost-prices" element={<ProtectedRoute permission={COST_PRICE_PERMISSION}><CostPricesPage /></ProtectedRoute>} />
+      <Route path="/cost-prices" element={<Navigate to="/accounts/secret-code" replace />} />
+
+      {/* ── 5. Accounts (Confidential Cost Prices holders only) ── */}
+      <Route path="/accounts/*" element={<ProtectedRoute permission={COST_PRICE_PERMISSION}><AccountsPage /></ProtectedRoute>} />
       <Route path="/settings/printer" element={<ProtectedRoute permission={['ops.printer', 'admin.dashboard']}><PrinterSettingsPage /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />

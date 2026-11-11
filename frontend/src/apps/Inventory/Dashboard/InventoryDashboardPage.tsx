@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import api from '../../../utils/api';
 import { printTSPL } from '../../../utils/printer';
+import { CameraScanButton } from '../../../components/Common/CameraScan';
 import { formatDateTime, formatDate } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { useAuth } from '../../../hooks/useAuth';
@@ -32,7 +33,8 @@ import { hasPermission, COST_PRICE_PERMISSION } from '../../../utils/roles';
 import ExportColumnsModal from './ExportColumnsModal';
 import type { ExportChoice } from './ExportColumnsModal';
 import { ROLL_EXPORT_COLUMNS, SKU_EXPORT_COLUMNS } from './inventoryExport';
-import { fabricCategoryLabel, unitLabel, uomOf } from '../../../utils/units';
+import { fabricCategoryLabel, unitLabel, uomOf, useFabricCategories } from '../../../utils/units';
+import { ITEM_FILTERS, type ItemFilterKey } from '../../../utils/itemFilters';
 import { PAGE_SIZE } from '../../../hooks/usePagedList';
 import LoadMore from '../../../components/Common/LoadMore';
 import '../../../styles/components.css';
@@ -259,13 +261,13 @@ export default function InventoryDashboardPage() {
   const [valueTotal, setValueTotal] = useState<{ totalCode: string; costedRolls: number; rollsWithoutCost: number } | null>(null);
   const valueRequest = useRef(0);
   const [exportBusy, setExportBusy] = useState(false);
-  const [brand, setBrand] = useState('');
-  const [quality, setQuality] = useState('');
-  const [shade, setShade] = useState('');
+  // Item filters: each item type's own columns (Fabric: Fabric Type, Brand, Quality…; Readymade:
+  // Item Name, Fabric Type, Art No…; Accessories: Category, Accessory Item, Spec…)
+  const [itemFilters, setItemFilters] = useState<Partial<Record<ItemFilterKey, string>>>({});
+  const [debouncedItemFilters, setDebouncedItemFilters] = useState<Partial<Record<ItemFilterKey, string>>>({});
+  const setItemFilter = (key: ItemFilterKey, value: string) => setItemFilters(f => ({ ...f, [key]: value }));
+  const fabricTypes = useFabricCategories();
   const [locationCode, setLocationCode] = useState('');
-  const [debouncedBrand, setDebouncedBrand] = useState('');
-  const [debouncedQuality, setDebouncedQuality] = useState('');
-  const [debouncedShade, setDebouncedShade] = useState('');
   const [debouncedLocationCode, setDebouncedLocationCode] = useState('');
 
   // Sorting
@@ -313,13 +315,20 @@ export default function InventoryDashboardPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
-      setDebouncedBrand(brand);
-      setDebouncedQuality(quality);
-      setDebouncedShade(shade);
+      setDebouncedItemFilters(itemFilters);
       setDebouncedLocationCode(locationCode);
     }, 350);
     return () => clearTimeout(timer);
-  }, [search, brand, quality, shade, locationCode]);
+  }, [search, itemFilters, locationCode]);
+
+  // Each item type has its own filters: changing the type starts them afresh
+  useEffect(() => {
+    const cleared = (f: Partial<Record<ItemFilterKey, string>>) => (Object.keys(f).length ? {} : f);
+    setItemFilters(cleared);
+    setDebouncedItemFilters(cleared);
+  }, [categoryTab]);
+  // The filters by value, so a new but equal object never loads the stock again
+  const itemFiltersKey = JSON.stringify(debouncedItemFilters);
 
   // Fetch summary once on mount & on refresh
   const fetchSummary = async () => {
@@ -346,7 +355,7 @@ export default function InventoryDashboardPage() {
   // Fetch data on filter change
   useEffect(() => {
     fetchData();
-  }, [viewMode, categoryTab, debouncedSearch, status, debouncedBrand, debouncedQuality, debouncedShade, debouncedLocationCode, selectedClientFilter, startDate, endDate, granularSortKey]);
+  }, [viewMode, categoryTab, debouncedSearch, status, itemFiltersKey, debouncedLocationCode, selectedClientFilter, startDate, endDate, granularSortKey]);
 
   const filterParams = () => {
     const params = new URLSearchParams();
@@ -360,9 +369,13 @@ export default function InventoryDashboardPage() {
     }
 
     if (status && viewMode === 'GRANULAR') params.append('status', status);
-    if (debouncedBrand) params.append('brand', debouncedBrand);
-    if (debouncedQuality) params.append('quality', debouncedQuality);
-    if (debouncedShade) params.append('shade', debouncedShade);
+    // Only the chosen item type's own filters
+    if (categoryTab !== 'ALL') {
+      for (const { key } of ITEM_FILTERS[categoryTab]) {
+        const value = debouncedItemFilters[key]?.trim();
+        if (value) params.append(key, value);
+      }
+    }
     if (debouncedLocationCode && viewMode === 'GRANULAR') params.append('location', debouncedLocationCode);
     if (selectedClientFilter) params.append('client', selectedClientFilter);
     return params;
@@ -631,26 +644,17 @@ export default function InventoryDashboardPage() {
     endDate && `To ${formatDate(endDate)}`,
     search,
     viewMode === 'GRANULAR' && status,
-    brand,
-    quality,
-    shade,
+    // The chosen type's item filters, by their names (e.g. "Art No: ART-2041")
+    ...(categoryTab === 'ALL' ? [] : ITEM_FILTERS[categoryTab].map(def => {
+      const value = itemFilters[def.key]?.trim();
+      return value && `${def.label}: ${def.key === 'fabricType' ? fabricCategoryLabel(value) : value}`;
+    })),
     viewMode === 'GRANULAR' && locationCode,
     selectedClientFilter,
   ].filter(Boolean).join(' · ');
 
-  // Cost code columns appear only when some row has one; values reach Cost Prices holders only
-  const skuCode = skus.some(s => s.costCode), skuValue = skus.some(s => s.valueCode);
-  const rollCode = batches.some(b => b.costCode), rollValue = batches.some(b => b.valueCode);
-  const codeHeads = (code: boolean, value: boolean) => (
-    <>{code && <th style={{ whiteSpace: 'nowrap' }}>Cost Code</th>}{value && <th style={{ whiteSpace: 'nowrap' }}>Value (code)</th>}</>
-  );
-  const codeCells = (row: { costCode?: string; valueCode?: string }, code: boolean, value: boolean) => (
-    <>
-      {code && <td>{row.costCode && <code className="cost-code">{row.costCode}</code>}</td>}
-      {value && <td>{row.valueCode && <code className="cost-code">{row.valueCode}</code>}</td>}
-    </>
-  );
-  const skuRollupColSpan = (categoryTab === 'FABRIC' ? 6 : 8) + Number(skuCode) + Number(skuValue);
+  // Cost codes are shown in the Item Passport only (and in the Excel), not in the tables
+  const skuRollupColSpan = categoryTab === 'FABRIC' ? 6 : 8;
 
   return (
     <div style={{ maxWidth: '100%', margin: '0 auto', paddingBottom: 40 }}>
@@ -835,8 +839,12 @@ export default function InventoryDashboardPage() {
               className="form-input"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              style={{ paddingLeft: 40, height: 40, fontSize: 13.5 }}
+              style={{ paddingLeft: 40, paddingRight: 44, height: 40, fontSize: 13.5 }}
             />
+            {/* Scan a roll's barcode with the camera (shown only where there is one) */}
+            <div style={{ position: 'absolute', right: 3, top: '50%', transform: 'translateY(-50%)' }}>
+              <CameraScanButton size={34} inset title="Scan a barcode with the camera" onScan={code => setSearch(code.trim())} />
+            </div>
           </div>
 
           {/* Stock Type */}
@@ -893,19 +901,26 @@ export default function InventoryDashboardPage() {
         {/* Advanced Filters Expandable Drawer */}
         {showAdvanced && (
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 16, paddingTop: 16, borderTop: '1px dashed var(--color-border)' }}>
-            <div style={{ flex: 1, minWidth: 150 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>Brand</label>
-              <input type="text" className="form-input" placeholder="e.g. Siyaram" value={brand} onChange={e => setBrand(e.target.value)} style={{ height: 36, fontSize: 13 }} />
-            </div>
-            <div style={{ flex: 1, minWidth: 150 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>Quality</label>
-              <input type="text" className="form-input" placeholder="e.g. Suiting" value={quality} onChange={e => setQuality(e.target.value)} style={{ height: 36, fontSize: 13 }} />
-            </div>
-            <div style={{ flex: 1, minWidth: 150 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>Shade / Size</label>
-              <input type="text" className="form-input" placeholder="e.g. Navy Blue" value={shade} onChange={e => setShade(e.target.value)} style={{ height: 36, fontSize: 13 }} />
-            </div>
-            
+            {/* The chosen item type's own columns; All Stock has none in common */}
+            {categoryTab === 'ALL' ? (
+              <div style={{ flex: '1 1 100%', fontSize: 12.5, color: 'var(--color-text-muted)' }}>
+                Choose Fabric Rolls, Ready-Made or Accessories above to filter by that type's columns (Brand, Quality, Item Name, Art No, Size…).
+              </div>
+            ) : ITEM_FILTERS[categoryTab].map(def => (
+              <div key={def.key} style={{ flex: 1, minWidth: 150 }}>
+                <label htmlFor={`filter-${def.key}`} style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>{def.label}</label>
+                {def.key === 'fabricType' ? (
+                  <select id={`filter-${def.key}`} className="form-input" value={itemFilters.fabricType ?? ''} onChange={e => setItemFilter('fabricType', e.target.value)} style={{ height: 36, fontSize: 13 }}>
+                    <option value="">All Fabric Types</option>
+                    {fabricTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                ) : (
+                  <input id={`filter-${def.key}`} type="text" className="form-input" placeholder={def.placeholder} value={itemFilters[def.key] ?? ''}
+                    onChange={e => setItemFilter(def.key, e.target.value)} style={{ height: 36, fontSize: 13 }} />
+                )}
+              </div>
+            ))}
+
             {viewMode === 'GRANULAR' && (
               <>
                 <div style={{ flex: 1, minWidth: 150 }}>
@@ -944,7 +959,7 @@ export default function InventoryDashboardPage() {
                 className="btn btn-ghost" 
                 title="Reset All Filters"
                 onClick={() => {
-                  setSearch(''); setBrand(''); setQuality(''); setShade(''); setLocationCode(''); setStatus(''); setCategoryTab('ALL'); setStartDate(''); setEndDate('');
+                  setSearch(''); setItemFilters({}); setLocationCode(''); setStatus(''); setCategoryTab('ALL'); setStartDate(''); setEndDate('');
                 }}
                 style={{ height: 36, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 5 }}
               >
@@ -989,17 +1004,17 @@ export default function InventoryDashboardPage() {
                   <th>Quality Grade</th>
                   <th>Color / Shade</th>
                   <th>In Stock</th>
-                  <th>Lumps Count (Full vs Cut)</th>{codeHeads(skuCode, skuValue)}</tr>
+                  <th>Lumps Count (Full vs Cut)</th></tr>
               ) : categoryTab === 'READY_MADE' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
                   <th>Garment / Item Name</th>
                   <th>Brand</th>
-                  <th>Category</th>
+                  <th>Fabric Type</th>
                   <th>Color / Shade</th>
                   <th>Size</th>
                   <th>In Stock (Pieces)</th>
-                  <th>Packs / Cartons</th>{codeHeads(skuCode, skuValue)}</tr>
+                  <th>Packs / Cartons</th></tr>
               ) : categoryTab === 'ACCESSORY' ? (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -1009,7 +1024,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Size / Art No</th>
                   <th>In Stock (Units)</th>
-                  <th>Packs / Boxes</th>{codeHeads(skuCode, skuValue)}</tr>
+                  <th>Packs / Boxes</th></tr>
               ) : (
                 <tr>
                   <th style={{ width: 44 }}></th>
@@ -1019,7 +1034,7 @@ export default function InventoryDashboardPage() {
                   <th>Color / Shade</th>
                   <th>Category / Size</th>
                   <th>Total In Stock</th>
-                  <th>Lumps / Packs</th>{codeHeads(skuCode, skuValue)}</tr>
+                  <th>Lumps / Packs</th></tr>
               )}
             </thead>
             <tbody>
@@ -1027,8 +1042,7 @@ export default function InventoryDashboardPage() {
                 const isExpanded = !!expandedSkuIds[s.id];
                 const unitStr = unitLabel(uomOf(s));
                 const childBatches = s.batches || [];
-                const childCode = childBatches.some((cb: any) => cb.costCode), childValue = childBatches.some((cb: any) => cb.valueCode);
-                const childSpan = 8 + Number(childCode) + Number(childValue);
+                const childSpan = 6;
 
                 return (
                   <>
@@ -1136,7 +1150,6 @@ export default function InventoryDashboardPage() {
                         </>
                       )}
                       {/* No shelf column: an item spans many rolls on many shelves; each roll's shelf shows when expanded */}
-                      {codeCells(s, skuCode, skuValue)}
                     </tr>
 
                     {/* Accordion Child Table */}
@@ -1159,12 +1172,9 @@ export default function InventoryDashboardPage() {
                                 <tr>
                                   <th>{s.itemType === 'FABRIC' ? 'Roll Barcode' : 'Pack / Barcode'}</th>
                                   <th>{s.itemType === 'FABRIC' ? `Remaining (${unitStr})` : 'In Stock Quantity'}</th>
-                                  {codeHeads(childCode, childValue)}
                                   <th>{s.itemType === 'FABRIC' ? 'Roll Status' : 'Pack Status'}</th>
                                   <th>Physical Shelf</th>
                                   <th>Client Earmark</th>
-                                  <th>{s.itemType === 'FABRIC' ? 'Lump / Bundle Ref' : 'Carton / Bundle Ref'}</th>
-                                  <th>Delivery Invoice</th>
                                   <th style={{ whiteSpace: 'nowrap' }}>Inward Date</th>
                                 </tr>
                               </thead>
@@ -1179,8 +1189,35 @@ export default function InventoryDashboardPage() {
                                   </tr>
                                 ) : (
                                   <>
-                                    {childBatches.map(cb => (
-                                      <tr key={cb.id} className="hover-row">
+                                    {childBatches.map(cb => {
+                                      const openChild = () => openBatchPassport({
+                                          id: cb.id,
+                                          batchCode: cb.batchCode,
+                                          quantity: cb.quantity,
+                                          status: cb.status,
+                                          supplierBundle: cb.supplierBundle,
+                                          invoiceRef: cb.invoiceRef,
+                                          createdAt: cb.createdAt,
+                                          itemType: s.itemType,
+                                          brand: s.brand,
+                                          quality: s.quality,
+                                          qualityName: s.qualityName,
+                                          shade: s.shade,
+                                          size: s.size,
+                                          category: s.category,
+                                          name: s.name,
+                                          artNo: s.artNo,
+                                          uom: s.uom,
+                                          poLine: cb.poLine,
+                                          poLineId: cb.poLineId,
+                                          grn: cb.grn,
+                                          grnId: cb.grnId,
+                                          batchLocations: cb.batchLocations || (cb.locationCode && cb.locationCode !== 'Unassigned' ? [{ quantity: cb.quantity, location: { code: cb.locationCode } }] : []),
+                                          costCode: cb.costCode,
+                                          valueCode: cb.valueCode,
+                                      });
+                                      return (
+                                      <tr key={cb.id} className="hover-row" onClick={openChild} style={{ cursor: 'pointer' }} title="Open Item Passport">
                                         <td>
                                           <code style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: 4, fontWeight: 700, color: 'var(--color-brand)' }}>
                                             {cb.batchCode}
@@ -1189,7 +1226,6 @@ export default function InventoryDashboardPage() {
                                         <td>
                                           <strong>{cb.quantity} {unitStr}</strong>
                                         </td>
-                                        {codeCells(cb, childCode, childValue)}
                                         <td>
                                           <span className={`badge ${cb.status === 'IN_STOCK' ? 'badge-success' : cb.status === 'PARTIALLY_USED' ? 'badge-warning' : cb.status === 'QC_HOLD' ? 'badge-danger' : 'badge-neutral'}`} style={{ fontSize: 10.5 }}>
                                             {cb.status === 'IN_STOCK' ? (s.itemType === 'FABRIC' ? 'Full Roll' : 'Full Pack') : cb.status === 'PARTIALLY_USED' ? (s.itemType === 'FABRIC' ? 'Partial Cut' : 'Open Pack') : cb.status === 'QC_HOLD' ? 'QC Hold' : cb.status}
@@ -1215,12 +1251,6 @@ export default function InventoryDashboardPage() {
                                             <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Free Stock</span>
                                           )}
                                         </td>
-                                        <td>
-                                          {cb.supplierBundle}
-                                        </td>
-                                        <td>
-                                          {cb.invoiceRef}
-                                        </td>
                                         <td style={{ whiteSpace: 'nowrap' }}>
                                           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                                             <span style={{ fontSize: 12.5, color: '#475569' }}>{formatDate(cb.createdAt)}</span>
@@ -1228,30 +1258,7 @@ export default function InventoryDashboardPage() {
                                               type="button"
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                openBatchPassport({
-                                                  id: cb.id,
-                                                  batchCode: cb.batchCode,
-                                                  quantity: cb.quantity,
-                                                  status: cb.status,
-                                                  supplierBundle: cb.supplierBundle,
-                                                  invoiceRef: cb.invoiceRef,
-                                                  createdAt: cb.createdAt,
-                                                  itemType: s.itemType,
-                                                  brand: s.brand,
-                                                  quality: s.quality,
-                                                  qualityName: s.qualityName,
-                                                  shade: s.shade,
-                                                  size: s.size,
-                                                  category: s.category,
-                                                  name: s.name,
-                                                  artNo: s.artNo,
-                                                  uom: s.uom,
-                                                  poLine: cb.poLine,
-                                                  poLineId: cb.poLineId,
-                                                  grn: cb.grn,
-                                                  grnId: cb.grnId,
-                                                  batchLocations: cb.batchLocations || (cb.locationCode && cb.locationCode !== 'Unassigned' ? [{ quantity: cb.quantity, location: { code: cb.locationCode } }] : [])
-                                                });
+                                                openChild();
                                               }}
                                               className="btn btn-ghost btn-icon btn-sm"
                                               title="Open Item Passport"
@@ -1262,7 +1269,8 @@ export default function InventoryDashboardPage() {
                                           </div>
                                         </td>
                                       </tr>
-                                    ))}
+                                      );
+                                    })}
                                     {childBatches.length === 0 && (
                                       <tr>
                                         <td colSpan={childSpan} style={{ textAlign: 'center', padding: 16, color: 'var(--color-text-muted)' }}>
@@ -1315,7 +1323,6 @@ export default function InventoryDashboardPage() {
                       Qty In Stock <ArrowUpDown size={12} />
                     </div>
                   </th>
-                  {codeHeads(rollCode, rollValue)}
                   <th>Roll Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1327,7 +1334,7 @@ export default function InventoryDashboardPage() {
                 <tr>
                   <th>Garment / Item Name</th>
                   <th>Brand</th>
-                  <th>Category</th>
+                  <th>Fabric Type</th>
                   <th>Color / Shade</th>
                   <th>Size</th>
                   <th>PO Number</th>
@@ -1341,7 +1348,6 @@ export default function InventoryDashboardPage() {
                       Pieces In Stock <ArrowUpDown size={12} />
                     </div>
                   </th>
-                  {codeHeads(rollCode, rollValue)}
                   <th>Pack Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1367,7 +1373,6 @@ export default function InventoryDashboardPage() {
                       Units In Stock <ArrowUpDown size={12} />
                     </div>
                   </th>
-                  {codeHeads(rollCode, rollValue)}
                   <th>Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1392,7 +1397,6 @@ export default function InventoryDashboardPage() {
                       In Stock Qty <ArrowUpDown size={12} />
                     </div>
                   </th>
-                  {codeHeads(rollCode, rollValue)}
                   <th>Status</th>
                   <th style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => handleSort('date')}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1490,7 +1494,6 @@ export default function InventoryDashboardPage() {
                         {b.quantity} {unitStr}
                       </span>
                     </td>
-                    {codeCells(b, rollCode, rollValue)}
                     <td>
                       <span className={`badge ${b.status === 'IN_STOCK' ? 'badge-success' : b.status === 'PARTIALLY_USED' ? 'badge-warning' : b.status === 'QC_HOLD' ? 'badge-danger' : 'badge-neutral'}`}>
                         {b.status === 'IN_STOCK' ? (bType === 'FABRIC' ? 'Full Roll' : 'Full Pack') : b.status === 'PARTIALLY_USED' ? (bType === 'FABRIC' ? 'Partial Cut' : 'Open Pack') : b.status === 'QC_HOLD' ? 'QC Hold' : b.status}
@@ -1515,7 +1518,7 @@ export default function InventoryDashboardPage() {
               })}
               {sortedBatches.length === 0 && (
                 <tr>
-                  <td colSpan={(categoryTab === 'FABRIC' ? 8 : (categoryTab === 'READY_MADE' || categoryTab === 'ACCESSORY') ? 10 : 9) + Number(rollCode) + Number(rollValue)} style={{ textAlign: 'center', padding: 48, color: 'var(--color-text-muted)' }}>
+                  <td colSpan={categoryTab === 'FABRIC' ? 8 : (categoryTab === 'READY_MADE' || categoryTab === 'ACCESSORY') ? 10 : 9} style={{ textAlign: 'center', padding: 48, color: 'var(--color-text-muted)' }}>
                     No granular inventory found matching active filters.
                   </td>
                 </tr>
@@ -1592,6 +1595,22 @@ export default function InventoryDashboardPage() {
                       {selectedBatch.status === 'IN_STOCK' ? 'Full Roll' : selectedBatch.status === 'PARTIALLY_USED' ? 'Partial Cut' : selectedBatch.status === 'QC_HOLD' ? 'QC Hold (Quarantine)' : selectedBatch.status}
                     </span>
                   </div>
+
+                  {/* The secret cost code, as on the label (and the value as code for Cost Prices holders) */}
+                  {(selectedBatch.costCode || selectedBatch.valueCode) && (
+                    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {selectedBatch.costCode && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>
+                          Cost Code <code className="cost-code">{selectedBatch.costCode}</code>
+                        </span>
+                      )}
+                      {selectedBatch.valueCode && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 600 }}>
+                          Value (code) <code className="cost-code">{selectedBatch.valueCode}</code>
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   {/* Internal Client Earmark Card in Drawer */}
                   <div style={{ marginTop: 14, background: '#eff6ff', borderRadius: 'var(--radius-md)', padding: '12px 14px', border: '1px solid #bfdbfe', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>

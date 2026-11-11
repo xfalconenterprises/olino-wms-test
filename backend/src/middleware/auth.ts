@@ -101,7 +101,7 @@ async function authenticate(req: Request, res: Response, next: NextFunction, all
     return;
   }
 
-  // Cost-unlock tokens only open the Cost Prices tab; they are never a login session
+  // Cost-unlock tokens only open Accounts; they are never a login session
   if ((decoded as { purpose?: string }).purpose === COST_UNLOCK_PURPOSE) {
     res.status(401).json({ error: 'Unauthorized — invalid or expired token' });
     return;
@@ -204,7 +204,7 @@ export function requireCostAccess(req: Request, res: Response, next: NextFunctio
   next();
 }
 
-/** Short-lived token issued after the user re-enters their password on the Cost Prices tab. */
+/** Short-lived token issued after the user re-enters their password to open Accounts. */
 export function signCostUnlockToken(userId: string): { token: string; expiresAt: number } {
   const token = jwt.sign({ userId, purpose: COST_UNLOCK_PURPOSE }, getJwtSecret(), { expiresIn: `${COST_UNLOCK_MINUTES}m` });
   return { token, expiresAt: Date.now() + COST_UNLOCK_MINUTES * 60 * 1000 };

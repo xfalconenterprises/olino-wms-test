@@ -1,7 +1,7 @@
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../hooks/useAuth';
 import { canAccessApp, hasPermission } from '../../../utils/roles';
-import { ShoppingCart, LayoutDashboard, Power, Package, ClipboardCheck } from 'lucide-react';
+import { ShoppingCart, LayoutDashboard, Power, Package, ClipboardCheck, IndianRupee } from 'lucide-react';
 import '../../../styles/components.css';
 
 export default function ModuleSelectorPage() {
@@ -74,6 +74,14 @@ export default function ModuleSelectorPage() {
       show: canAccessApp.INVENTORY(user)
     },
     {
+      id: 'ACCOUNTS',
+      label: 'Accounts',
+      desc: 'Stock value, closing stock and costs (confidential)',
+      icon: IndianRupee,
+      path: '/accounts',
+      show: canAccessApp.ACCOUNTS(user)
+    },
+    {
       id: 'ADMINISTRATION',
       label: 'Administration',
       desc: 'Clients & suppliers master, reports, users, locations',
@@ -126,10 +134,10 @@ export default function ModuleSelectorPage() {
         </h1>
       </div>
 
-      {/* Cards Grid */}
+      {/* Cards: a short last row is centred (e.g. Accounts under Warehouse and Inventory) */}
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 260px))',
+        display: 'flex',
+        flexWrap: 'wrap',
         gap: 20,
         justifyContent: 'center',
         maxWidth: 1100,
@@ -142,6 +150,8 @@ export default function ModuleSelectorPage() {
               key={app.id}
               onClick={() => navigate(app.path)}
               style={{
+                flex: '0 1 260px',
+                minWidth: 240,
                 height: 220,
                 background: '#fff',
                 border: '1px solid var(--color-border)',

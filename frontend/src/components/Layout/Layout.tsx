@@ -24,7 +24,13 @@ import {
   FileCheck,
   ClipboardCheck,
   Undo2,
-  LockKeyhole
+  KeyRound,
+  IndianRupee,
+  Receipt,
+  AlertTriangle,
+  CalendarCheck,
+  ScanText,
+  History
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useSession } from '../../hooks/useSession';
@@ -74,8 +80,17 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Reports',            path: '/reports',             icon: FileBarChart2,   permission: 'admin.reports',   app: 'ADMINISTRATION', section: 'System & Control' },
   { label: 'Export Log',         path: '/export-log',          icon: FileDown,        permission: 'export.log', app: 'ADMINISTRATION' },
   { label: 'Users & Roles',      path: '/users',               icon: Users,           permission: 'admin.users',     app: 'ADMINISTRATION' },
-  { label: 'Cost Prices',        path: '/cost-prices',         icon: LockKeyhole,     permission: COST_PRICE_PERMISSION, app: 'ADMINISTRATION' },
   { label: 'Printer Settings',   path: '/settings/printer',    icon: Printer,         permission: 'admin.dashboard', app: 'ADMINISTRATION' },
+
+  // ─── 5. Accounts (confidential: cost in rupees) ─────────────────────────
+  { label: 'Stock Value',        path: '/accounts/stock-value',     icon: IndianRupee,   permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS', section: 'Valuation' },
+  { label: 'Closing Stock',      path: '/accounts/closing-stock',   icon: CalendarCheck, permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS' },
+  { label: 'Suppliers',          path: '/accounts/suppliers',       icon: Building2,     permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS' },
+  { label: 'Purchase Costs',     path: '/accounts/purchase-costs',  icon: Receipt,       permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS', section: 'Costs' },
+  { label: 'Missing Costs',      path: '/accounts/missing-costs',   icon: AlertTriangle, permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS' },
+  { label: 'Code Reader',        path: '/accounts/code-reader',     icon: ScanText,      permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS', section: 'Tools' },
+  { label: 'Change Log',         path: '/accounts/change-log',      icon: History,       permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS' },
+  { label: 'Secret Code',        path: '/accounts/secret-code',     icon: KeyRound,      permission: COST_PRICE_PERMISSION, app: 'ACCOUNTS', section: 'Settings' },
 ];
 
 
@@ -108,13 +123,15 @@ export default function Layout({ children }: { children: ReactNode }) {
   // Determine current active app based on route
   let currentApp: AppName = 'WAREHOUSE';
   const currentPath = location.pathname;
-  if (currentPath.startsWith('/purchase-orders')) {
+  if (currentPath.startsWith('/accounts')) {
+    currentApp = 'ACCOUNTS';
+  } else if (currentPath.startsWith('/purchase-orders')) {
     currentApp = 'PURCHASE';
   } else if (currentPath.startsWith('/entry-gate') || currentPath.startsWith('/exit-gate') || currentPath.startsWith('/put-away') || currentPath.startsWith('/batches')) {
     currentApp = 'WAREHOUSE';
   } else if (currentPath.startsWith('/inventory')) {
     currentApp = 'INVENTORY';
-  } else if (currentPath.startsWith('/dashboard') || currentPath.startsWith('/reports') || currentPath.startsWith('/export-log') || currentPath.startsWith('/users') || currentPath.startsWith('/locations') || currentPath.startsWith('/suppliers') || currentPath.startsWith('/clients') || currentPath.startsWith('/items') || currentPath.startsWith('/cost-prices')) {
+  } else if (currentPath.startsWith('/dashboard') || currentPath.startsWith('/reports') || currentPath.startsWith('/export-log') || currentPath.startsWith('/users') || currentPath.startsWith('/locations') || currentPath.startsWith('/suppliers') || currentPath.startsWith('/clients') || currentPath.startsWith('/items')) {
     currentApp = 'ADMINISTRATION';
   } else if (currentPath.startsWith('/settings')) {
     // Printer Settings is an everyday floor tool listed in both the Warehouse and Admin menus:
