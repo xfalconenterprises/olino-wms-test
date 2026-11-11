@@ -1,4 +1,5 @@
 import bwipjs from 'bwip-js';
+import QRCode from 'qrcode';
 import { crc32 } from 'node:zlib';
 
 // Barcodes handed to label designers (rack locations, employee badges). Code 128 with a narrow bar (X) of 0.375 mm,
@@ -59,4 +60,20 @@ function withPngResolution(png: Buffer, pxPerMeter: number): Buffer {
   chunk.writeUInt32BE(crc32(Buffer.concat([type, data])), 17);
   const afterHeader = 8 + 25; // PNG signature + IHDR chunk
   return Buffer.concat([png.subarray(0, afterHeader), chunk, png.subarray(afterHeader)]);
+}
+
+// ─── QR codes (locations) ──────────────────────────────────────────────────
+// Just the black squares on a transparent background, with no border of their own: the label
+// supplies the white. Each square (module) is 0.8 mm, so a location code prints about 17 mm wide.
+// Medium error correction still scans with a scuffed corner.
+export const QR_MODULE_MM = 0.8;
+const QR_MARGIN_MODULES = 0;
+const QR_COLOURS = { dark: '#000000ff', light: '#ffffff00' };   // transparent white: shows white where transparency is ignored
+const QR_PX_PER_MODULE = 20;                                              // 20 px per 0.8 mm = 635 dpi
+const QR_PX_PER_METER = Math.round((QR_PX_PER_MODULE / QR_MODULE_MM) * 1000);  // 25000
+
+/** High-resolution QR code PNG; its DPI is stored in the file so it places at the real size. */
+export async function qrPng(text: string): Promise<Buffer> {
+  const png = await QRCode.toBuffer(text, { type: 'png', errorCorrectionLevel: 'M', margin: QR_MARGIN_MODULES, scale: QR_PX_PER_MODULE, color: QR_COLOURS });
+  return withPngResolution(png, QR_PX_PER_METER);
 }

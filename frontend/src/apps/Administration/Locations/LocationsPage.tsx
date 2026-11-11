@@ -205,9 +205,10 @@ export default function LocationsPage() {
     }
   };
 
-  const downloadBarcode = async (code: string, format: 'svg' | 'png') => {
+  const downloadBarcode = async (code: string, format: 'svg' | 'png' | 'qr-png') => {
     try {
-      await downloadFromApi(`/api/locations/barcode/${encodeURIComponent(code)}?format=${format}`, `${code}.${format}`);
+      const name = format === 'qr-png' ? `${code}-qr.png` : `${code}.${format}`;
+      await downloadFromApi(`/api/locations/barcode/${encodeURIComponent(code)}?format=${format}`, name);
     } catch (e: any) {
       setError(await apiErrorMessage(e, 'Barcode download failed'));
     }
@@ -244,10 +245,10 @@ export default function LocationsPage() {
 
   const exportButton = (rack?: Rack) => canExport && (
     <button className="btn btn-primary btn-sm" onClick={() => exportLocations(rack)} disabled={!!exporting}
-      title="ZIP for the label designer: location list, SVG + PNG barcodes and instructions"
+      title="ZIP: barcodes and QR codes (each location in its own file), an Excel with the QR codes, the location list and instructions"
       style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
       {exporting === (rack?.id ?? 'all') ? <span className="spinner" /> : <Download size={14} />}
-      {rack ? `Export Rack ${rack.name}` : 'Export Barcodes'}
+      {rack ? `Export Rack ${rack.name}` : 'Export Barcodes & QR Codes'}
     </button>
   );
 
@@ -531,6 +532,9 @@ export default function LocationsPage() {
                   </button>
                   <button className="btn btn-sm btn-secondary" onClick={() => downloadBarcode(selectedSlot.code, 'png')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Download size={14} /> PNG
+                  </button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => downloadBarcode(selectedSlot.code, 'qr-png')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Download size={14} /> QR PNG
                   </button>
                 </>
               )}

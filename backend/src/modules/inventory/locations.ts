@@ -4,8 +4,9 @@ import { userMessage } from '../../utils/errors';
 import type { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { requireAuth, requirePermission } from '../../middleware/auth';
-import { code128Png, code128Svg, BARCODE_HEIGHT_MM, BARCODE_X_MM } from '../../utils/barcode';
+import { code128Png, code128Svg, qrPng, BARCODE_HEIGHT_MM, BARCODE_X_MM, QR_MODULE_MM } from '../../utils/barcode';
 import { createZip, type ZipEntry } from '../../utils/zip';
+import { locationsQrWorkbook } from './locations-excel';
 
 const router = Router();
 router.use(requireAuth);
@@ -279,12 +280,15 @@ locations.csv   One row per location. Use it for data merge / print merge in you
                 label software (CorelDRAW, InDesign, Illustrator, BarTender...).
 svg/            Vector barcode per location (best quality). File name = location code.
 png/            Same barcodes as high-resolution PNG (609.6 dpi).
+qr/             QR code per location as high-resolution PNG (635 dpi). File name = location code.
+locations-qr.xlsx  The location list in Excel with each QR code as a picture.
 
 Columns
   Location Code   Text to print in large letters on the label (e.g. A-B1-L1-P1).
   Barcode Value   What the barcode encodes. Same as the location code.
   @Barcode SVG    Relative path of the SVG barcode (InDesign uses "@" for image fields).
   @Barcode PNG    Relative path of the PNG barcode.
+  @QR PNG         Relative path of the PNG QR code.
   Some programs need full paths: unzip first and replace the folder prefix.
 
 Barcode specification
@@ -293,6 +297,14 @@ Barcode specification
   Height          ${BARCODE_HEIGHT_MM} mm as supplied
   Quiet zone      10 bars (about ${(10 * BARCODE_X_MM).toFixed(2)} mm) of white space on both sides, already
                   included in the files
+
+QR code specification
+  Content         The location code, nothing else (same as "Barcode Value")
+  Square (module) ${QR_MODULE_MM} mm, error correction M (medium)
+  Size            about 17 mm wide as supplied (black squares only, transparent background,
+                  no border)
+  You may make a QR code larger or smaller (keep it square, at least 12 mm). Place it on a
+  white or very light background and keep about 3 mm of clear space all round it.
 
 Rules so the labels scan reliably
   1. Keep the barcode WIDTH at 100%. You may change the height, never stretch or
@@ -306,10 +318,8 @@ Rules so the labels scan reliably
   6. Test-scan a printed sample before printing the whole batch.
 `;
 
-// GET /api/locations/export?rackId=… — ZIP for label designers: location list, barcodes, instructions.
-// Without rackId: every active rack position plus floor spots.
-router.get('/export', requirePermission('export.locations'), async (req: Request, res: Response) => {
-  const rackId = typeof req.query.rackId === 'string' && req.query.rackId ? req.query.rackId : null;
+/** The locations to export: one rack's positions, or every active rack position plus floor spots. */
+async function exportRows(rackId: string | null) {
 
   const racks = await prisma.rack.findMany({
     where: { isActive: true, ...(rackId && { id: rackId }) },
@@ -321,7 +331,7 @@ router.get('/export', requirePermission('export.locations'), async (req: Request
       },
     },
   });
-  if (rackId && racks.length === 0) { res.status(404).json({ error: 'Rack not found' }); return; }
+  if (rackId && racks.length === 0) return null;
 
   const rows: ExportRow[] = [];
   for (const rack of racks.sort(byRackName)) {
@@ -335,14 +345,24 @@ router.get('/export', requirePermission('export.locations'), async (req: Request
     const floor = await prisma.location.findMany({ where: { type: 'FLOOR', isActive: true }, orderBy: { code: 'asc' } });
     for (const loc of floor) rows.push({ code: loc.code, type: 'FLOOR', rack: '', bay: '', level: '', position: '' });
   }
+  return { rows, rackName: racks[0]?.name as string | undefined };
+}
+
+// GET /api/locations/export?rackId=… — ZIP for label designers: location list, barcodes, QR codes,
+// instructions. Without rackId: every active rack position plus floor spots.
+router.get('/export', requirePermission('export.locations'), async (req: Request, res: Response) => {
+  const rackId = typeof req.query.rackId === 'string' && req.query.rackId ? req.query.rackId : null;
+  const found = await exportRows(rackId);
+  if (!found) { res.status(404).json({ error: 'Rack not found' }); return; }
+  const { rows } = found;
   if (rows.length === 0) { res.status(404).json({ error: 'No locations to export' }); return; }
 
-  const header = ['Location Code', 'Type', 'Rack', 'Bay', 'Level', 'Position', 'Barcode Value', '@Barcode SVG', '@Barcode PNG'];
+  const header = ['Location Code', 'Type', 'Rack', 'Bay', 'Level', 'Position', 'Barcode Value', '@Barcode SVG', '@Barcode PNG', '@QR PNG'];
   const csv = '﻿' + [header, ...rows.map(r => [
-    r.code, r.type, r.rack, r.bay, r.level, r.position, r.code, `svg/${r.code}.svg`, `png/${r.code}.png`,
+    r.code, r.type, r.rack, r.bay, r.level, r.position, r.code, `svg/${r.code}.svg`, `png/${r.code}.png`, `qr/${r.code}.png`,
   ])].map(csvLine).join('\r\n') + '\r\n';
 
-  const scope = rackId ? `rack-${racks[0].name}` : 'all';
+  const scope = rackId ? `rack-${found.rackName}` : 'all';
   const baseName = `olino-locations-${scope}-${formatDate(new Date())}`;
 
   try {
@@ -353,7 +373,12 @@ router.get('/export', requirePermission('export.locations'), async (req: Request
     for (const r of rows) {
       entries.push({ name: `svg/${r.code}.svg`, data: code128Svg(r.code) });
       entries.push({ name: `png/${r.code}.png`, data: await code128Png(r.code) });
+      entries.push({ name: `qr/${r.code}.png`, data: await qrPng(r.code) });
     }
+    // The same list in Excel with each QR code as a picture
+    const qrRows = [];
+    for (const r of rows) qrRows.push({ ...r, qr: await qrPng(r.code) });
+    entries.push({ name: 'locations-qr.xlsx', data: await locationsQrWorkbook(qrRows, rackId ? `Rack ${found.rackName} locations` : 'All locations') });
     res.set('Content-Type', 'application/zip');
     res.set('Content-Disposition', `attachment; filename="${baseName}.zip"`);
     res.send(createZip(entries));
@@ -363,13 +388,17 @@ router.get('/export', requirePermission('export.locations'), async (req: Request
   }
 });
 
-// GET /api/locations/barcode/:code?format=svg|png — one location's barcode
+// GET /api/locations/barcode/:code?format=svg|png|qr-png — one location's barcode or QR code (PNG)
 router.get('/barcode/:code', requirePermission('admin.locations'), async (req: Request, res: Response) => {
   const location = await prisma.location.findUnique({ where: { code: String(req.params.code).toUpperCase() } });
   if (!location) { res.status(404).json({ error: 'Location not found' }); return; }
 
   try {
-    if (req.query.format === 'png') {
+    if (req.query.format === 'qr-png') {
+      res.set('Content-Type', 'image/png');
+      res.set('Content-Disposition', `inline; filename="${location.code}-qr.png"`);
+      res.send(await qrPng(location.code));
+    } else if (req.query.format === 'png') {
       res.set('Content-Type', 'image/png');
       res.set('Content-Disposition', `inline; filename="${location.code}.png"`);
       res.send(await code128Png(location.code));
