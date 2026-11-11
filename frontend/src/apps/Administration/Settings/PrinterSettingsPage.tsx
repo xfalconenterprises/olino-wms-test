@@ -12,6 +12,7 @@ import {
   setWorkstationPrinterId,
   testPrintDirect,
   updatePrinterDevice,
+  useAutoPrint,
   type DiscoveredPrinter,
   type MultiPrinterSettings,
   type PrinterDevice,
@@ -37,7 +38,8 @@ interface PrinterForm {
 const COPY_OPTIONS = [1, 2, 3, 4, 5];
 
 export default function PrinterSettingsPage() {
-  const [config, setConfig] = useState<MultiPrinterSettings>({ printers: [], autoPrintOnReceipt: true, copies: 1 });
+  const [config, setConfig] = useState<MultiPrinterSettings>({ printers: [], copies: 1 });
+  const [autoPrint, setAutoPrint] = useAutoPrint();
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<Notice>(null);
   const [links, setLinks] = useState<Record<string, LinkStatus>>({});
@@ -117,8 +119,8 @@ export default function PrinterSettingsPage() {
     setThisComputer(id);
   };
 
-  // These two settings save as soon as they are changed
-  const saveOption = async (change: Partial<Pick<MultiPrinterSettings, 'autoPrintOnReceipt' | 'copies'>>) => {
+  // Copies per label (shared by every computer) saves as soon as it is changed
+  const saveOption = async (change: Pick<MultiPrinterSettings, 'copies'>) => {
     const previous = config;
     setConfig(prev => ({ ...prev, ...change }));
     try {
@@ -199,10 +201,10 @@ export default function PrinterSettingsPage() {
             </select>
           </SettingRow>
         )}
-        <SettingRow title="Print labels automatically" hint="As soon as a roll or pack is received at the gate">
+        <SettingRow title="Print labels automatically on this computer" hint="As soon as a roll or pack is received here. Saved on this computer only; also on the Stock In screens">
           <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 44, minHeight: 44, cursor: 'pointer' }}>
-            <input type="checkbox" checked={config.autoPrintOnReceipt} onChange={e => saveOption({ autoPrintOnReceipt: e.target.checked })}
-              aria-label="Print labels automatically" style={{ width: 24, height: 24, accentColor: 'var(--color-brand)' }} />
+            <input type="checkbox" checked={autoPrint} onChange={e => setAutoPrint(e.target.checked)}
+              aria-label="Print labels automatically on this computer" style={{ width: 24, height: 24, accentColor: 'var(--color-brand)' }} />
           </label>
         </SettingRow>
         <SettingRow title="Copies of each label" last>

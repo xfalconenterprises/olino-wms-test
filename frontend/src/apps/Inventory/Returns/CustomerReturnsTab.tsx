@@ -10,6 +10,7 @@ import { useAuth } from '../../../hooks/useAuth';
 import { hasPermission } from '../../../utils/roles';
 import { formatDate, formatDateTime } from '../../../utils/format';
 import { allowsDecimals, unitLabel as unit } from '../../../utils/units';
+import AutoPrintSwitch from '../../../components/Common/AutoPrintSwitch';
 
 interface DcLine {
   dcLineId: string; batchCode: string; cutReference: string | null; itemType: string; description: string;
@@ -123,7 +124,10 @@ export default function CustomerReturnsTab() {
       )}
 
       <div className="card" style={{ marginBottom: 18 }}>
-        <div className="card-header"><h2 className="card-title">New customer return</h2></div>
+        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <h2 className="card-title">New customer return</h2>
+          <AutoPrintSwitch />
+        </div>
         <div className="card-body">
           <form onSubmit={find} style={{ display: 'flex', gap: 8, marginBottom: lookup ? 16 : 0, flexWrap: 'wrap' }}>
             <input className="form-input" value={dcInput} onChange={e => setDcInput(e.target.value)} placeholder="Scan or type the delivery challan number, e.g. DC-2026-0012"

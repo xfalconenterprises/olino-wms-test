@@ -21,7 +21,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
-import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
+import { printTSPL, autoPrintReceivedLabel, useAutoPrint } from '../../../utils/printer';
 import { formatDate } from '../../../utils/format';
 import { allowsDecimals, fabricCategoryLabel, formatTotals, unitLabel, unitName } from '../../../utils/units';
 import SpecLine from '../../../components/Common/SpecLine';
@@ -29,6 +29,7 @@ import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } fro
 import { useConfirm } from '../../../components/Common/ConfirmDialog';
 import DiscrepancyModal, { DISCREPANCY_TYPE_LABELS, discrepancyItemText, discrepancyShortText, type DiscrepancyItem, type GateDiscrepancy } from './DiscrepancyModal';
 import PhotoPrompt from '../../../components/Common/PhotoPrompt';
+import AutoPrintSwitch from '../../../components/Common/AutoPrintSwitch';
 import type { PhotoItem } from '../../../utils/itemPhotos';
 import '../../../styles/components.css';
 
@@ -111,6 +112,7 @@ export default function ReceivePOPage() {
   const [receiving, setReceiving] = useState(false);
   const [error, setError] = useState('');
   const [recentBatch, setRecentBatch] = useState<{ id?: string; batchCode: string; quantity: number } | null>(null);
+  const [autoPrint] = useAutoPrint();   // this computer prints each label as a lump is received
   // The item of the lump just received: offered a photo when it has none
   const [photoItem, setPhotoItem] = useState<PhotoItem | null>(null);
   const [fixingRoll, setFixingRoll] = useState<CorrectableRoll | null>(null);
@@ -762,14 +764,17 @@ export default function ReceivePOPage() {
 
       {/* ─── Top Navigation & Header ────────────────────────────────────────── */}
       <div style={{ marginBottom: 18 }}>
-        <button
-          type="button"
-          className="btn btn-ghost"
-          onClick={() => navigate('/entry-gate')}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--color-text-muted)', marginBottom: 10, padding: '6px 10px', fontSize: 13.5, borderRadius: 6 }}
-        >
-          <ArrowLeft size={18} /> Back to Inbound Gate
-        </button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => navigate('/entry-gate')}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--color-text-muted)', padding: '6px 10px', fontSize: 13.5, borderRadius: 6 }}
+          >
+            <ArrowLeft size={18} /> Back to Inbound Gate
+          </button>
+          <AutoPrintSwitch />
+        </div>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1601,9 +1606,9 @@ export default function ReceivePOPage() {
                     style={{ height: 48, fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, padding: '0 24px' }}
                   >
                     {receiving ? (
-                      <><span className="spinner" /> Receiving & Printing...</>
+                      <><span className="spinner" /> {autoPrint ? 'Receiving & Printing...' : 'Receiving...'}</>
                     ) : (
-                      <><Printer size={18} /> Receive & Print Label</>
+                      <><Printer size={18} /> {autoPrint ? 'Receive & Print Label' : 'Receive Lump'}</>
                     )}
                   </button>
                 </div>

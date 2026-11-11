@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import api from './api';
 
 export interface PrinterDevice {
@@ -18,7 +19,6 @@ export interface PrinterDevice {
 export interface MultiPrinterSettings {
   printers: PrinterDevice[];
   defaultPrinter?: PrinterDevice;
-  autoPrintOnReceipt: boolean;
   copies: number;
 }
 
@@ -45,33 +45,44 @@ export async function getPrinterSettings(): Promise<MultiPrinterSettings> {
 }
 
 /**
- * Save updated global printer settings to backend
+ * Save the copies per label (the one printer setting shared by every computer)
  */
-export async function savePrinterSettings(settings: Partial<MultiPrinterSettings>): Promise<MultiPrinterSettings> {
+export async function savePrinterSettings(settings: Pick<MultiPrinterSettings, 'copies'>): Promise<MultiPrinterSettings> {
   const res = await api.post('/api/printer/settings', settings);
-  const saved: MultiPrinterSettings = res.data.settings || res.data;
-  autoPrintCache = { enabled: saved.autoPrintOnReceipt !== false, at: Date.now() };
-  return saved;
+  return res.data.settings || res.data;
 }
 
-// "Auto print on receipt" from Printer Settings, re-read at most once a minute
-let autoPrintCache: { enabled: boolean; at: number } | null = null;
-const AUTO_PRINT_CACHE_MS = 60_000;
+// "Print labels automatically" is chosen on each computer and remembered there: off until someone
+// on that computer turns it on, so receiving on an office laptop never prints at the dock.
+const AUTO_PRINT_KEY = 'olino_auto_print_labels';
+
+export function getAutoPrint(): boolean {
+  try { return localStorage.getItem(AUTO_PRINT_KEY) === 'on'; } catch { return false; }
+}
+
+export function setAutoPrint(on: boolean): void {
+  try { if (on) localStorage.setItem(AUTO_PRINT_KEY, 'on'); else localStorage.removeItem(AUTO_PRINT_KEY); } catch { /* not saved */ }
+  window.dispatchEvent(new Event(AUTO_PRINT_KEY));
+}
+
+/** Follows this computer's "Print labels automatically" choice, also when changed in another tab or place. */
+export function useAutoPrint(): [boolean, (on: boolean) => void] {
+  const [on, setOn] = useState(getAutoPrint);
+  useEffect(() => {
+    const sync = () => setOn(getAutoPrint());
+    window.addEventListener(AUTO_PRINT_KEY, sync);
+    window.addEventListener('storage', sync);
+    return () => { window.removeEventListener(AUTO_PRINT_KEY, sync); window.removeEventListener('storage', sync); };
+  }, []);
+  return [on, setAutoPrint];
+}
 
 /**
- * Prints the label for a just-received roll if "Auto print on receipt" is on. Callers do not wait
- * for it, so a slow or switched-off printer never holds up receiving; onFail tells the worker.
+ * Prints the label for a just-received roll if this computer prints labels automatically. Callers do
+ * not wait for it, so a slow or switched-off printer never holds up receiving; onFail tells the worker.
  */
 export async function autoPrintReceivedLabel(batchCode: string, onFail?: (message: string) => void): Promise<void> {
-  if (!autoPrintCache || Date.now() - autoPrintCache.at > AUTO_PRINT_CACHE_MS) {
-    try {
-      const settings = await getPrinterSettings();
-      autoPrintCache = { enabled: settings.autoPrintOnReceipt !== false, at: Date.now() };
-    } catch {
-      autoPrintCache = { enabled: true, at: Date.now() };
-    }
-  }
-  if (!autoPrintCache.enabled) return;
+  if (!getAutoPrint()) return;
   try {
     await printTSPL(batchCode);
   } catch (err: any) {

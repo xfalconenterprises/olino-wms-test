@@ -35,7 +35,7 @@ import {
   PencilLine,
   LockKeyhole
 } from 'lucide-react';
-import { printTSPL, autoPrintReceivedLabel } from '../../../utils/printer';
+import { printTSPL, autoPrintReceivedLabel, useAutoPrint } from '../../../utils/printer';
 import { formatDate, formatDateTime, istDateKey } from '../../../utils/format';
 import DateField from '../../../components/Common/DateField';
 import { fabricCategoryLabel, fabricUnit, formatTotals, formatUnitTotals, unitLabel, unitName, useFabricCategories } from '../../../utils/units';
@@ -49,6 +49,7 @@ import { RollCorrectionModal, unusualQuantityMessage, type CorrectableRoll } fro
 import { useConfirm } from '../../../components/Common/ConfirmDialog';
 import { CameraScanButton } from '../../../components/Common/CameraScan';
 import PhotoPrompt from '../../../components/Common/PhotoPrompt';
+import AutoPrintSwitch from '../../../components/Common/AutoPrintSwitch';
 import type { PhotoItem } from '../../../utils/itemPhotos';
 import '../../../styles/components.css';
 
@@ -229,6 +230,7 @@ export default function EntryGatePage() {
   // Submitting state & recent received batch
   const [inwardSubmitting, setInwardSubmitting] = useState(false);
   const [inwardError, setInwardError] = useState('');
+  const [autoPrint] = useAutoPrint();   // this computer prints each label as a lump is received
   const [recentBatch, setRecentBatch] = useState<{
     batchCode: string;
     quantity: number;
@@ -1493,7 +1495,7 @@ export default function EntryGatePage() {
 
       {/* ── TOP BACK BAR (WHEN INSIDE A WORKFLOW) ── */}
       {activeTab !== 'SELECT_MODE' && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <button
             className="btn btn-ghost"
             onClick={() => {
@@ -1504,6 +1506,7 @@ export default function EntryGatePage() {
           >
             <ArrowLeft size={16} /> Back to Stock In Options
           </button>
+          <AutoPrintSwitch />
         </div>
       )}
 
@@ -1532,7 +1535,7 @@ export default function EntryGatePage() {
                 {recentBatch.bundleNumber && <span style={{ marginLeft: 8, fontSize: 12, background: '#d1fae5', padding: '1px 7px', borderRadius: 4 }}>Bundle: {recentBatch.bundleNumber}</span>}
               </div>
               <div style={{ fontSize: 12, color: '#047857' }}>
-                {recentBatch.matchedPoNumber ? `Allocated to: ${recentBatch.matchedPoNumber}` : 'Recorded in inventory'} • Label sent to printer
+                {recentBatch.matchedPoNumber ? `Allocated to: ${recentBatch.matchedPoNumber}` : 'Recorded in inventory'}{autoPrint && ' • Label sent to printer'}
               </div>
             </div>
           </div>
@@ -2674,9 +2677,9 @@ export default function EntryGatePage() {
                       disabled={inwardSubmitting}
                     >
                       {inwardSubmitting ? (
-                        <><span className="spinner" /> Recording Roll & Printing Label...</>
+                        <><span className="spinner" /> {autoPrint ? 'Recording Roll & Printing Label...' : 'Recording Roll...'}</>
                       ) : (
-                        <><Printer size={18} /> Inward & Print Barcode Label</>
+                        <><Printer size={18} /> {autoPrint ? 'Inward & Print Barcode Label' : 'Inward Roll'}</>
                       )}
                     </button>
 
@@ -3200,7 +3203,7 @@ export default function EntryGatePage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5, color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
                     <span><strong>Supplier:</strong> <span style={{ color: '#0f172a', fontWeight: 600 }}>{directSupplierInput || 'Not specified'}</span></span>
                     {directInvoiceRef && <span>• <strong>Invoice:</strong> <span style={{ color: '#0f172a' }}>{directInvoiceRef}</span></span>}
-                    {directInvoiceDate && <span>• <strong>Date:</strong> <span style={{ color: '#0f172a' }}>{directInvoiceDate}</span></span>}
+                    {directInvoiceDate && <span>• <strong>Date:</strong> <span style={{ color: '#0f172a' }}>{formatDate(directInvoiceDate)}</span></span>}
                     {directClientInput && <span>• <strong>Client:</strong> <span style={{ color: '#1d4ed8', fontWeight: 600 }}>{directClientInput}</span></span>}
                   </div>
                 )}
@@ -3966,7 +3969,7 @@ export default function EntryGatePage() {
                 style={{ width: '100%', height: 44, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 14 }}
                 disabled={directSubmittingItem}
               >
-                {directSubmittingItem ? <><span className="spinner" /> Inwarding...</> : <><Plus size={18} /> Inward Item &amp; Print Barcode Label</>}
+                {directSubmittingItem ? <><span className="spinner" /> Inwarding...</> : <><Plus size={18} /> {autoPrint ? 'Inward Item & Print Barcode Label' : 'Inward Item'}</>}
               </button>
             </form>
             </>
@@ -4019,7 +4022,7 @@ export default function EntryGatePage() {
               <div style={{ padding: '36px 20px', textAlign: 'center', color: 'var(--color-text-muted)' }}>
                 <Package size={32} style={{ opacity: 0.35, marginBottom: 8 }} />
                 <p style={{ margin: 0, fontSize: 13.5 }}>
-                  No items inwarded in this session yet. Complete the form above and click <strong>Inward Item &amp; Print Barcode Label</strong>.
+                  No items inwarded in this session yet. Complete the form above and click <strong>{autoPrint ? 'Inward Item & Print Barcode Label' : 'Inward Item'}</strong>.
                 </p>
               </div>
             ) : (

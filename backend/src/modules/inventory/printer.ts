@@ -46,9 +46,9 @@ export interface PrinterDevice {
   station: 'INBOUND' | 'OUTBOUND' | 'FLOOR' | 'GENERAL';
 }
 
+// Whether labels print by themselves at receiving is chosen on each computer (in the browser), not here
 export interface MultiPrinterConfig {
   printers: PrinterDevice[];
-  autoPrintOnReceipt: boolean;
   copies: number;
 }
 
@@ -71,7 +71,7 @@ const DEFAULT_PRINTER: PrinterDevice = {
 
 // Returns a fresh copy so callers can mutate it before saving.
 function defaultConfig(): MultiPrinterConfig {
-  return { printers: [{ ...DEFAULT_PRINTER }], autoPrintOnReceipt: true, copies: 1 };
+  return { printers: [{ ...DEFAULT_PRINTER }], copies: 1 };
 }
 
 export function getPrinterConfig(): MultiPrinterConfig {
@@ -90,7 +90,6 @@ export function getPrinterConfig(): MultiPrinterConfig {
 
       return {
         printers,
-        autoPrintOnReceipt: raw.autoPrintOnReceipt ?? fallback.autoPrintOnReceipt,
         copies: raw.copies ?? fallback.copies,
       };
     }
@@ -104,7 +103,6 @@ export function savePrinterConfig(cfg: Partial<MultiPrinterConfig>): MultiPrinte
   const current = getPrinterConfig();
   const updated: MultiPrinterConfig = {
     printers: cfg.printers ?? current.printers,
-    autoPrintOnReceipt: cfg.autoPrintOnReceipt ?? current.autoPrintOnReceipt,
     copies: cfg.copies ?? current.copies,
   };
   try {
@@ -609,10 +607,9 @@ router.get('/settings', (_req: Request, res: Response) => {
 
 // POST /api/printer/settings — Update global printer settings
 router.post('/settings', requirePrinterAdmin, (req: Request, res: Response) => {
-  // Only the global switches; devices are managed through /devices
-  const { autoPrintOnReceipt, copies } = req.body || {};
+  // Only the copies per label; devices are managed through /devices
+  const { copies } = req.body || {};
   const updated = savePrinterConfig({
-    ...(typeof autoPrintOnReceipt === 'boolean' && { autoPrintOnReceipt }),
     ...(copies !== undefined && Number(copies) >= 1 && { copies: Math.min(10, Math.floor(Number(copies))) }),
   });
   const defaultPrinter = getDefaultPrinter(updated);
